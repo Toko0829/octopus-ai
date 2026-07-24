@@ -14,74 +14,75 @@ version: 1
 
 # When any of these change, the master README must be reviewed (scope/stack/core-loop/module-map).
 readme_triggers:
-  - "package.json"                      # dependency/stack change
-  - "packages/contracts/**"             # contract/scope change
-  - "apps/**/src/routes/**"             # public API surface
+  - 'package.json' # dependency/stack change
+  - 'packages/contracts/**' # contract/scope change
+  - 'apps/**/src/routes/**' # public API surface
 
 mappings:
-  - path: "apps/web/**"
-    owner: "docs/30-modules/design-system-frontend.md"
-    also_touch: ["docs/30-modules/chat-discord.md", "docs/20-design/design-system.md"]
+  - path: 'apps/web/**'
+    owner: 'docs/30-modules/design-system-frontend.md'
+    also_touch: ['docs/30-modules/chat-discord.md', 'docs/20-design/design-system.md']
 
-  - path: "apps/api/**"
-    owner: "docs/10-architecture/architecture.md"
-    also_touch: ["docs/30-modules/auth-identity.md"]
+  - path: 'apps/api/**'
+    owner: 'docs/10-architecture/architecture.md'
+    also_touch: ['docs/30-modules/auth-identity.md']
 
-  - path: "apps/matcher/**"
-    owner: "docs/30-modules/human-nodes-marketplace.md"
+  - path: 'apps/matcher/**'
+    owner: 'docs/30-modules/human-nodes-marketplace.md'
 
-  - path: "apps/agent/**"
-    owner: "docs/30-modules/ai-orchestrator.md"
-    also_touch: ["docs/30-modules/business-projects-workflow.md"]
+  - path: 'apps/agent/**'
+    owner: 'docs/30-modules/ai-orchestrator.md'
+    also_touch: ['docs/30-modules/business-projects-workflow.md']
 
-  - path: "packages/db/migrations/**"
-    owner: "docs/10-architecture/data-model.md"
-    also_touch: ["docs/10-architecture/security-compliance.md"]
+  - path: 'packages/db/migrations/**'
+    owner: 'docs/10-architecture/data-model.md'
+    also_touch: ['docs/10-architecture/security-compliance.md']
 
-  - path: "packages/rag/**"
-    owner: "docs/30-modules/rag-knowledge.md"
-    also_touch: ["docs/10-architecture/rag.md", "docs/10-architecture/learning-flywheel.md"]
+  - path: 'packages/rag/**'
+    owner: 'docs/30-modules/rag-knowledge.md'
+    also_touch: ['docs/10-architecture/rag.md', 'docs/10-architecture/learning-flywheel.md']
 
-  - path: "packages/marketing/**"
-    owner: "docs/30-modules/marketing-growth-engine.md"
-    also_touch: ["docs/10-architecture/learning-flywheel.md", "docs/60-playbooks/full-funnel-creator.md"]
+  - path: 'packages/marketing/**'
+    owner: 'docs/30-modules/marketing-growth-engine.md'
+    also_touch:
+      ['docs/10-architecture/learning-flywheel.md', 'docs/60-playbooks/full-funnel-creator.md']
 
-  - path: "packages/agent-tools/**"
-    owner: "docs/30-modules/ai-orchestrator.md"
+  - path: 'packages/agent-tools/**'
+    owner: 'docs/30-modules/ai-orchestrator.md'
 
-  - path: "packages/contracts/**"
-    owner: "docs/10-architecture/architecture.md"
+  - path: 'packages/contracts/**'
+    owner: 'docs/10-architecture/architecture.md'
 
-  - path: "packages/core/**"
-    owner: "docs/30-modules/business-projects-workflow.md"
+  - path: 'packages/core/**'
+    owner: 'docs/30-modules/business-projects-workflow.md'
 
-  - path: "packages/realtime/**"
-    owner: "docs/30-modules/chat-discord.md"
+  - path: 'packages/realtime/**'
+    owner: 'docs/30-modules/chat-discord.md'
 
-  - path: "packages/ui/**"
-    owner: "docs/30-modules/design-system-frontend.md"
-    also_touch: ["docs/20-design/design-system.md"]
+  - path: 'packages/ui/**'
+    owner: 'docs/30-modules/design-system-frontend.md'
+    also_touch: ['docs/20-design/design-system.md']
 
-  - path: "packages/observability/**"
-    owner: "docs/30-modules/infra-devops.md"
-    also_touch: ["docs/10-architecture/observability.md"]
+  - path: 'packages/observability/**'
+    owner: 'docs/30-modules/infra-devops.md'
+    also_touch: ['docs/10-architecture/observability.md']
 
-  - path: "supabase/migrations/**"
-    owner: "docs/10-architecture/data-model.md"
+  - path: 'supabase/migrations/**'
+    owner: 'docs/10-architecture/data-model.md'
 
-  - path: "supabase/functions/**"
-    owner: "docs/30-modules/integrations.md"
+  - path: 'supabase/functions/**'
+    owner: 'docs/30-modules/integrations.md'
 
-  - path: ".github/workflows/**"
-    owner: "docs/30-modules/infra-devops.md"
+  - path: '.github/workflows/**'
+    owner: 'docs/30-modules/infra-devops.md'
 
 # Domain areas without a single code root — reviewers verify these manually.
 manual_review:
-  - area: "payments / escrow / ledger"
-    owner: "docs/30-modules/payments-billing.md"
-  - area: "notifications fan-out"
-    owner: "docs/30-modules/notifications.md"
-  - area: "admin / ops consoles"
-    owner: "docs/30-modules/admin-ops.md"
-  - area: "analytics / metrics"
-    owner: "docs/30-modules/analytics.md"
+  - area: 'payments / escrow / ledger'
+    owner: 'docs/30-modules/payments-billing.md'
+  - area: 'notifications fan-out'
+    owner: 'docs/30-modules/notifications.md'
+  - area: 'admin / ops consoles'
+    owner: 'docs/30-modules/admin-ops.md'
+  - area: 'analytics / metrics'
+    owner: 'docs/30-modules/analytics.md'

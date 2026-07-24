@@ -38,7 +38,7 @@
 
 ## Phase 2 — Execution + Channels + Creative + Marketplace + Escrow
 
-**Goal:** Octopus actually *does* the marketing, humans plug in, and it goes live.
+**Goal:** Octopus actually _does_ the marketing, humans plug in, and it goes live.
 
 - Durable orchestration with human-in-the-loop waitpoints; idempotent/replay-safe steps; pg-boss utility jobs.
 - `business-projects-workflow`: task state machine, scheduler, router (AI/HUMAN/USER), replan-by-diff, maker-checker.
@@ -83,24 +83,24 @@
 
 ## Cross-phase compliance milestones
 
-| Milestone | Must clear before |
-|---|---|
-| Ad-policy / brand-safety / FTC-disclosure guardrails | first campaign goes live (Phase 2) |
-| Spend caps enforced in tool code | any real ad spend (Phase 2) |
-| KYC/AML + sanctions screening | any node payout (Phase 2 → 3) |
-| Money-transmission / escrow-licensing counsel sign-off | real (non-test) money movement |
-| GDPR/privacy + data-use consent (for flywheel) | using customer data to improve the system |
-| ToS + NDA/engagement templates | onboarding real nodes |
+| Milestone                                              | Must clear before                         |
+| ------------------------------------------------------ | ----------------------------------------- |
+| Ad-policy / brand-safety / FTC-disclosure guardrails   | first campaign goes live (Phase 2)        |
+| Spend caps enforced in tool code                       | any real ad spend (Phase 2)               |
+| KYC/AML + sanctions screening                          | any node payout (Phase 2 → 3)             |
+| Money-transmission / escrow-licensing counsel sign-off | real (non-test) money movement            |
+| GDPR/privacy + data-use consent (for flywheel)         | using customer data to improve the system |
+| ToS + NDA/engagement templates                         | onboarding real nodes                     |
 
 ## Deferred-by-design (with triggers)
 
-| Deferral | Trigger to build |
-|---|---|
-| Fine-tuned proprietary model | enough Phase-3 outcome/correction data |
-| Fastify WS gateway + Redis | past ~500 concurrent / server-authoritative ordering |
-| Self-hosted / Temporal orchestration | Trigger.dev cost/limits outgrown |
-| Dedicated vector DB / pgvectorscale | tens of millions of chunks or high QPS |
-| Business-formation verticals | marketing wedge is working + flywheel spinning |
+| Deferral                             | Trigger to build                                     |
+| ------------------------------------ | ---------------------------------------------------- |
+| Fine-tuned proprietary model         | enough Phase-3 outcome/correction data               |
+| Fastify WS gateway + Redis           | past ~500 concurrent / server-authoritative ordering |
+| Self-hosted / Temporal orchestration | Trigger.dev cost/limits outgrown                     |
+| Dedicated vector DB / pgvectorscale  | tens of millions of chunks or high QPS               |
+| Business-formation verticals         | marketing wedge is working + flywheel spinning       |
 
 ## Definition of "production-ready" (exit gate, every phase)
 

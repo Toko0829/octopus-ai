@@ -5,6 +5,8 @@
 > **Owner paths:** `packages/ui/**`, `apps/web/**` · **Depends on:** chat-discord (renders the chat model), auth-identity (role-based UI), ai-orchestrator (renders inline agent stream + embeds), infra-devops (build).
 >
 > The design language + tokens are specified in [design-system.md](../20-design/design-system.md); this doc owns the **implementation**. Update both together on any token/component change.
+>
+> **Implementation status (Phase 0):** scaffolded — `apps/web` (Next.js 15) with the ink/teal editorial tokens in `app/globals.css` and a placeholder landing page. Component library + chat shell land in Phase 1.
 
 ## Responsibilities
 

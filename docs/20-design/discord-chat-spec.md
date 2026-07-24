@@ -35,13 +35,13 @@ Top bar carries business name, current phase, live **budget (tabular numerics)**
 
 ## Roles & identity
 
-| Role | Token | Badge |
-|---|---|---|
-| You (owner) | `--role-you` | "You" |
-| AI Agent | `--role-agent` | "Agent" + working pulse |
-| Human Node | `--role-node` | "Node" |
-| Verified Pro | `--role-pro` | "Verified" ✓ (license-backed) |
-| Admin/Ops | `--role-admin` | "Ops" |
+| Role         | Token          | Badge                         |
+| ------------ | -------------- | ----------------------------- |
+| You (owner)  | `--role-you`   | "You"                         |
+| AI Agent     | `--role-agent` | "Agent" + working pulse       |
+| Human Node   | `--role-node`  | "Node"                        |
+| Verified Pro | `--role-pro`   | "Verified" ✓ (license-backed) |
+| Admin/Ops    | `--role-admin` | "Ops"                         |
 
 **Never color alone** — every role is color **+ badge + icon** (accessibility, and to survive colorblind/low-contrast).
 
@@ -55,14 +55,14 @@ Top bar carries business name, current phase, live **budget (tabular numerics)**
 
 Rich cards embedded in the stream, **permission-gated by role**:
 
-| Embed | Primary action | Who can act |
-|---|---|---|
-| **Plan card** | Approve plan / request changes | Owner |
-| **Approval** | Approve / reject an irreversible step | Owner |
-| **Pay / release escrow** | Release funds to node | Owner |
-| **Sign** | Route a document to the owner/node to sign | Owner / node |
-| **Assign / Offer** | Send/accept a node offer (scope, escrow price, deadline) | Node (accept) / system |
-| **Question** | Answer a batched user-only question | Owner |
+| Embed                    | Primary action                                           | Who can act            |
+| ------------------------ | -------------------------------------------------------- | ---------------------- |
+| **Plan card**            | Approve plan / request changes                           | Owner                  |
+| **Approval**             | Approve / reject an irreversible step                    | Owner                  |
+| **Pay / release escrow** | Release funds to node                                    | Owner                  |
+| **Sign**                 | Route a document to the owner/node to sign               | Owner / node           |
+| **Assign / Offer**       | Send/accept a node offer (scope, escrow price, deadline) | Node (accept) / system |
+| **Question**             | Answer a batched user-only question                      | Owner                  |
 
 - Embeds carry state (`pending`/`done`/`expired`), show **money in tabular numerics**, and enforce `required_role` server-side (not just in UI).
 - A node **cannot** see or act on owner-only embeds; RLS + the embed's `required_role` both enforce this.

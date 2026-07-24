@@ -4,7 +4,7 @@
 
 ## Why RAG is load-bearing here
 
-RAG grounds Octopus's recommendations in reality instead of generic advice. For the **first vertical (marketing)** it retrieves *what actually worked for comparable creators/products* — real campaigns, outcomes, and channel best-practices — **with citations**. For later **regulated verticals** (business formation) it grounds legal/tax/permit output so a wrong answer is **refused and escalated**, not hallucinated. Either way: **grounded, cited, current — or refused.** RAG is also the substrate of the [learning flywheel](learning-flywheel.md): real outcomes and human-node corrections flow back into the corpus so retrieval keeps improving.
+RAG grounds Octopus's recommendations in reality instead of generic advice. For the **first vertical (marketing)** it retrieves _what actually worked for comparable creators/products_ — real campaigns, outcomes, and channel best-practices — **with citations**. For later **regulated verticals** (business formation) it grounds legal/tax/permit output so a wrong answer is **refused and escalated**, not hallucinated. Either way: **grounded, cited, current — or refused.** RAG is also the substrate of the [learning flywheel](learning-flywheel.md): real outcomes and human-node corrections flow back into the corpus so retrieval keeps improving.
 
 ## Design principle: stay in Postgres
 
@@ -28,7 +28,7 @@ Reassess (Qdrant / pgvectorscale StreamingDiskANN) only past tens of millions of
 - **Primary: Voyage-3-large @ 1024 dims** (Matryoshka-truncatable), stored as `halfvec(1024)`, cosine.
 - **Multilingual by construction** — EU languages now; Georgian/Russian for the founding pack. An English-first model is disqualifying.
 - **One model across the whole corpus** — different models yield incompatible vector spaces and cannot share an HNSW index. Version `embed_model` on every row for traceable re-embeds and A/B.
-- **Embed the *contextualized* chunk** (chunk + generated situating context), not the raw chunk.
+- **Embed the _contextualized_ chunk** (chunk + generated situating context), not the raw chunk.
 - Alternatives: Cohere embed-v4 (multimodal for scanned permit PDFs), OpenAI text-embedding-3-large (ubiquitous fallback, weaker on some languages), BGE-M3 / Qwen3-Embedding (self-host for data residency).
 
 ## Ingestion pipeline (12 steps)
@@ -51,10 +51,10 @@ Heavy ingestion runs as background jobs (pg-boss / Trigger.dev), **never in the 
 ## Retrieval (hybrid + rerank)
 
 1. **Query transformation** (pre-retrieval LLM step):
-   - *Self-query* → extract hard filters (`jurisdiction=US/TX/Austin`, `business_type=food_service`, `effective_date>=now`) → SQL `WHERE` **and** HNSW pre-filters (the single biggest correctness lever).
-   - *Multi-query + HyDE* → cover vocabulary gaps between casual phrasing and statutory language.
-   - *Decomposition* → split compound asks ("permits + suppliers + hiring") into sub-retrievals.
-   - *Routing* → send each sub-query to the right corpus (permits vs suppliers vs cost benchmarks).
+   - _Self-query_ → extract hard filters (`jurisdiction=US/TX/Austin`, `business_type=food_service`, `effective_date>=now`) → SQL `WHERE` **and** HNSW pre-filters (the single biggest correctness lever).
+   - _Multi-query + HyDE_ → cover vocabulary gaps between casual phrasing and statutory language.
+   - _Decomposition_ → split compound asks ("permits + suppliers + hiring") into sub-retrievals.
+   - _Routing_ → send each sub-query to the right corpus (permits vs suppliers vs cost benchmarks).
 2. **Dense** — `halfvec` HNSW cosine over pre-filtered chunks.
 3. **Sparse** — Postgres FTS (`websearch_to_tsquery`, GIN), per-language configs. Catches exact tokens (statute numbers, license codes, form IDs) that dense blurs. Upgrade path: ParadeDB `pg_search` for true BM25.
 4. **Fusion** — **RRF (k=60)** merging dense + sparse in one SQL query (two CTEs + fused rank). Rank-based → no score normalization.
@@ -72,7 +72,7 @@ The knowledge base has two layers on the same pgvector infrastructure:
 - For **marketing**, "packs" are market-scoped: ad-policy + disclosure rules (FTC in US, GDPR/ePrivacy in EU), language, and channel norms. For **business formation** (later), they are legal `country → region → city` packs.
 - Versioned, **dated, cited** knowledge bundles.
 - **US + EU first** (e.g. `US/TX/Austin`, `US/DE/Wilmington`, `EU/DE`, `EU/EE`); **Georgia/Tbilisi** documented as the founding pack.
-- **Disambiguation guard:** the *country of Georgia* vs the *US state of Georgia* — packs carry unambiguous keys; the agent never generalizes one jurisdiction's rules to another.
+- **Disambiguation guard:** the _country of Georgia_ vs the _US state of Georgia_ — packs carry unambiguous keys; the agent never generalizes one jurisdiction's rules to another.
 - The **archetype × jurisdiction compiler** turns a pack + business archetype into a concrete, ordered, cost-estimated task DAG (see [rag-knowledge.md](../30-modules/rag-knowledge.md)).
 
 ## Freshness (a first-order feature)
@@ -96,15 +96,15 @@ The knowledge base has two layers on the same pgvector infrastructure:
 
 ## Risk register
 
-| Risk | Mitigation |
-|---|---|
-| Hallucination on legal/financial claims | Groundedness gate + mandatory citations + escalate-on-unverified |
-| Stale regulations/fees | `pg_cron` re-crawl, content-hash supersession, effective-dating, "last verified", human re-verify |
-| Jurisdiction bleed | Unambiguous pack keys, hard filters via self-query, never generalize across borders |
-| OCR/parse errors | Layout-aware parsing, validation step, parse-failure alerting |
-| Multilingual gaps | One strong multilingual embedder; per-language `tsvector` configs |
-| Prompt injection via sources | Quarantine retrieved content as data; separate instruction channel |
-| Tenant leakage | RLS on `doc_chunks`; retrieval scoped by policy |
+| Risk                                    | Mitigation                                                                                        |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Hallucination on legal/financial claims | Groundedness gate + mandatory citations + escalate-on-unverified                                  |
+| Stale regulations/fees                  | `pg_cron` re-crawl, content-hash supersession, effective-dating, "last verified", human re-verify |
+| Jurisdiction bleed                      | Unambiguous pack keys, hard filters via self-query, never generalize across borders               |
+| OCR/parse errors                        | Layout-aware parsing, validation step, parse-failure alerting                                     |
+| Multilingual gaps                       | One strong multilingual embedder; per-language `tsvector` configs                                 |
+| Prompt injection via sources            | Quarantine retrieved content as data; separate instruction channel                                |
+| Tenant leakage                          | RLS on `doc_chunks`; retrieval scoped by policy                                                   |
 
 ## Libraries
 

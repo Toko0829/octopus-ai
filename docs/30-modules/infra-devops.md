@@ -5,6 +5,8 @@
 > **Owner paths:** `.github/workflows/**`, `packages/config/**`, `packages/observability/**`, root tooling, `supabase/` config · **Depends on:** foundation for all; provisions auth-identity's Supabase; wires observability.
 >
 > Update on any change to the monorepo layout, deployment, CI/CD, secrets, or the doc-drift check.
+>
+> **Implementation status (Phase 0):** scaffolded — Turborepo + pnpm workspaces, `.github/workflows/ci.yml`, and the working `scripts/check-docs.mjs` doc-drift check. See [DEVELOPMENT.md](../../DEVELOPMENT.md).
 
 ## Monorepo layout
 
@@ -63,11 +65,11 @@ OpenTelemetry, Sentry, LLM-trace sink, Logflare, PostHog, uptime/synthetics — 
 
 ## Scaling escape hatches (with triggers)
 
-| Escape hatch | Trigger |
-|---|---|
+| Escape hatch                                   | Trigger                                                                                                                           |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | Fastify uWebSockets WS gateway + Redis/Upstash | past ~500 concurrent / need server-authoritative ordering ([ADR-0003](../40-adr/0003-realtime-broadcast-not-postgres-changes.md)) |
-| Self-host / Temporal orchestration | Trigger.dev cost/limits outgrown ([ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md)) |
-| pgvectorscale / dedicated vector DB | tens of millions of chunks or high QPS ([ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md)) |
+| Self-host / Temporal orchestration             | Trigger.dev cost/limits outgrown ([ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md))                        |
+| pgvectorscale / dedicated vector DB            | tens of millions of chunks or high QPS ([ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md))                                  |
 
 ## Key entities / artifacts
 

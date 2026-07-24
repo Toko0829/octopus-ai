@@ -49,17 +49,17 @@ The differentiator for an agent that runs businesses:
 
 ## SLOs & alerting
 
-| Signal | Alert when |
-|---|---|
-| Chat write availability | error rate > 0.5% or p95 latency regression |
-| Agent-start success | `202` path failing / runs not starting |
-| Parse-failure rate (ingestion) | sudden spike (source format changed) |
-| Stale sources | any high-stakes source past its freshness SLA |
-| Eval scores | any gate metric regresses below threshold |
-| LLM cost | per-run or daily cost runaway vs baseline |
-| RLS denials | unexpected spike |
-| Waitpoints | age exceeds expiry (stuck runs) |
-| Escrow | held funds without a matching ledger entry (reconciliation) |
+| Signal                         | Alert when                                                  |
+| ------------------------------ | ----------------------------------------------------------- |
+| Chat write availability        | error rate > 0.5% or p95 latency regression                 |
+| Agent-start success            | `202` path failing / runs not starting                      |
+| Parse-failure rate (ingestion) | sudden spike (source format changed)                        |
+| Stale sources                  | any high-stakes source past its freshness SLA               |
+| Eval scores                    | any gate metric regresses below threshold                   |
+| LLM cost                       | per-run or daily cost runaway vs baseline                   |
+| RLS denials                    | unexpected spike                                            |
+| Waitpoints                     | age exceeds expiry (stuck runs)                             |
+| Escrow                         | held funds without a matching ledger entry (reconciliation) |
 
 ## Dashboards & on-call
 

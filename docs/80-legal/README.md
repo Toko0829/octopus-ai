@@ -4,16 +4,16 @@
 
 ## Documents to produce (with counsel)
 
-| Doc | Purpose | Blocking gate |
-|---|---|---|
-| `terms-of-service.md` | Platform ToS (user + node) | Before onboarding real users/nodes |
-| `disclaimers.md` | "Informational, not legal/financial advice" copy shown on regulated output | Phase 1 ship |
-| `node-engagement.md` | Per-task engagement agreement | Onboarding real nodes |
-| `node-nda.md` | Node NDA template | Onboarding real nodes |
-| `data-processing-addendum.md` | DPA for GDPR/EU users | EU launch |
-| `privacy-policy.md` | Privacy + data-rights (GDPR/CCPA) | EU/US launch |
-| `aml-kyc-policy.md` | KYC/AML + sanctions/PEP program | Any node payout |
-| `marketplace-tos.md` | Marketplace + escrow terms | Real money movement |
+| Doc                           | Purpose                                                                    | Blocking gate                      |
+| ----------------------------- | -------------------------------------------------------------------------- | ---------------------------------- |
+| `terms-of-service.md`         | Platform ToS (user + node)                                                 | Before onboarding real users/nodes |
+| `disclaimers.md`              | "Informational, not legal/financial advice" copy shown on regulated output | Phase 1 ship                       |
+| `node-engagement.md`          | Per-task engagement agreement                                              | Onboarding real nodes              |
+| `node-nda.md`                 | Node NDA template                                                          | Onboarding real nodes              |
+| `data-processing-addendum.md` | DPA for GDPR/EU users                                                      | EU launch                          |
+| `privacy-policy.md`           | Privacy + data-rights (GDPR/CCPA)                                          | EU/US launch                       |
+| `aml-kyc-policy.md`           | KYC/AML + sanctions/PEP program                                            | Any node payout                    |
+| `marketplace-tos.md`          | Marketplace + escrow terms                                                 | Real money movement                |
 
 ## Counsel action-items (do not hand-wave — from [security-compliance.md](../10-architecture/security-compliance.md))
 

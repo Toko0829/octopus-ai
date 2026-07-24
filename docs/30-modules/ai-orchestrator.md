@@ -21,17 +21,17 @@
 
 Every tool is a Zod-typed function with a **risk tier**. Tools have **no ambient DB power** — they act through scoped Fastify endpoints.
 
-| Tool | Risk tier | Notes |
-|---|---|---|
-| `rag_retrieve` | read-only | hybrid pgvector search; returns cited, dated sources |
-| `web_research` | external | results are **untrusted data**, injection-quarantined |
-| `source_suppliers` | external | structured supplier lookup |
-| `compute_budget` | reversible | CapEx/OpEx model, illustrative projection |
-| `draft_branding` | reversible | naming/logo/menu/site briefs |
-| `write_artifact` | reversible | to Supabase Storage |
-| `post_message` | reversible | writes to chat as the AI member |
-| `fund_escrow` / `release_escrow` | high-risk | spend caps + RBAC enforced **in tool code**; user approval required |
-| `request_human_node` | high-risk | creates task, hands matcher requirements, **suspends run on waitpoint** |
+| Tool                             | Risk tier  | Notes                                                                   |
+| -------------------------------- | ---------- | ----------------------------------------------------------------------- |
+| `rag_retrieve`                   | read-only  | hybrid pgvector search; returns cited, dated sources                    |
+| `web_research`                   | external   | results are **untrusted data**, injection-quarantined                   |
+| `source_suppliers`               | external   | structured supplier lookup                                              |
+| `compute_budget`                 | reversible | CapEx/OpEx model, illustrative projection                               |
+| `draft_branding`                 | reversible | naming/logo/menu/site briefs                                            |
+| `write_artifact`                 | reversible | to Supabase Storage                                                     |
+| `post_message`                   | reversible | writes to chat as the AI member                                         |
+| `fund_escrow` / `release_escrow` | high-risk  | spend caps + RBAC enforced **in tool code**; user approval required     |
+| `request_human_node`             | high-risk  | creates task, hands matcher requirements, **suspends run on waitpoint** |
 
 > **First-vertical tools:** the marketing growth engine adds typed, guardrailed tools — `generate_creative`, `draft_copy`, `connect_channel`, `create_campaign`/`create_ad_set`/`create_ad`, `publish_content`, `set_budget`, `pull_metrics`, `optimize_campaign` — all `high-risk` where they publish or spend (spend caps enforced in tool code). See [marketing-growth-engine.md](marketing-growth-engine.md).
 

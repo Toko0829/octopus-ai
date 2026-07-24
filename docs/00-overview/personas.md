@@ -6,8 +6,8 @@
 
 - **Who (first vertical):** a solo founder, indie maker, or creator — a personal brand, app, newsletter, or small product — who needs growth but can't afford an agency or the time to become a marketer. Later verticals widen to SMBs, e-commerce, and full business owners (the cafe owner).
 - **Goal:** get real growth (customers / audience / revenue) with minimal personal grind; avoid wasting ad budget on things that don't work.
-- **Pain today:** generic advice that ignores what works for *people like them*; juggling content, ads, SEO, email, and analytics alone.
-- **What they do in Octopus:** state the goal; answer the *few* questions only they can (budget ceiling, brand voice, subjective taste calls); authorize connecting accounts, publishing, and ad spend; watch progress in one calm chat.
+- **Pain today:** generic advice that ignores what works for _people like them_; juggling content, ads, SEO, email, and analytics alone.
+- **What they do in Octopus:** state the goal; answer the _few_ questions only they can (budget ceiling, brand voice, subjective taste calls); authorize connecting accounts, publishing, and ad spend; watch progress in one calm chat.
 - **Success:** business launched with the fewest touches; every regulated step handled by an accountable party.
 - **Design implications:** editorial, trustworthy, low-anxiety surfaces; money always in tabular numerics; approvals are unmistakable and never accidental; the AI's reasoning is transparent and cited.
 
@@ -25,7 +25,7 @@
   - **Generalist node** — content, editing, creative direction, outreach, account setup.
   - **Verified Pro** — credentialed specialist (license verified, not self-attested; carries professional indemnity).
 - **Goal:** get matched to well-scoped, fairly-priced tasks; get paid reliably; build reputation.
-- **Flywheel role:** every correction/approval a node makes is captured as labeled data that trains Octopus ([learning-flywheel.md](../10-architecture/learning-flywheel.md)) — nodes are both workers *and* teachers.
+- **Flywheel role:** every correction/approval a node makes is captured as labeled data that trains Octopus ([learning-flywheel.md](../10-architecture/learning-flywheel.md)) — nodes are both workers _and_ teachers.
 - **Journey:** KYC onboarding (liveness, Face Match 1:1, Face Search 1:N dedup) → skill/credential/geo/availability profile → ranked matching → offer (scope, escrowed price, deadline) → accept + e-sign engagement/NDA → join the task thread → do the work → submit proof → approval → payout → rating.
 - **Design implications:** a fast, mobile-friendly "Warm Concierge" surface; clear scope + escrow-confirmed price up front; least-privilege chat access scoped to the task and time-boxed.
 
@@ -38,12 +38,12 @@
 
 ## Relationships & permissions (summary)
 
-| | Business Owner | AI Agent | Human Node | Ops/Admin |
-|---|---|---|---|---|
-| Post in project chat | ✅ | ✅ (inline) | ✅ (scoped to task thread) | ✅ (with audit) |
-| Approve money/irreversible | ✅ | ❌ (proposes only) | ❌ | via dispute flow |
-| Execute regulated/physical acts | own person | ❌ | ✅ (if verified) | ❌ |
-| See full project | ✅ | ✅ | task thread only | ✅ (audited) |
-| Move funds | ❌ | proposes within caps | ❌ | dispute actions only |
+|                                 | Business Owner | AI Agent             | Human Node                 | Ops/Admin            |
+| ------------------------------- | -------------- | -------------------- | -------------------------- | -------------------- |
+| Post in project chat            | ✅             | ✅ (inline)          | ✅ (scoped to task thread) | ✅ (with audit)      |
+| Approve money/irreversible      | ✅             | ❌ (proposes only)   | ❌                         | via dispute flow     |
+| Execute regulated/physical acts | own person     | ❌                   | ✅ (if verified)           | ❌                   |
+| See full project                | ✅             | ✅                   | task thread only           | ✅ (audited)         |
+| Move funds                      | ❌             | proposes within caps | ❌                         | dispute actions only |
 
 Authorization is enforced by role claims + Postgres RLS membership — see [auth-identity.md](../30-modules/auth-identity.md) and [security-compliance.md](../10-architecture/security-compliance.md).

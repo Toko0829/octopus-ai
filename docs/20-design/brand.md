@@ -19,6 +19,7 @@ This gives us an ownable identity with real semantic depth — the deliberate op
 > **Octopus runs your business. You just decide.**
 
 Alternates for context:
+
 - "Tell Octopus what you want to build. It handles the rest — and brings in real people when the law needs one."
 - "The AI that opens your business, end to end."
 
@@ -27,7 +28,7 @@ Alternates for context:
 - **Calm, precise, credible.** We handle money and legal steps; we sound like it. Editorial, not hypey.
 - **Plain language over jargon.** The user may be a first-time founder.
 - **Show the receipts.** Claims come with citations and "last verified" dates; we never bluff.
-- **Honest about limits.** When something needs a human or a lawyer, we say so clearly — that honesty *is* the trust.
+- **Honest about limits.** When something needs a human or a lawyer, we say so clearly — that honesty _is_ the trust.
 - **Never breathless AI-hype.** No "magical", no "revolutionary AI", no ✨. Confidence is quiet.
 
 ## What the brand is not

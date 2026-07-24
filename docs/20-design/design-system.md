@@ -8,20 +8,20 @@
 
 ## Why editorial/calm-minimal is the primary aesthetic
 
-Octopus asks a person to let software run their business and move their money. That is an **anxiety-forward** ask. The antidote is the design language of the most *trusted* software on the web — Stripe, Vercel, Framer: generous whitespace, refined type, restrained color, confident-but-quiet. Density and power (Linear/Superhuman/Raycast) are earned **inside** the product for power users; delight and warmth (Family/Arc) are reserved for the chat and onboarding. We lead with trust.
+Octopus asks a person to let software run their business and move their money. That is an **anxiety-forward** ask. The antidote is the design language of the most _trusted_ software on the web — Stripe, Vercel, Framer: generous whitespace, refined type, restrained color, confident-but-quiet. Density and power (Linear/Superhuman/Raycast) are earned **inside** the product for power users; delight and warmth (Family/Arc) are reserved for the chat and onboarding. We lead with trust.
 
 ## Reference map (real products, what we take)
 
-| Reference | What we take |
-|---|---|
-| **Stripe** (stripe.com) | Premium editorial trust; *disciplined* multi-stop gradients as rare brand connective tissue (never the clichéd 2-stop purple); confident **light** display weights; tabular numerics for money. |
-| **Vercel / Geist** (vercel.com/geist) | Token architecture rigor + mono-for-labels — but a **baseline to diverge from** (everyone ships Geist), so we add a characterful display face, our own accent, and radii. |
-| **Framer** (framer.com) | Marketing-site motion vocabulary + the actual animation library (Framer Motion): spring, scroll-linked, layout transitions. |
-| **Linear** (linear.app) | The command-deck: hairline borders do the structural work, low font-weight band, tight radii, ⌘K, color as a rare functional flashlight. |
-| **Superhuman** (superhuman.com) | Speed-as-product; the centered ⌘K palette with a monospaced surface that feels like directing a machine; "learn the shortcut once." |
-| **Raycast** (raycast.com) | Per-item ActionPanels + shortcut-per-action; excellent light/dark parity in a tiny surface. |
-| **Family** (family.co) / **Arc** (arc.net) | Tactile spring choreography, earned micro-delight, per-space theming — for chat + onboarding, where warmth lowers the "AI runs my business" anxiety. |
-| **Discord / Slack / Zulip** | The 5-region chat model, roles/mentions/presence, interactive embeds, Zulip-style named topics. |
+| Reference                                  | What we take                                                                                                                                                                                    |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Stripe** (stripe.com)                    | Premium editorial trust; _disciplined_ multi-stop gradients as rare brand connective tissue (never the clichéd 2-stop purple); confident **light** display weights; tabular numerics for money. |
+| **Vercel / Geist** (vercel.com/geist)      | Token architecture rigor + mono-for-labels — but a **baseline to diverge from** (everyone ships Geist), so we add a characterful display face, our own accent, and radii.                       |
+| **Framer** (framer.com)                    | Marketing-site motion vocabulary + the actual animation library (Framer Motion): spring, scroll-linked, layout transitions.                                                                     |
+| **Linear** (linear.app)                    | The command-deck: hairline borders do the structural work, low font-weight band, tight radii, ⌘K, color as a rare functional flashlight.                                                        |
+| **Superhuman** (superhuman.com)            | Speed-as-product; the centered ⌘K palette with a monospaced surface that feels like directing a machine; "learn the shortcut once."                                                             |
+| **Raycast** (raycast.com)                  | Per-item ActionPanels + shortcut-per-action; excellent light/dark parity in a tiny surface.                                                                                                     |
+| **Family** (family.co) / **Arc** (arc.net) | Tactile spring choreography, earned micro-delight, per-space theming — for chat + onboarding, where warmth lowers the "AI runs my business" anxiety.                                            |
+| **Discord / Slack / Zulip**                | The 5-region chat model, roles/mentions/presence, interactive embeds, Zulip-style named topics.                                                                                                 |
 
 ## Three adaptive skins ("chromatophore" theming)
 
@@ -43,7 +43,7 @@ Plus a **per-business accent** so each venture the user runs feels distinct.
 
 ## Typography
 
-- **Pairing:** one **characterful display** face (editorial confidence, used at light weights in large sizes — Stripe/Söhne energy, *not* Inter-default), a clean **body** grotesque, and a **mono** for labels/code/command surfaces and all monetary/tabular contexts.
+- **Pairing:** one **characterful display** face (editorial confidence, used at light weights in large sizes — Stripe/Söhne energy, _not_ Inter-default), a clean **body** grotesque, and a **mono** for labels/code/command surfaces and all monetary/tabular contexts.
 - **Type scale:** 12 · 14 · 16 · 18 · 20 · 24 · 32 · 40 · 48 · 64.
 - **Tabular numerics for all money** — non-negotiable (`font-variant-numeric: tabular-nums`).
 - Tight tracking on display; comfortable measure on body (editorial).

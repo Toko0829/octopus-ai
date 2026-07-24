@@ -4,34 +4,34 @@
 
 ## Pinned versions
 
-| Area | Package | Version (target) | Notes |
-|---|---|---|---|
-| Frontend | `next` | 15.x (App Router) | RSC, Server Actions, on Vercel |
-| Frontend | `react` / `react-dom` | 19.x | — |
-| Auth (client) | `@supabase/ssr`, `@supabase/supabase-js` | latest 2.x | cookie-based sessions |
-| Runtime | Node.js | 22 LTS | services + agent |
-| Backend | `fastify` | 5.x | authoritative API |
-| Backend | `fastify-type-provider-zod`, `@fastify/swagger`, `jose` | latest | typed routes, OpenAPI, JWKS verify |
-| Contracts | `@ts-rest/core` + `zod` | latest | shared client/server contract |
-| DB | Postgres (Supabase) | 16 | RLS, triggers |
-| Vector | `pgvector` | 0.8.x | `halfvec`, HNSW, iterative scans |
-| Orchestration | Trigger.dev | v3 | durable runs + waitpoints |
-| Utility jobs | `pg-boss` | latest | on Postgres, no Redis |
-| RAG orchestration | LlamaIndex (TS + Python worker) | latest | ingestion + retrieval |
-| Embeddings | Voyage `voyage-3-large` | 1024-dim (Matryoshka) | one model for the whole corpus |
-| Rerank | Cohere `rerank-3.5` | — | cross-encoder over top-40 |
-| Generation | Anthropic Claude (Opus/Sonnet/Haiku tiers) | latest IDs — verify, do not hardcode from memory | planner/executor/classifier tiering |
-| AI SDK | Vercel AI SDK v5 (or Anthropic SDK) | 5.x | tools, `stopWhen`, streaming |
-| Payments | Stripe Connect (Express) | latest API | escrow-equivalent + payouts |
-| KYC/IDV | Persona (or Stripe Identity) | — | liveness, Face Match/Search |
-| Monorepo | Turborepo + pnpm | latest | remote cache |
-| Observability | OpenTelemetry, Sentry, LLM-trace sink (Langfuse), PostHog | latest | traces, errors, LLM cost/eval, product analytics |
+| Area              | Package                                                   | Version (target)                                 | Notes                                            |
+| ----------------- | --------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------ |
+| Frontend          | `next`                                                    | 15.x (App Router)                                | RSC, Server Actions, on Vercel                   |
+| Frontend          | `react` / `react-dom`                                     | 19.x                                             | —                                                |
+| Auth (client)     | `@supabase/ssr`, `@supabase/supabase-js`                  | latest 2.x                                       | cookie-based sessions                            |
+| Runtime           | Node.js                                                   | 22 LTS                                           | services + agent                                 |
+| Backend           | `fastify`                                                 | 5.x                                              | authoritative API                                |
+| Backend           | `fastify-type-provider-zod`, `@fastify/swagger`, `jose`   | latest                                           | typed routes, OpenAPI, JWKS verify               |
+| Contracts         | `@ts-rest/core` + `zod`                                   | latest                                           | shared client/server contract                    |
+| DB                | Postgres (Supabase)                                       | 16                                               | RLS, triggers                                    |
+| Vector            | `pgvector`                                                | 0.8.x                                            | `halfvec`, HNSW, iterative scans                 |
+| Orchestration     | Trigger.dev                                               | v3                                               | durable runs + waitpoints                        |
+| Utility jobs      | `pg-boss`                                                 | latest                                           | on Postgres, no Redis                            |
+| RAG orchestration | LlamaIndex (TS + Python worker)                           | latest                                           | ingestion + retrieval                            |
+| Embeddings        | Voyage `voyage-3-large`                                   | 1024-dim (Matryoshka)                            | one model for the whole corpus                   |
+| Rerank            | Cohere `rerank-3.5`                                       | —                                                | cross-encoder over top-40                        |
+| Generation        | Anthropic Claude (Opus/Sonnet/Haiku tiers)                | latest IDs — verify, do not hardcode from memory | planner/executor/classifier tiering              |
+| AI SDK            | Vercel AI SDK v5 (or Anthropic SDK)                       | 5.x                                              | tools, `stopWhen`, streaming                     |
+| Payments          | Stripe Connect (Express)                                  | latest API                                       | escrow-equivalent + payouts                      |
+| KYC/IDV           | Persona (or Stripe Identity)                              | —                                                | liveness, Face Match/Search                      |
+| Monorepo          | Turborepo + pnpm                                          | latest                                           | remote cache                                     |
+| Observability     | OpenTelemetry, Sentry, LLM-trace sink (Langfuse), PostHog | latest                                           | traces, errors, LLM cost/eval, product analytics |
 
 > **Model IDs and provider pricing change.** Always confirm the current Claude model ID and limits against the provider before pinning in code — never from memory. Version the embedding model name on every `doc_chunks` row so re-embeds are traceable.
 
 ## Frontend + BFF
 
-- **Next.js 15** on Vercel: RSC for reads, Route Handlers/Server Actions as a *thin* BFF that attaches the Supabase access token and proxies to Fastify. **No agent loops, no long jobs** (serverless timeouts). Streams assistant tokens from Realtime.
+- **Next.js 15** on Vercel: RSC for reads, Route Handlers/Server Actions as a _thin_ BFF that attaches the Supabase access token and proxies to Fastify. **No agent loops, no long jobs** (serverless timeouts). Streams assistant tokens from Realtime.
 - **ts-rest client** derived from `packages/contracts` for typed calls to Fastify.
 
 ## Backend services
@@ -65,15 +65,15 @@
 
 ## Rejected alternatives (with rationale)
 
-| Rejected | Instead of | Why / when to revisit |
-|---|---|---|
-| **tRPC** | ts-rest + OpenAPI | We need a language-agnostic OpenAPI contract (webhooks, future non-TS consumers, external docs). ([ADR-0004](../40-adr/0004-tsrest-over-trpc.md)) |
-| **Postgres Changes** | Broadcast-from-Postgres | WAL-per-subscriber fans out poorly and can leak columns. ([ADR-0003](../40-adr/0003-realtime-broadcast-not-postgres-changes.md)) |
-| **Dedicated vector DB** (Pinecone/Qdrant) | pgvector in Postgres | Loses transactional consistency + RLS-for-free; only earns its keep past tens of millions of chunks. ([ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md)) |
-| **BullMQ / Redis at MVP** | pg-boss | Avoids standing up Redis; reach for BullMQ only once Redis exists for other reasons. |
-| **Temporal at MVP** | Trigger.dev v3 | Gold-standard durability at real operational cost; documented escape hatch. ([ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md)) |
-| **Default shadcn + Inter + zinc** | custom "Ink & Bioluminescence" tokens | Reads as generic AI slop; we diverge deliberately. ([ADR-0005](../40-adr/0005-house-style-not-purple-gradient.md)) |
-| **Vercel Workflows** | Trigger.dev | Ties orchestration to Vercel, away from the Fastify/Supabase core. |
+| Rejected                                  | Instead of                            | Why / when to revisit                                                                                                                                          |
+| ----------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **tRPC**                                  | ts-rest + OpenAPI                     | We need a language-agnostic OpenAPI contract (webhooks, future non-TS consumers, external docs). ([ADR-0004](../40-adr/0004-tsrest-over-trpc.md))              |
+| **Postgres Changes**                      | Broadcast-from-Postgres               | WAL-per-subscriber fans out poorly and can leak columns. ([ADR-0003](../40-adr/0003-realtime-broadcast-not-postgres-changes.md))                               |
+| **Dedicated vector DB** (Pinecone/Qdrant) | pgvector in Postgres                  | Loses transactional consistency + RLS-for-free; only earns its keep past tens of millions of chunks. ([ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md)) |
+| **BullMQ / Redis at MVP**                 | pg-boss                               | Avoids standing up Redis; reach for BullMQ only once Redis exists for other reasons.                                                                           |
+| **Temporal at MVP**                       | Trigger.dev v3                        | Gold-standard durability at real operational cost; documented escape hatch. ([ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md))          |
+| **Default shadcn + Inter + zinc**         | custom "Ink & Bioluminescence" tokens | Reads as generic AI slop; we diverge deliberately. ([ADR-0005](../40-adr/0005-house-style-not-purple-gradient.md))                                             |
+| **Vercel Workflows**                      | Trigger.dev                           | Ties orchestration to Vercel, away from the Fastify/Supabase core.                                                                                             |
 
 ## Dependency & upgrade policy
 

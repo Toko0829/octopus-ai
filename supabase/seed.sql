@@ -1,0 +1,3 @@
+-- Seed data for local development (Phase 0 placeholder).
+-- Phase 1 seeds the first marketing jurisdiction/market pack + an eval golden set.
+-- See docs/30-modules/rag-knowledge.md.
