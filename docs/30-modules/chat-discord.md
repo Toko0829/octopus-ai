@@ -5,6 +5,8 @@
 > **Owner paths:** `apps/web/**` (chat UI), `packages/realtime/**` · **Depends on:** auth-identity (membership RLS), ai-orchestrator (posts messages/embeds), human-nodes-marketplace (node join/offboard), notifications (unread/mention pushes), design-system-frontend (UI shell), infra-devops (Realtime, Supavisor).
 >
 > The visual/interaction spec is in [discord-chat-spec.md](../20-design/discord-chat-spec.md); this module doc is the behavior/data view. Update both on any layout, role, embed, or transport change.
+>
+> **Implementation status (Phase 1, in progress):** the chat **UI shell** is built (mock-driven) at `apps/web/app/app` — 5 regions, roles/badges/presence, inline agent stream, plan-card action surface, ⌘K palette. The **server-authoritative write path + Supabase Realtime transport + persistence** are not wired yet (next Phase-1 step). See [design-system-frontend.md](design-system-frontend.md).
 
 ## 5-region layout
 

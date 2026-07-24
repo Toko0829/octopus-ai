@@ -10,6 +10,10 @@ All notable changes to Project Octopus. Every PR appends a one-line entry here (
 - **Phase 0 monorepo scaffold** (branch `phase-0-scaffold`). Turborepo + pnpm workspaces; `apps/web` (Next.js 15 editorial landing), `apps/api` (Fastify 5 `/api/health` + JWKS auth util), `packages/config` (Zod env + constants), `packages/contracts` (ts-rest health contract); `supabase/` config + initial `profiles` migration (RLS + new-user trigger); `scripts/check-docs.mjs` + GitHub Actions CI enforcing the `.docmeta.yml` doc-drift gate; `DEVELOPMENT.md`. Verified green: install, typecheck (4/4), build, lint.
 - Decisions: Product name **Octopus**; first markets **US + EU**; design direction **editorial / calm minimal**.
 
+### Phase 1 (in progress)
+
+- **Discord-style chat shell** (branch `phase-1-chat-shell`). Mock-driven `/app` workspace: 5-region layout (guild rail · channels · stream · context panel), roles/badges/presence, inline agent messages with the bioluminescent working pulse, the marquee **plan card** (funnel stages, owner chips, citations with verified dates, approve/request-changes → flywheel-signal capture), composer, and a ⌘K command palette. "Ink & Bioluminescence" tokens (`globals.css` + `chat.css`), distinctive type via `next/font` (Fraunces · Hanken Grotesk · JetBrains Mono), light + dark skins, accessible. Verified: typecheck, build, lint green; renders + interactions confirmed in-browser; no console errors.
+
 ### Changed
 
 - **Strategy: wedge-first go-to-market.** First shipped vertical is now **full-funnel digital marketing for solo founders/creators**; business-formation (the cafe story, incl. Georgia/Tbilisi) becomes a later expansion vertical (north star unchanged). Introduced the **learning flywheel** as the moat — ingest campaigns+outcomes · human-node feedback as labeled data · auto-optimize on live metrics · fine-tune a proprietary model later.
