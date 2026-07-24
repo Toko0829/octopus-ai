@@ -28,18 +28,18 @@ The engine coordinates the whole funnel, not one channel:
 
 All channel actions are typed tools with **risk tiers**; anything that publishes or spends is `high-risk` → requires authorization + spend caps enforced in tool code (never prompts). Providers sit behind adapters in [integrations.md](integrations.md).
 
-| Tool | Risk | Notes |
-|---|---|---|
-| `research_audience` / `research_keywords` | read-only | grounding + planning |
-| `generate_creative` (image/video/audio) | reversible | creative-gen providers; stored as artifacts |
-| `draft_copy` / `draft_email_sequence` | reversible | copy assets |
-| `build_landing` | reversible | conversion pages/drafts |
-| `connect_channel` | high-risk | OAuth to the user's ad/social/email accounts — **explicit user authorization only** |
-| `create_campaign` / `create_ad_set` / `create_ad` | high-risk | ad-platform APIs; gated by approval + spend cap |
-| `publish_content` | high-risk | posts as/for the user — approval required |
-| `set_budget` / `adjust_budget` | high-risk | never exceeds pre-authorized budget |
-| `pull_metrics` | read-only | analytics/attribution |
-| `optimize_campaign` | reversible-within-guardrails | pause/scale/reallocate within caps + brand-safety |
+| Tool                                              | Risk                         | Notes                                                                               |
+| ------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------- |
+| `research_audience` / `research_keywords`         | read-only                    | grounding + planning                                                                |
+| `generate_creative` (image/video/audio)           | reversible                   | creative-gen providers; stored as artifacts                                         |
+| `draft_copy` / `draft_email_sequence`             | reversible                   | copy assets                                                                         |
+| `build_landing`                                   | reversible                   | conversion pages/drafts                                                             |
+| `connect_channel`                                 | high-risk                    | OAuth to the user's ad/social/email accounts — **explicit user authorization only** |
+| `create_campaign` / `create_ad_set` / `create_ad` | high-risk                    | ad-platform APIs; gated by approval + spend cap                                     |
+| `publish_content`                                 | high-risk                    | posts as/for the user — approval required                                           |
+| `set_budget` / `adjust_budget`                    | high-risk                    | never exceeds pre-authorized budget                                                 |
+| `pull_metrics`                                    | read-only                    | analytics/attribution                                                               |
+| `optimize_campaign`                               | reversible-within-guardrails | pause/scale/reallocate within caps + brand-safety                                   |
 
 > **Environment note:** ad-platform (Meta Ads), creative generation (image/video/audio), and web analytics (Clarity) capabilities are already available in this workspace and map onto these tools — useful for prototyping. Provider auth/setup still required.
 

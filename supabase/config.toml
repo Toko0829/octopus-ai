@@ -1,0 +1,20 @@
+# Supabase local config (Phase 0 seed). See docs/30-modules/infra-devops.md.
+project_id = "octopus"
+
+[db]
+port = 54322
+major_version = 16
+
+[db.pooler]
+enabled = true
+pool_mode = "transaction"
+
+[auth]
+enabled = true
+# JWTs are verified statelessly by Fastify via JWKS (asymmetric keys).
+
+[realtime]
+enabled = true
+
+[storage]
+enabled = true

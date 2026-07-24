@@ -17,12 +17,12 @@
 
 ## Status
 
-| Playbook | Vertical | Status |
-|---|---|---|
-| [full-funnel-creator](full-funnel-creator.md) | **Marketing — FIRST vertical** | Flagship — authored |
-| `full-funnel-smb` | Marketing → SMB | Planned (Phase 4) |
-| `ecommerce-growth` | Marketing → e-commerce | Planned (Phase 4) |
-| [cafe-US-TX-austin](cafe-US-TX-austin.md) | Business formation (later) | Reference example authored |
-| `cafe-GE-tbilisi` | Business formation (founding story) | Planned (Phase 5) |
+| Playbook                                      | Vertical                            | Status                     |
+| --------------------------------------------- | ----------------------------------- | -------------------------- |
+| [full-funnel-creator](full-funnel-creator.md) | **Marketing — FIRST vertical**      | Flagship — authored        |
+| `full-funnel-smb`                             | Marketing → SMB                     | Planned (Phase 4)          |
+| `ecommerce-growth`                            | Marketing → e-commerce              | Planned (Phase 4)          |
+| [cafe-US-TX-austin](cafe-US-TX-austin.md)     | Business formation (later)          | Reference example authored |
+| `cafe-GE-tbilisi`                             | Business formation (founding story) | Planned (Phase 5)          |
 
 > **Reminder:** every playbook's rules must be **cited, dated, and freshness-checked** in the RAG jurisdiction pack; never generalize one jurisdiction's rules to another ([rag.md](../10-architecture/rag.md)). Steps here are informational and, for regulated acts, routed to licensed human nodes — never presented as binding advice.

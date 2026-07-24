@@ -22,7 +22,7 @@
 ## Role model
 
 - Roles: `user` · `human_node` · `verified_pro` · `admin` · `ops`.
-- Carried as a **JWT claim** *and* mirrored in `profiles.role` (the DB backstop RLS reads).
+- Carried as a **JWT claim** _and_ mirrored in `profiles.role` (the DB backstop RLS reads).
 - The **node vs user** distinction drives matcher and payments permissions; `verified_pro` (license-verified) is required for regulated tasks.
 
 ## RLS membership model

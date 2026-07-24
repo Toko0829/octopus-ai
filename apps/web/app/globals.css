@@ -1,0 +1,70 @@
+/*
+ * Octopus — "Ink & Bioluminescence" tokens (Phase 0 seed).
+ * Primary aesthetic: editorial / calm minimal. See docs/20-design/design-system.md.
+ * Anti-slop: no purple gradient, no glassmorphism, glow reserved for live agent/presence.
+ */
+:root {
+  /* Ink neutral ramp (warm-cool neutral, NOT zinc-default) */
+  --ink-0: #ffffff;
+  --ink-50: #f7f7f5;
+  --ink-100: #eeeeea;
+  --ink-200: #dededa;
+  --ink-400: #9a9a94;
+  --ink-600: #57574f;
+  --ink-800: #26261f;
+  --ink-950: #0d0f12;
+
+  /* One bioluminescent teal signal accent (used sparingly) */
+  --teal-500: #12b5a6;
+  --teal-600: #0e9488;
+  /* Coral — human / CTA */
+  --coral-500: #ff6b52;
+
+  --color-bg: var(--ink-0);
+  --color-surface: var(--ink-50);
+  --color-border: var(--ink-200);
+  --color-text: var(--ink-950);
+  --color-text-muted: var(--ink-600);
+  --color-accent: var(--teal-600);
+  --color-human: var(--coral-500);
+
+  --radius-md: 10px;
+  --radius-full: 999px;
+  --space-4: 16px;
+  --measure: 62ch;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: var(--ink-950);
+    --color-surface: #14171b;
+    --color-border: #23272d;
+    --color-text: var(--ink-50);
+    --color-text-muted: var(--ink-400);
+    --color-accent: var(--teal-500);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.55;
+}
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}

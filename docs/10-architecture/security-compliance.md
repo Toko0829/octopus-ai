@@ -19,7 +19,7 @@
 
 ## Authorization: defense-in-depth
 
-- **App-level checks in Fastify** *plus* **Postgres RLS as the real backstop.** Never rely on one.
+- **App-level checks in Fastify** _plus_ **Postgres RLS as the real backstop.** Never rely on one.
 - RLS is **membership-based** (`room_members`, project ownership/assignment), not bare `user_id`.
 - Fastify sets `request.jwt.claims` via `set_config()` (or uses the caller's token through supabase-js) so `auth.uid()`/`auth.jwt()` work inside policies.
 - **`service_role` containment:** server-only, used by `matcher`/payments/agent system-writes; never shipped to the client; never in browser-reachable env.
@@ -62,7 +62,7 @@ Legal restriction · physical presence · high-risk/irreversible action · low A
 
 ## Payments / money-transmission exposure
 
-- Holding escrow and routing payouts is likely a **regulated money-services activity**. Stripe is **not** a licensed escrow provider — we use *separate charges & transfers* with delayed payouts as an escrow-equivalent.
+- Holding escrow and routing payouts is likely a **regulated money-services activity**. Stripe is **not** a licensed escrow provider — we use _separate charges & transfers_ with delayed payouts as an escrow-equivalent.
 - **Counsel action items (do not hand-wave):** money-transmission / escrow-licensing analysis per jurisdiction (US state MTL regime, EU e-money/payment-institution rules; GEL/FX for the future Georgia pack); platform-of-record determination; tax reporting (1099-K / DAC7).
 - Nodes onboard via **Stripe Connect Express** so the provider handles their KYC/tax and payout compliance.
 
@@ -70,7 +70,7 @@ Legal restriction · physical presence · high-risk/irreversible action · low A
 
 - The AI provides **information/research only** and never presents legal/tax/accounting/investment output as **authoritative** — the binding version comes from a licensed human node carrying professional indemnity.
 - **Persistent disclaimers** ("informational, not legal/financial advice; verify with a licensed professional") on every regulated output, logged with the message.
-- **Hard prohibitions:** the AI never signs/notarizes, never authenticates *as* the user, never enters banking/ID/card data, never completes KYC/source-of-wealth for the owner.
+- **Hard prohibitions:** the AI never signs/notarizes, never authenticates _as_ the user, never enters banking/ID/card data, never completes KYC/source-of-wealth for the owner.
 - **Per-action confirmation:** any message sent on the user's behalf, public content published, form submitted, or purchase made requires explicit user approval — **per-action, not blanket.**
 - Consumer-protection / advertising compliance for AI-generated marketing (truthful claims, alcohol-ad rules, labeling AI-generated content where required).
 

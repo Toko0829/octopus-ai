@@ -1,6 +1,8 @@
 # System Architecture
 
 > The authoritative description of how the two-layer brain, the services, the durable orchestration, and Postgres-as-source-of-truth fit together. Read this before touching cross-service behavior. Update it when the topology, service boundaries, or the sync/async contract changes.
+>
+> **Implementation status (Phase 0):** scaffolded — `apps/api` (Fastify 5, `/api/health`, JWKS auth util) and `packages/contracts` (ts-rest health contract) exist as skeletons. See [DEVELOPMENT.md](../../DEVELOPMENT.md).
 
 ## System topology
 
@@ -40,22 +42,22 @@ Region co-location: Supabase + Fly.io services are co-located in the region near
 
 ## Service map
 
-| Service | Tech | Responsibility |
-|---|---|---|
-| `apps/web` | Next.js 15 App Router (Vercel), `@supabase/ssr`, RSC, ts-rest client | Discord-style UI; holds the session cookie; light read-aggregation; **proxies all mutations/long work to Fastify**; streams assistant tokens from Realtime. Never runs agent loops. |
-| `apps/api` | Node 22 + Fastify 5 (Fly.io), jose/JWKS, `fastify-type-provider-zod`, `@fastify/swagger` | Authoritative REST API. Verifies JWTs; owns the chat **write** path; project/task CRUD; triggers agent runs; hosts webhooks (Stripe, Trigger.dev, IDV). |
-| `apps/matcher` | Fastify (may start as a module of `api`), `service_role`, geo + skill/rating filters | Finds eligible nodes for a human task, notifies, manages accept/decline, adds the accepted node to the room (RLS membership), and **completes the agent's waitpoint** on verification. |
-| `apps/agent` | Vercel AI SDK v5 / Anthropic SDK, executed **as Trigger.dev tasks**, Zod-typed tools | The business-operator loop: plans, calls tools, persists plan/tasks/artifacts, streams tokens to chat, calls `request_human_node`. |
-| Trigger.dev v3 | Managed (Trigger Cloud) or self-host on Fly.io | Durable orchestration: long-run compute, waitpoints, retries, idempotency, per-run trace UI. |
-| pg-boss | On Supabase Postgres | Utility jobs (email, thumbnails, RAG re-index, reconciliation) — no Redis at MVP. |
-| Supabase | Postgres 16 + RLS, GoTrue (JWKS), Storage, Realtime | Single source of truth + auth + storage + chat transport. |
+| Service        | Tech                                                                                     | Responsibility                                                                                                                                                                         |
+| -------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/web`     | Next.js 15 App Router (Vercel), `@supabase/ssr`, RSC, ts-rest client                     | Discord-style UI; holds the session cookie; light read-aggregation; **proxies all mutations/long work to Fastify**; streams assistant tokens from Realtime. Never runs agent loops.    |
+| `apps/api`     | Node 22 + Fastify 5 (Fly.io), jose/JWKS, `fastify-type-provider-zod`, `@fastify/swagger` | Authoritative REST API. Verifies JWTs; owns the chat **write** path; project/task CRUD; triggers agent runs; hosts webhooks (Stripe, Trigger.dev, IDV).                                |
+| `apps/matcher` | Fastify (may start as a module of `api`), `service_role`, geo + skill/rating filters     | Finds eligible nodes for a human task, notifies, manages accept/decline, adds the accepted node to the room (RLS membership), and **completes the agent's waitpoint** on verification. |
+| `apps/agent`   | Vercel AI SDK v5 / Anthropic SDK, executed **as Trigger.dev tasks**, Zod-typed tools     | The business-operator loop: plans, calls tools, persists plan/tasks/artifacts, streams tokens to chat, calls `request_human_node`.                                                     |
+| Trigger.dev v3 | Managed (Trigger Cloud) or self-host on Fly.io                                           | Durable orchestration: long-run compute, waitpoints, retries, idempotency, per-run trace UI.                                                                                           |
+| pg-boss        | On Supabase Postgres                                                                     | Utility jobs (email, thumbnails, RAG re-index, reconciliation) — no Redis at MVP.                                                                                                      |
+| Supabase       | Postgres 16 + RLS, GoTrue (JWKS), Storage, Realtime                                      | Single source of truth + auth + storage + chat transport.                                                                                                                              |
 
 ## The two-layer brain
 
-1. **Durable execution backbone** (Trigger.dev v3) — survives crashes/deploys, retries steps, and *sleeps for days* on human waitpoints at zero compute cost. It owns *when* work runs and guarantees replay-safety.
-2. **Supervisor / orchestrator reasoning core** (`apps/agent`) — decides *what* to do: plans the task DAG (single writer), routes tasks (AI/HUMAN/USER), calls typed tools, and runs a maker-checker critic. Read-only sub-agents are spawned as tools; they never write the DAG.
+1. **Durable execution backbone** (Trigger.dev v3) — survives crashes/deploys, retries steps, and _sleeps for days_ on human waitpoints at zero compute cost. It owns _when_ work runs and guarantees replay-safety.
+2. **Supervisor / orchestrator reasoning core** (`apps/agent`) — decides _what_ to do: plans the task DAG (single writer), routes tasks (AI/HUMAN/USER), calls typed tools, and runs a maker-checker critic. Read-only sub-agents are spawned as tools; they never write the DAG.
 
-Separation matters: the reasoning core can be non-deterministic and fallible; the backbone makes the *system* deterministic, resumable, and auditable around it.
+Separation matters: the reasoning core can be non-deterministic and fallible; the backbone makes the _system_ deterministic, resumable, and auditable around it.
 
 ## Postgres as the single source of truth
 
@@ -89,14 +91,14 @@ The 10-step "open a cafe" trace lives in [core-loop.md](../00-overview/core-loop
 
 ## Failure modes (designed-for)
 
-| Failure | Handling |
-|---|---|
-| Crash/deploy mid-run | Durable replay from last completed step; idempotency prevents duplicates. |
-| Human waitpoint never completed | Expiry → escalate to ops; never hang. |
-| Node no-show / offer decline | Auto-cascade to next ranked node. |
-| Connection exhaustion | Supavisor transaction pooling; backpressure. |
-| Realtime overload | Broadcast abstraction + since-cursor catch-up; WS-gateway migration path. |
-| Poison message / bad tool output | Layered guardrails; quarantine; kill switch. |
+| Failure                          | Handling                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| Crash/deploy mid-run             | Durable replay from last completed step; idempotency prevents duplicates. |
+| Human waitpoint never completed  | Expiry → escalate to ops; never hang.                                     |
+| Node no-show / offer decline     | Auto-cascade to next ranked node.                                         |
+| Connection exhaustion            | Supavisor transaction pooling; backpressure.                              |
+| Realtime overload                | Broadcast abstraction + since-cursor catch-up; WS-gateway migration path. |
+| Poison message / bad tool output | Layered guardrails; quarantine; kill switch.                              |
 
 ## Open scaling questions & documented escape hatches
 

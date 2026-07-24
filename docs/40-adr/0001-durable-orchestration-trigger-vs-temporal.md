@@ -14,7 +14,7 @@ Use **Trigger.dev v3** as the durable orchestration backbone. Agent runs execute
 
 ## Alternatives considered
 
-- **Temporal** — the gold standard for durable execution; rejected *for now* due to real operational cost. It is the **documented escape hatch** if Trigger.dev is outgrown.
+- **Temporal** — the gold standard for durable execution; rejected _for now_ due to real operational cost. It is the **documented escape hatch** if Trigger.dev is outgrown.
 - **Inngest** — strong event-driven `step.waitForEvent` human gates; a fine substitute; kept as a backup option.
 - **BullMQ** — needs Redis + self-managed workers + you build observability/human-gates yourself. Reach for it only once Redis exists for other reasons.
 - **Vercel Workflows** — ties orchestration to Vercel, away from the Fastify/Supabase core.

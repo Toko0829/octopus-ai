@@ -5,7 +5,7 @@
 ## Domain
 
 - **Node / Human node** — a vetted human worker who executes legally- or physically-reserved tasks (notary, licensed accountant/lawyer, real-estate agent, contractor, inspector prep, banking liaison). Nodes are KYC'd, skill-tagged, matched, and paid via escrow. The "tentacles" of the octopus.
-- **Verified Pro** — a node with a *verified professional license* (lawyer/accountant/notary), eligible for regulated tasks. License is a **hard filter**, not a ranking weight.
+- **Verified Pro** — a node with a _verified professional license_ (lawyer/accountant/notary), eligible for regulated tasks. License is a **hard filter**, not a ranking weight.
 - **Playbook** — a composable venture template = **Business Archetype × Jurisdiction Pack**, compiled into a task DAG. See [rag-knowledge.md](../30-modules/rag-knowledge.md).
 - **Business archetype** — a node in the business-type taxonomy (e.g. `food-service > cafe`) carrying type-specific requirements as reusable capability modules.
 - **Jurisdiction pack** — a versioned, dated, cited knowledge bundle keyed by `country → region → city` (e.g. `US > TX > Austin`, `EU > DE`) that maps abstract requirements to concrete local agencies, fees, thresholds, documents, and languages.
@@ -16,7 +16,7 @@
 ## Marketing & flywheel (first vertical)
 
 - **Wedge / beachhead** — the single vertical Octopus ships first (full-funnel digital marketing for creators) to get real users and start the flywheel, before expanding toward the north star.
-- **North star** — the long-term vision (Octopus runs *entire* businesses); a direction, not the first ship.
+- **North star** — the long-term vision (Octopus runs _entire_ businesses); a direction, not the first ship.
 - **ICP** — Ideal Customer Profile; the first ICP is **solo founders / creators**.
 - **Full-funnel** — coordinating the whole marketing funnel (strategy → content → creative → channels → conversion → measurement), not one channel.
 - **Channel** — a marketing surface (paid ads, organic social, SEO, email); connected via scoped OAuth (`channel_connections`).
@@ -38,7 +38,7 @@
 
 ## Platform / infra
 
-- **BFF** — backend-for-frontend; here the *thin* Next.js layer that proxies mutations to Fastify and never runs long work.
+- **BFF** — backend-for-frontend; here the _thin_ Next.js layer that proxies mutations to Fastify and never runs long work.
 - **RLS** — Postgres Row-Level Security; the real authorization backstop (membership-based access, tenant isolation).
 - **`service_role`** — the Supabase key that bypasses RLS; **server-only**, never reaches the client; a leak breaks all security.
 - **Broadcast-from-Postgres** — the chat transport: a Postgres trigger broadcasts new message rows to a Realtime topic (chosen over Postgres Changes; see [ADR-0003](../40-adr/0003-realtime-broadcast-not-postgres-changes.md)).
@@ -46,7 +46,7 @@
 
 ## RAG
 
-- **Chunk** — a retrievable unit of a document; embedded as a *contextualized* chunk (chunk text + generated situating context).
+- **Chunk** — a retrievable unit of a document; embedded as a _contextualized_ chunk (chunk text + generated situating context).
 - **`halfvec`** — pgvector float16 vector type; halves storage/memory with negligible recall loss.
 - **HNSW** — the pgvector approximate-nearest-neighbor index (Hierarchical Navigable Small World).
 - **RRF** — Reciprocal Rank Fusion (k=60); rank-based merge of dense + sparse result lists in one SQL query.
