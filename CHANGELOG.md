@@ -7,6 +7,7 @@ All notable changes to Project Octopus. Every PR appends a one-line entry here (
 ### Added
 
 - **Documentation foundation (Phase 0).** Authored the full source-of-truth documentation set: master `README.md`, `AGENTS.md`/`CLAUDE.md` build-agent persona + rules, 13 module docs, architecture/tech-stack/data-model/RAG/security-compliance/observability/roadmap supporting docs, "Ink & Bioluminescence" design system + Discord chat spec + brand, 5 ADRs, doc registry `.docmeta.yml`, and the runbooks/playbooks/diagrams/legal scaffolds.
+- **Phase 0 monorepo scaffold** (branch `phase-0-scaffold`). Turborepo + pnpm workspaces; `apps/web` (Next.js 15 editorial landing), `apps/api` (Fastify 5 `/api/health` + JWKS auth util), `packages/config` (Zod env + constants), `packages/contracts` (ts-rest health contract); `supabase/` config + initial `profiles` migration (RLS + new-user trigger); `scripts/check-docs.mjs` + GitHub Actions CI enforcing the `.docmeta.yml` doc-drift gate; `DEVELOPMENT.md`. Verified green: install, typecheck (4/4), build, lint.
 - Decisions: Product name **Octopus**; first markets **US + EU**; design direction **editorial / calm minimal**.
 
 ### Changed
