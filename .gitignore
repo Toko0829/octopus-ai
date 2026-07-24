@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build / cache
+.turbo/
+dist/
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+
+# Env & secrets (never commit real secrets)
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Vercel / deploy
+.vercel

@@ -1,0 +1,111 @@
+# RAG System
+
+> The complete Retrieval-Augmented Generation spec: ingestion, hybrid retrieval + rerank, contextual enrichment, jurisdiction packs, freshness, evaluation, and risk mitigations. Source of truth for anyone touching knowledge or retrieval. Owns `packages/rag/**` alongside [rag-knowledge.md](../30-modules/rag-knowledge.md). Update on any change to ingestion, retrieval, models, or eval gates.
+
+## Why RAG is load-bearing here
+
+RAG grounds Octopus's recommendations in reality instead of generic advice. For the **first vertical (marketing)** it retrieves *what actually worked for comparable creators/products* — real campaigns, outcomes, and channel best-practices — **with citations**. For later **regulated verticals** (business formation) it grounds legal/tax/permit output so a wrong answer is **refused and escalated**, not hallucinated. Either way: **grounded, cited, current — or refused.** RAG is also the substrate of the [learning flywheel](learning-flywheel.md): real outcomes and human-node corrections flow back into the corpus so retrieval keeps improving.
+
+## Design principle: stay in Postgres
+
+`pgvector` on Supabase Postgres, **not** a dedicated vector DB. See [ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md). Rationale:
+
+1. **Relational + permissioned** — chunks join to jurisdictions, playbooks, suppliers, cost benchmarks, and tenant scoping enforced by RLS.
+2. **Transactional consistency** — a document and its chunks commit/roll back atomically; no dual-write drift.
+3. **One system** to operate, back up, secure — no ETL sync.
+4. **Fast enough** well beyond our scale with `halfvec` + parallel HNSW builds + iterative scans.
+
+Reassess (Qdrant / pgvectorscale StreamingDiskANN) only past tens of millions of chunks or sustained high QPS.
+
+## Schema (see [data-model.md](data-model.md) for full DDL)
+
+- `documents` — source metadata: `jurisdiction`, `business_type`, `doc_type`, `effective_date`/`valid_from`/`valid_to`, `content_hash`, `version`, `lang`.
+- `doc_chunks` — `chunk_text`, `context_prefix`, `embedding halfvec(1024)`, generated `fts tsvector`, `metadata` JSONB, `parent_id`, `embed_model`.
+- Indexes: HNSW (`vector_cosine_ops`, `m=16`, `ef_construction=200`) + GIN (`fts`) + btree/GIN filters. Iterative index scans on.
+
+## Embedding model
+
+- **Primary: Voyage-3-large @ 1024 dims** (Matryoshka-truncatable), stored as `halfvec(1024)`, cosine.
+- **Multilingual by construction** — EU languages now; Georgian/Russian for the founding pack. An English-first model is disqualifying.
+- **One model across the whole corpus** — different models yield incompatible vector spaces and cannot share an HNSW index. Version `embed_model` on every row for traceable re-embeds and A/B.
+- **Embed the *contextualized* chunk** (chunk + generated situating context), not the raw chunk.
+- Alternatives: Cohere embed-v4 (multimodal for scanned permit PDFs), OpenAI text-embedding-3-large (ubiquitous fallback, weaker on some languages), BGE-M3 / Qwen3-Embedding (self-host for data residency).
+
+## Ingestion pipeline (12 steps)
+
+1. **Registry** — `knowledge_sources` declares each source, authority, and crawl cadence.
+2. **Crawl** — per-source crawlers (Supabase Edge Functions / Fastify workers) via `pg_cron`.
+3. **Change-detect** — content hash; skip unchanged docs; supersede changed ones.
+4. **Parse** — layout-aware (LlamaParse / Unstructured / Docling), OCR for scanned PDFs.
+5. **Normalize** — clean, language-tag, extract structured fields.
+6. **Chunk** — structure-first, ~512 tokens, small-to-big / parent-doc.
+7. **Contextualize** — Anthropic-style: prepend a 1–2 sentence LLM-generated situating blurb (cache the parent doc to bound cost).
+8. **Embed** — Voyage-3-large on the contextualized text.
+9. **Index** — write `doc_chunks` (embedding + generated `tsvector`), HNSW/GIN.
+10. **Structured-load** — suppliers/cost benchmarks go into **typed rows**, not prose chunks.
+11. **Validate** — schema + citation-coverage + eval spot-checks.
+12. **Observe** — emit ingestion metrics/traces (parse-failure spikes, drift).
+
+Heavy ingestion runs as background jobs (pg-boss / Trigger.dev), **never in the request path**.
+
+## Retrieval (hybrid + rerank)
+
+1. **Query transformation** (pre-retrieval LLM step):
+   - *Self-query* → extract hard filters (`jurisdiction=US/TX/Austin`, `business_type=food_service`, `effective_date>=now`) → SQL `WHERE` **and** HNSW pre-filters (the single biggest correctness lever).
+   - *Multi-query + HyDE* → cover vocabulary gaps between casual phrasing and statutory language.
+   - *Decomposition* → split compound asks ("permits + suppliers + hiring") into sub-retrievals.
+   - *Routing* → send each sub-query to the right corpus (permits vs suppliers vs cost benchmarks).
+2. **Dense** — `halfvec` HNSW cosine over pre-filtered chunks.
+3. **Sparse** — Postgres FTS (`websearch_to_tsquery`, GIN), per-language configs. Catches exact tokens (statute numbers, license codes, form IDs) that dense blurs. Upgrade path: ParadeDB `pg_search` for true BM25.
+4. **Fusion** — **RRF (k=60)** merging dense + sparse in one SQL query (two CTEs + fused rank). Rank-based → no score normalization.
+5. **Rerank** — **Cohere Rerank 3.5** cross-encoder over the fused **top-40** → return **top 6–8**. Apply a relevance-score **threshold to DROP** weak chunks rather than pad context. Optional MMR dedup before rerank when sources are redundant.
+
+## Two corpora: reference knowledge + real outcomes
+
+The knowledge base has two layers on the same pgvector infrastructure:
+
+1. **Reference knowledge** (curated) — for the marketing vertical: marketing playbooks, channel/ad best-practices, platform ad-policies, format specs. For later verticals: legal/permit jurisdiction packs. Dated, cited, freshness-checked.
+2. **Real outcomes** (the flywheel) — executed campaigns + measured results and human-node corrections, ingested as typed rows (`campaign_outcomes`, `creative_performance`) + contextualized chunks. Retrieval **prefers real outcomes** for "what worked for customers like this" as coverage grows. Consent, anonymization, and tenant isolation for this layer are governed by [learning-flywheel.md](learning-flywheel.md) — a customer's raw private data is never retrievable by another tenant; only anonymized, aggregated learnings enter the shared corpus.
+
+## Market / jurisdiction packs
+
+- For **marketing**, "packs" are market-scoped: ad-policy + disclosure rules (FTC in US, GDPR/ePrivacy in EU), language, and channel norms. For **business formation** (later), they are legal `country → region → city` packs.
+- Versioned, **dated, cited** knowledge bundles.
+- **US + EU first** (e.g. `US/TX/Austin`, `US/DE/Wilmington`, `EU/DE`, `EU/EE`); **Georgia/Tbilisi** documented as the founding pack.
+- **Disambiguation guard:** the *country of Georgia* vs the *US state of Georgia* — packs carry unambiguous keys; the agent never generalizes one jurisdiction's rules to another.
+- The **archetype × jurisdiction compiler** turns a pack + business archetype into a concrete, ordered, cost-estimated task DAG (see [rag-knowledge.md](../30-modules/rag-knowledge.md)).
+
+## Freshness (a first-order feature)
+
+- `pg_cron` re-crawls per source (daily for fee/registry pages; weekly/monthly for statutes).
+- Content-hash **supersession**; `valid_from`/`valid_to` effective-dating so retrieval filters to **in-force** rules.
+- Surface **"last verified"** dates to the user; route **high-stakes stale data** to a human node for re-verification.
+
+## Guarded generation
+
+- **Mandatory citations** on legal/tax/permit output, each with an **effective date**.
+- **Groundedness gate:** claims not supported by retrieved, in-date sources (or below similarity threshold) are flagged `unverified` and **cannot gate a legal action** — they escalate to a human node.
+- **Injection quarantine:** all retrieved content is untrusted **data**, never instructions.
+- **Multi-tenant isolation:** retrieval respects RLS; no cross-tenant leakage.
+
+## Evaluation & observability
+
+- **Offline:** Ragas on a golden set — context precision/recall, faithfulness, answer relevancy — to tune chunking/embeddings.
+- **CI gate:** DeepEval blocks regressions against the golden set. **Thresholds:** faithfulness ≥ 0.75, answer relevancy ≥ 0.8, context precision ≥ 0.7, context recall ≥ 0.8. Changes to ingestion/retrieval/prompts must pass before merge.
+- **Production:** Langfuse traces every retrieval+generation; online scoring + thumbs-up/down captured from the group chat; single trace sink Ragas and DeepEval publish to.
+
+## Risk register
+
+| Risk | Mitigation |
+|---|---|
+| Hallucination on legal/financial claims | Groundedness gate + mandatory citations + escalate-on-unverified |
+| Stale regulations/fees | `pg_cron` re-crawl, content-hash supersession, effective-dating, "last verified", human re-verify |
+| Jurisdiction bleed | Unambiguous pack keys, hard filters via self-query, never generalize across borders |
+| OCR/parse errors | Layout-aware parsing, validation step, parse-failure alerting |
+| Multilingual gaps | One strong multilingual embedder; per-language `tsvector` configs |
+| Prompt injection via sources | Quarantine retrieved content as data; separate instruction channel |
+| Tenant leakage | RLS on `doc_chunks`; retrieval scoped by policy |
+
+## Libraries
+
+`pgvector` · Supabase (`pg_cron`, Edge Functions, Storage, Realtime) · LlamaIndex (TS + Python) · LlamaParse/Unstructured/Docling · Voyage SDK · Cohere SDK · Anthropic SDK (contextualization, query transform, grounded generation w/ prompt caching) · Ragas · DeepEval · Langfuse · tiktoken. Optional in-Postgres upgrades: ParadeDB `pg_search`, `pgvectorscale`.
