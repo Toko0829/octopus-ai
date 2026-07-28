@@ -20,6 +20,9 @@ const EnvSchema = z.object({
   SUPABASE_JWKS_URL: z.string().url().optional(),
   SUPABASE_JWT_ISSUER: z.string().url().optional(),
 
+  // Python AI service (ADR-0006). Node calls it over an OpenAPI-typed seam.
+  AI_SERVICE_URL: z.string().url().default('http://localhost:8000'),
+
   // Services.
   API_PORT: z.coerce.number().int().positive().default(3001),
   API_HOST: z.string().default('0.0.0.0'),

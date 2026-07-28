@@ -6,6 +6,12 @@
 >
 > Update this doc on any change to the planning loop, tool registry, guardrails, escalation triggers, or state model.
 
+> **Implementation status (Phase 1):** the **seam is live end to end, with a deliberately trivial core.** `services/ai` (FastAPI) exposes `GET /health` and `POST /plan`, returning typed **proposals**; `apps/api` exposes `POST /api/rooms/:roomId/agent-runs` which returns `202 + runId` and executes those proposals, posting to chat as `author_kind='agent'`. The agent is therefore a real chat member: its messages persist under RLS and reach clients over Realtime like anyone else's.
+>
+> The core is `deterministic-v0` and **calls no model**. It acknowledges the goal and declines to plan, because planning without retrieval cannot be cited and rule 10 forbids uncited output gating action. It reports `grounded: false` with empty `citations`, and Node records that on every run. Swapping in a real model plus RAG is a contained change behind the same contract.
+>
+> **Not yet durable.** The run executes in-process, so a crash or deploy mid-run loses it; ADR-0001 puts this on Trigger.dev v3, which needs credentials this project does not have yet. `startRun` is already shaped for that move (one function, a run id, no shared state, no dependency on the request staying open). Verified: 11 API assertions plus a Realtime probe confirming the agent's message is broadcast to a subscribed member.
+
 ## Two-layer design
 
 - **Durable execution backbone** (Trigger.dev v3): each agent run is a durable task — survives crashes/deploys, retries steps, and **sleeps for days on waitpoints** at zero compute. See [ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md).
@@ -38,6 +44,16 @@ Every tool is a Zod-typed function with a **risk tier**. Tools have **no ambient
 | `request_human_node`             | high-risk  | creates task, hands matcher requirements, **suspends run on waitpoint** |
 
 > **First-vertical tools:** the marketing growth engine adds typed, guardrailed tools — `generate_creative`, `draft_copy`, `connect_channel`, `create_campaign`/`create_ad_set`/`create_ad`, `publish_content`, `set_budget`, `pull_metrics`, `optimize_campaign` — all `high-risk` where they publish or spend (spend caps enforced in tool code). See [marketing-growth-engine.md](marketing-growth-engine.md).
+
+## The proposal boundary (how "Python proposes, Node executes" is actually enforced)
+
+The split is structural, not a convention anyone has to remember:
+
+- `services/ai` holds **no database client and no Supabase key**. It cannot write, so a jailbroken prompt there cannot post as another member, move money, or touch a row. A test asserts the absence rather than trusting review to catch a future import.
+- Every response is a list of **proposals** with a `kind`. Node has an explicit `switch` over the kinds it will honour, so the core cannot widen its own powers by inventing a new one; an unknown kind is ignored, not attempted.
+- Node parses the response against a schema before acting. An unrecognised shape is a contract break and fails the run, rather than being half-interpreted.
+- The agent's message insert carries a **deterministic idempotency key** (`agent-run:{runId}:{index}`), so replaying a run cannot post twice.
+- A failed run posts a **system message into the room**. Silence would be indistinguishable from the agent choosing not to reply (rule 16).
 
 ## Guardrails (layered defense, fast → smart)
 

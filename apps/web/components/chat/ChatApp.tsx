@@ -12,7 +12,13 @@ import {
   toMember,
   toMessage,
 } from '../../lib/adapt';
-import { getChannels, getMembers, getMessages, postMessage } from '../../lib/api-client';
+import {
+  getChannels,
+  getMembers,
+  getMessages,
+  postMessage,
+  startAgentRun,
+} from '../../lib/api-client';
 import { createClient } from '../../lib/supabase/client';
 import { GuildRail } from './GuildRail';
 import { ChannelSidebar } from './ChannelSidebar';
@@ -102,8 +108,17 @@ export function ChatApp({
     (async () => {
       const {
         data: { session },
+        error: sessionError,
       } = await supabase.auth.getSession();
-      if (!session || cancelled) return;
+      if (cancelled) return;
+
+      // Returning quietly here was a bug: the page renders fine (the server has
+      // the session) while live updates never start and nothing says so.
+      if (sessionError || !session) {
+        console.error('[chat] no client session; live updates disabled', sessionError);
+        setBanner('Live updates are off because this session could not be read. Try reloading.');
+        return;
+      }
 
       await supabase.realtime.setAuth(session.access_token);
       channel = supabase.channel(`chat:room:${roomId}`, {
@@ -123,8 +138,9 @@ export function ChatApp({
         setPresence(next);
       });
 
-      channel.subscribe(async (status) => {
+      channel.subscribe(async (status, err) => {
         if (cancelled) return;
+        console.info('[chat] realtime status', status, err?.message ?? '');
         if (status === 'SUBSCRIBED') {
           setBanner(null);
           await channel?.track({ at: new Date().toISOString() });
@@ -204,6 +220,15 @@ export function ChatApp({
           [toMessage(saved)],
         ),
       );
+
+      // The message is safely persisted at this point, so a failure to start the
+      // agent must not roll it back or mark it unsent. Surface it separately.
+      try {
+        await startAgentRun(roomId, text);
+      } catch (runErr) {
+        console.error('[chat] agent run could not be started', runErr);
+        setBanner('Your message was sent, but the agent could not be started.');
+      }
     } catch (err) {
       // Keep the text on screen and mark it failed. Dropping it would lose what
       // the person wrote.

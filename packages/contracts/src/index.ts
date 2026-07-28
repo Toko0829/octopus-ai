@@ -141,6 +141,21 @@ export const contract = c.router(
       summary: 'Create a room and join it as the first member',
     },
 
+    createAgentRun: {
+      method: 'POST',
+      path: '/rooms/:roomId/agent-runs',
+      pathParams: RoomParams,
+      body: z.object({ goal: z.string().trim().min(1).max(4000) }),
+      responses: {
+        /** Accepted. Follow the run over Realtime; the agent posts as a member. */
+        202: z.object({ runId: z.string().uuid(), status: z.literal('accepted') }),
+        400: ApiError,
+        401: ApiError,
+        404: ApiError,
+      },
+      summary: 'Start an agent run for a goal (returns immediately; never blocks on reasoning)',
+    },
+
     listChannels: {
       method: 'GET',
       path: '/rooms/:roomId/channels',

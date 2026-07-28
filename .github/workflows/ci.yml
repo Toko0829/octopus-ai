@@ -48,3 +48,29 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+  ai:
+    name: ai · ruff · pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/ai
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --extra dev --frozen
+
+      - name: Lint / format
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest -q
+
+      # The Ragas/DeepEval eval gate (rag.md thresholds) is added with RAG, in the
+      # same PR as the golden set. There is nothing to evaluate before then.

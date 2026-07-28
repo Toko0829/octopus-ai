@@ -27,6 +27,30 @@ pnpm check:docs  # doc-drift check against .docmeta.yml (see below)
 
 Run a single app: `pnpm --filter @octopus/web dev` or `pnpm --filter @octopus/api dev`.
 
+### The Python AI service
+
+`services/ai` is Python and sits outside the pnpm workspace ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). It needs [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync --extra dev --directory services/ai
+```
+
+```bash
+uv run --directory services/ai uvicorn octopus_ai.main:app --reload --port 8000
+```
+
+Its checks are separate from the Node ones and run as their own CI job:
+
+```bash
+uv run --directory services/ai ruff check .
+```
+
+```bash
+uv run --directory services/ai pytest -q
+```
+
+`apps/api` finds it via `AI_SERVICE_URL` (default `http://localhost:8000`). With the service down, an agent run posts a system message saying so rather than failing silently.
+
 **Both must be running.** `apps/web` reads and writes through `apps/api`; with the API down, `/app` renders a "Cannot reach the API" card naming the URL it tried.
 
 ### If a port is already taken

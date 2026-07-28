@@ -26,6 +26,18 @@ export function createRoom(name: string) {
   });
 }
 
+/**
+ * Start an agent run. Returns as soon as the run is accepted; the agent's reply
+ * arrives over Realtime like any other member's message, so there is nothing to
+ * await here beyond acceptance.
+ */
+export function startAgentRun(roomId: string, goal: string) {
+  return bff<{ runId: string; status: 'accepted' }>(`/rooms/${roomId}/agent-runs`, {
+    method: 'POST',
+    body: JSON.stringify({ goal }),
+  });
+}
+
 export function getChannels(roomId: string) {
   return bff<{ channels: Channel[] }>(`/rooms/${roomId}/channels`);
 }

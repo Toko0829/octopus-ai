@@ -74,6 +74,8 @@ The AI/RAG layer lives in `services/ai` (Python), alongside the Node workspaces:
 - **Seam:** FastAPI auto-OpenAPI → a generated typed TS client for the Node side (consistent with [ADR-0004](../40-adr/0004-tsrest-over-trpc.md)).
 - **Doc registry:** `.docmeta.yml` maps `services/ai/**` to its owning docs.
 
+**Implemented (Phase 1):** `services/ai` exists with `pyproject.toml` + `uv.lock`, ruff, and pytest. CI runs it as a **parallel `ai` job** (`uv sync --frozen`, `ruff check`, `pytest`) alongside the Node job. The Ragas/DeepEval eval gate is deliberately absent until RAG lands, since there is no golden set to evaluate; it is added in the same change as the corpus. Locally: `uv run --directory services/ai uvicorn octopus_ai.main:app --reload --port 8000` (see [DEVELOPMENT.md](../../DEVELOPMENT.md)).
+
 ## Scaling escape hatches (with triggers)
 
 | Escape hatch                                   | Trigger                                                                                                                           |
