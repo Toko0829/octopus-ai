@@ -50,6 +50,10 @@ Suppliers and cost benchmarks are stored as **typed rows**, not prose chunks, so
 
 One strong multilingual embedder (Voyage-3-large) across the corpus; per-language `tsvector` configs for sparse. EU languages now; Georgian/Russian for the founding pack.
 
+## Implementation (Python service)
+
+This module is implemented in the **Python AI service** (`services/ai`, LlamaIndex-Python) — ingestion, retrieval, and eval — exposed to the Node agent over a typed HTTP seam ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)). It shares the same Supabase Postgres (pgvector), so retrieval stays SQL over the single source of truth.
+
 ## Key entities
 
 `knowledge_sources` · `documents` (jurisdiction/market, business_type, doc_type, effective/valid dates, content_hash, version, lang) · `doc_chunks` (embedding `halfvec(1024)`, `fts tsvector`, context_prefix, parent_id, embed_model) · **`campaign_outcomes` · `creative_performance` (flywheel)** · `suppliers` · `cost_benchmarks` · `eval_golden_set`.

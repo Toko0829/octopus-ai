@@ -42,6 +42,16 @@ mappings:
     owner: 'docs/30-modules/rag-knowledge.md'
     also_touch: ['docs/10-architecture/rag.md', 'docs/10-architecture/learning-flywheel.md']
 
+  # Python AI service (RAG + agent reasoning + eval + models) — see ADR-0006.
+  - path: 'services/ai/**'
+    owner: 'docs/30-modules/ai-orchestrator.md'
+    also_touch:
+      [
+        'docs/10-architecture/rag.md',
+        'docs/30-modules/rag-knowledge.md',
+        'docs/10-architecture/tech-stack.md',
+      ]
+
   - path: 'packages/marketing/**'
     owner: 'docs/30-modules/marketing-growth-engine.md'
     also_touch:

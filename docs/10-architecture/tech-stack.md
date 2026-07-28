@@ -63,6 +63,24 @@
 
 - **OpenTelemetry** traces across web/api/matcher/agent; **Sentry** errors (with source maps); **Langfuse** (or equivalent) for per-run LLM prompt/response/token/cost + online eval; **PostHog** product analytics; uptime/synthetics on chat + agent-start paths. See [observability.md](observability.md).
 
+## Python AI service ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md))
+
+The AI/RAG layer is a separate **Python** service; the rest of the backend is Node/Fastify. Pinned Python tooling:
+
+| Area                      | Choice                                                                                                |
+| ------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Web framework             | **FastAPI** + **Pydantic v2** (auto-OpenAPI → typed TS client)                                        |
+| Runtime / packaging       | Python 3.12, **uv** (lockfile + venv)                                                                 |
+| RAG orchestration         | **LlamaIndex** (Python)                                                                               |
+| Parsing / OCR             | LlamaParse / Unstructured / Docling                                                                   |
+| Embeddings / rerank / gen | Voyage · Cohere · Anthropic SDKs (managed); `sentence-transformers` / `FlagEmbedding` if self-hosting |
+| Eval                      | **Ragas** + **DeepEval** (CI gate)                                                                    |
+| Lint / format / test      | **ruff** + **pytest**                                                                                 |
+| DB access                 | psycopg / SQLAlchemy over the same Supabase Postgres (`service_role`, server-side only)               |
+| Deploy                    | Fly.io container, co-located with Postgres                                                            |
+
+Seam: OpenAPI-typed HTTP + shared Postgres + job queue for ingestion. Node owns durability (Trigger.dev) and all side-effecting tools. See [architecture.md](architecture.md) and [ai-orchestrator.md](../30-modules/ai-orchestrator.md).
+
 ## Rejected alternatives (with rationale)
 
 | Rejected                                  | Instead of                            | Why / when to revisit                                                                                                                                          |

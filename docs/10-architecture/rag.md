@@ -94,6 +94,10 @@ The knowledge base has two layers on the same pgvector infrastructure:
 - **CI gate:** DeepEval blocks regressions against the golden set. **Thresholds:** faithfulness ≥ 0.75, answer relevancy ≥ 0.8, context precision ≥ 0.7, context recall ≥ 0.8. Changes to ingestion/retrieval/prompts must pass before merge.
 - **Production:** Langfuse traces every retrieval+generation; online scoring + thumbs-up/down captured from the group chat; single trace sink Ragas and DeepEval publish to.
 
+## Where RAG runs (Python service)
+
+RAG — ingestion **and** query-time retrieval — is implemented in the **Python AI service** (`services/ai`, LlamaIndex-Python), not in TypeScript ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)). The Node durable backbone calls the service's typed endpoints (e.g. `/retrieve`, `/plan`); ingestion + eval run as Python jobs. Both sides share the same Supabase Postgres (pgvector), so retrieval is still just SQL over the one source of truth. Eval gates (Ragas/DeepEval) are Python-native and run in CI.
+
 ## Risk register
 
 | Risk                                    | Mitigation                                                                                        |
