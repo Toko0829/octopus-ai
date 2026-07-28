@@ -6,7 +6,7 @@
 >
 > The design language + tokens are specified in [design-system.md](../20-design/design-system.md); this doc owns the **implementation**. Update both together on any token/component change.
 >
-> **Implementation status (Phase 0):** scaffolded — `apps/web` (Next.js 15) with the ink/teal editorial tokens in `app/globals.css` and a placeholder landing page. Component library + chat shell land in Phase 1.
+> **Implementation status (Phase 1, in progress):** the **Discord-style chat shell** is built at `/app` — full 5-region layout, roles/badges, presence, inline agent messages with the bioluminescent working pulse, the marquee **plan card** (stages, owner chips, citations, approve/request-changes), composer, context panel, and a ⌘K command palette. House style implemented via design tokens in `app/globals.css` + `app/app/chat.css`, distinctive type (Fraunces / Hanken Grotesk / JetBrains Mono via `next/font`), light + dark ("Command Deck") skins. Mock-driven; wires to Supabase Realtime + the planner next. (Phase 0: Next.js 15 scaffold + editorial landing.)
 
 ## Responsibilities
 

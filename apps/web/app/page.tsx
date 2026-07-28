@@ -1,8 +1,9 @@
+import Link from 'next/link';
 import { FIRST_VERTICAL } from '@octopus/config';
 
 /**
- * Phase 0 placeholder landing — editorial / calm minimal (design-system.md).
- * The real product surface is the Discord-style chat, built in Phase 1.
+ * Landing — editorial / calm minimal (design-system.md). The real product surface
+ * is the Discord-style chat at /app.
  */
 export default function Home() {
   return (
@@ -13,41 +14,42 @@ export default function Home() {
         flexDirection: 'column',
         justifyContent: 'center',
         padding: '10vh 8vw',
-        maxWidth: '980px',
+        maxWidth: '1000px',
       }}
     >
       <div
         className="mono"
         style={{
           fontSize: 12,
-          letterSpacing: '0.14em',
+          letterSpacing: '0.16em',
           textTransform: 'uppercase',
-          color: 'var(--color-accent)',
+          color: 'var(--accent-text)',
           marginBottom: 28,
         }}
       >
-        Octopus
+        ✦ Octopus
       </div>
 
       <h1
+        className="display"
         style={{
-          fontSize: 'clamp(2.4rem, 6vw, 4.2rem)',
-          lineHeight: 1.05,
-          fontWeight: 500,
+          fontSize: 'clamp(2.6rem, 6.5vw, 4.5rem)',
+          lineHeight: 1.02,
+          fontWeight: 460,
           letterSpacing: '-0.02em',
           margin: 0,
-          maxWidth: '16ch',
+          maxWidth: '15ch',
         }}
       >
         Octopus runs your business.{' '}
-        <span style={{ color: 'var(--color-text-muted)' }}>You just decide.</span>
+        <span style={{ color: 'var(--text-muted)' }}>You just decide.</span>
       </h1>
 
       <p
         style={{
           fontSize: 'clamp(1rem, 2.2vw, 1.25rem)',
-          color: 'var(--color-text-muted)',
-          maxWidth: 'var(--measure)',
+          color: 'var(--text-secondary)',
+          maxWidth: '58ch',
           marginTop: 28,
         }}
       >
@@ -56,20 +58,39 @@ export default function Home() {
         smarter with every campaign it runs.
       </p>
 
-      <div style={{ display: 'flex', gap: 12, marginTop: 40, alignItems: 'center' }}>
+      <div
+        style={{ display: 'flex', gap: 14, marginTop: 40, alignItems: 'center', flexWrap: 'wrap' }}
+      >
+        <Link
+          href="/app"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            background: 'var(--text)',
+            color: 'var(--bg)',
+            textDecoration: 'none',
+            padding: '11px 20px',
+            borderRadius: 'var(--r-full)',
+            fontSize: 14,
+            fontWeight: 500,
+          }}
+        >
+          Open the app →
+        </Link>
         <span
           className="mono"
           style={{
             fontSize: 12,
-            padding: '6px 12px',
-            borderRadius: 'var(--radius-full)',
-            border: '1px solid var(--color-border)',
-            color: 'var(--color-text-muted)',
+            padding: '7px 13px',
+            borderRadius: 'var(--r-full)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-muted)',
           }}
         >
-          Phase 0 · scaffold
+          Phase 1 · planner preview
         </span>
-        <span className="mono" style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+        <span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)' }}>
           first vertical: {FIRST_VERTICAL}
         </span>
       </div>

@@ -10,6 +10,10 @@ All notable changes to Project Octopus. Every PR appends a one-line entry here (
 - **Phase 0 monorepo scaffold** (branch `phase-0-scaffold`). Turborepo + pnpm workspaces; `apps/web` (Next.js 15 editorial landing), `apps/api` (Fastify 5 `/api/health` + JWKS auth util), `packages/config` (Zod env + constants), `packages/contracts` (ts-rest health contract); `supabase/` config + initial `profiles` migration (RLS + new-user trigger); `scripts/check-docs.mjs` + GitHub Actions CI enforcing the `.docmeta.yml` doc-drift gate; `DEVELOPMENT.md`. Verified green: install, typecheck (4/4), build, lint.
 - Decisions: Product name **Octopus**; first markets **US + EU**; design direction **editorial / calm minimal**.
 
+### Phase 1 (in progress)
+
+- **Discord-style chat shell** (branch `phase-1-chat-shell`). Mock-driven `/app` workspace: 5-region layout (guild rail · channels · stream · context panel), roles/badges/presence, inline agent messages with the bioluminescent working pulse, the marquee **plan card** (funnel stages, owner chips, citations with verified dates, approve/request-changes → flywheel-signal capture), composer, and a ⌘K command palette. "Ink & Bioluminescence" tokens (`globals.css` + `chat.css`), distinctive type via `next/font` (Fraunces · Hanken Grotesk · JetBrains Mono), light + dark skins, accessible. Verified: typecheck, build, lint green; renders + interactions confirmed in-browser; no console errors.
+
 ### Changed
 
 - **Decision: Python AI service + Node/Fastify backend** ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). The AI/RAG layer (ingestion, retrieval, agent reasoning, eval, models) runs as a separate Python service (FastAPI + LlamaIndex); Node/Fastify keeps chat/auth/marketplace/payments + the durable backbone + all side-effecting tools. _Python proposes, Node executes._ Updated `README.md`, `architecture.md`, `rag.md`, `tech-stack.md`, `ai-orchestrator.md`, `rag-knowledge.md`, `infra-devops.md`, `.docmeta.yml`.
