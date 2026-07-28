@@ -13,11 +13,14 @@
 - Own the **role model** and the **RLS membership model** that gates every query.
 - Contain `service_role` to trusted server code.
 
-> **Implementation status (Phase 1):** the JWKS verifier is wired as a Fastify `preHandler` (`createRequireAuth`, attached per-route so `/api/health` stays public) and enforced on the chat routes. Verified: missing and malformed bearer tokens are both rejected with `401`.
+> **Implementation status (Phase 1):** the JWKS verifier is wired as a Fastify `preHandler` (`createRequireAuth`, attached per-route so `/api/health` stays public) and enforced on every chat route. `apps/web` has sign-in/sign-up at `/sign-in`, middleware that refreshes the session and redirects unauthenticated `/app` requests, and a thin BFF at `/api/bff/*` that attaches the token server-side. Sign-up passes `display_name` in user metadata, which `handle_new_user()` copies into `profiles`. Verified end-to-end in a browser: missing and malformed tokens are rejected with `401`, and a real sign-in loads a real workspace.
 
 ## GoTrue asymmetric JWT / JWKS flow
 
-1. Next.js authenticates with `@supabase/ssr`; the session is stored in **httpOnly cookies**. Server Components read it; Route Handlers/Server Actions attach the access token when calling Fastify.
+1. Next.js authenticates with `@supabase/ssr`; the session is stored in **cookies** and refreshed in middleware (Server Components cannot write cookies, so without that step a rotated refresh token is lost mid-visit). Server Components read it; Route Handlers attach the access token when calling Fastify.
+
+   > **Correction (Phase 1):** these cookies are **not `httpOnly`**, and earlier drafts of this doc claimed they were. `@supabase/ssr`'s browser client has to read the session to authenticate the Realtime socket, which `httpOnly` would prevent. The access token is therefore reachable by page scripts, exactly as in Supabase's standard SSR setup. What the BFF still buys us is that the token is attached server-side in one place, the browser never holds a long-lived credential for Fastify, and the API origin is not exposed to the client. If a genuinely `httpOnly` session is wanted later, Realtime has to be brokered server-side too, and that is an ADR-level change.
+
 2. Fastify verifies each request's JWT **locally** against the cached **JWKS** (`jose`, respecting Supabase's key cache) in a `preHandler` hook, populating `request.user` — **no round-trip to Supabase**.
 3. Supabase uses **asymmetric** signing keys (ES256/RS256) precisely so edge/backends verify without a shared secret.
 

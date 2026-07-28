@@ -3,7 +3,12 @@
 import { useState } from 'react';
 import { IconPlus, IconSend } from './icons';
 
-export function Composer({ onSend }: { onSend: (text: string) => void }) {
+interface Props {
+  channelName: string | null;
+  onSend: (text: string) => void;
+}
+
+export function Composer({ channelName, onSend }: Props) {
   const [value, setValue] = useState('');
 
   function submit() {
@@ -21,7 +26,7 @@ export function Composer({ onSend }: { onSend: (text: string) => void }) {
         </button>
         <input
           className="composer-input"
-          placeholder="Message #brief · tell Octopus a goal…"
+          placeholder={channelName ? `Message #${channelName}` : 'Message this room'}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
@@ -36,8 +41,8 @@ export function Composer({ onSend }: { onSend: (text: string) => void }) {
         </button>
       </div>
       <div className="composer-hint">
-        <kbd>/</kbd> commands · <kbd>⌘</kbd>
-        <kbd>K</kbd> actions · Octopus plans, it never spends or posts without your approval
+        <kbd>⌘</kbd>
+        <kbd>K</kbd> actions · Octopus never spends or posts without your approval
       </div>
     </div>
   );

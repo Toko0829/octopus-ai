@@ -773,8 +773,149 @@
   color: var(--text-secondary);
   background: var(--surface-hover);
 }
-.badge-admin {
+.badge-admin,
+.badge-member {
   color: var(--text-muted);
+  background: var(--surface-hover);
+}
+
+/* ---- Live-data states. Every one pairs its colour with a text label. ---- */
+
+.msg.pending {
+  opacity: 0.6;
+}
+
+.msg-state {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
+
+.msg-state.failed {
+  color: var(--human);
+}
+
+.msg.failed .msg-text {
+  border-left: 2px solid var(--human);
+  padding-left: 8px;
+}
+
+.banner {
+  padding: 8px 18px;
+  font-size: var(--text-sm);
+  color: var(--human);
+  background: var(--human-quiet);
+  border-bottom: 1px solid var(--border);
+}
+
+.stream-empty,
+.chan-empty,
+.ctx-empty {
+  padding: 14px 18px;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+.cmdk-none {
+  padding: 12px;
+  color: var(--text-faint);
+  font-size: var(--text-sm);
+}
+
+.sidebar-foot-name {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.sidebar-signout {
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.sidebar-signout:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* ---- Empty workspace ---- */
+
+.empty-wrap {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.empty-card {
+  max-width: 460px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 32px;
+}
+
+.empty-title {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: var(--text-lg);
+  color: var(--text);
+  margin: 14px 0 8px;
+}
+
+.empty-body {
+  font-size: var(--text-base);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin: 0 0 20px;
+}
+
+.empty-form {
+  margin: 0 0 20px;
+}
+
+.empty-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.empty-row .auth-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.empty-submit {
+  width: auto;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.empty-signout {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.empty-signout:hover {
+  color: var(--text);
   background: var(--surface-hover);
 }
 

@@ -1,9 +1,9 @@
 import type { CSSProperties } from 'react';
-import type { Business } from '../../lib/types';
+import type { UiBusiness } from '../../lib/types';
 import { OctopusMark, IconPlus } from './icons';
 
 interface Props {
-  businesses: Business[];
+  businesses: UiBusiness[];
   activeId: string;
   onSelect: (id: string) => void;
 }

@@ -5,7 +5,14 @@ import type { Role } from '../../lib/types';
 import { IconCheck, IconMoon, IconSun } from './icons';
 
 export function roleLabel(role: Role): string {
-  return { you: 'You', agent: 'Agent', node: 'Node', pro: 'Verified', admin: 'Admin' }[role];
+  return {
+    you: 'You',
+    member: 'Member',
+    agent: 'Agent',
+    node: 'Node',
+    pro: 'Verified',
+    admin: 'Admin',
+  }[role];
 }
 
 /** Role marker — always text label (+ icon for Verified), never color alone. */

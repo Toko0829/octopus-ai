@@ -6,7 +6,9 @@
 >
 > The design language + tokens are specified in [design-system.md](../20-design/design-system.md); this doc owns the **implementation**. Update both together on any token/component change.
 >
-> **Implementation status (Phase 1, in progress):** the **Discord-style chat shell** is built at `/app` — full 5-region layout, roles/badges, presence, inline agent messages with the bioluminescent working pulse, the marquee **plan card** (stages, owner chips, citations, approve/request-changes), composer, context panel, and a ⌘K command palette. House style implemented via design tokens in `app/globals.css` + `app/app/chat.css`, distinctive type (Fraunces / Hanken Grotesk / JetBrains Mono via `next/font`), light + dark ("Command Deck") skins. Mock-driven; wires to Supabase Realtime + the planner next. (Phase 0: Next.js 15 scaffold + editorial landing.)
+> **Implementation status (Phase 1, in progress):** the **Discord-style chat shell** at `/app` now runs on **live data, with no mock or demo content anywhere**. Sign-in (`/sign-in`, Supabase GoTrue) gates the workspace via middleware; reads happen in the Server Component; the browser talks to Fastify only through the thin BFF at `/api/bff/*`; messages arrive over Realtime and sends are optimistic, reconciled on the server copy. House style via design tokens in `app/globals.css` + `app/app/chat.css`, type (Fraunces / Hanken Grotesk / JetBrains Mono via `next/font`), light + dark skins.
+>
+> **Deliberately not rendered** (no backend until Phase 2, and a trust surface must not show invented numbers): the **plan card** (`PlanCard.tsx` and its types are kept, unwired), agent replies, the budget figure in the top bar, and unread counts. The ⌘K palette lists only actions that work. What replaced them is real: rooms, channels, members with profile names, Realtime Presence, and message history.
 
 ## Responsibilities
 

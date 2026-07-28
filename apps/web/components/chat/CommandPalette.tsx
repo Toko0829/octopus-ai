@@ -1,24 +1,24 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { IconCommand } from './icons';
-
-const ACTIONS = [
-  { id: 'new-goal', label: 'New growth goal', k: 'G' },
-  { id: 'approve', label: 'Approve current plan', k: 'A' },
-  { id: 'invite', label: 'Invite a human node', k: 'N' },
-  { id: 'connect', label: 'Connect an ad account', k: 'C' },
-  { id: 'jump', label: 'Jump to channel…', k: 'J' },
-  { id: 'theme', label: 'Toggle theme', k: 'T' },
-];
+import type { UiChannel } from '../../lib/types';
+import { IconCommand, IconHash } from './icons';
 
 interface Props {
   open: boolean;
+  channels: UiChannel[];
   onClose: () => void;
-  onAction: (label: string) => void;
+  onJump: (channelId: string) => void;
+  onNotify: (text: string) => void;
 }
 
-export function CommandPalette({ open, onClose, onAction }: Props) {
+/**
+ * ⌘K actions. Only actions that actually do something are listed. Approve-plan,
+ * invite-a-node and connect-an-ad-account belong here per the design spec, but
+ * they arrive with the orchestrator and marketplace in Phase 2, and a palette
+ * entry that silently does nothing is worse than its absence.
+ */
+export function CommandPalette({ open, channels, onClose, onJump, onNotify }: Props) {
   const [q, setQ] = useState('');
 
   useEffect(() => {
@@ -27,7 +27,21 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
 
   if (!open) return null;
 
-  const items = ACTIONS.filter((a) => a.label.toLowerCase().includes(q.toLowerCase()));
+  const needle = q.trim().toLowerCase();
+  const matches = channels.filter((c) => c.name.toLowerCase().includes(needle));
+
+  function toggleTheme() {
+    const el = document.documentElement;
+    const next = el.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    el.setAttribute('data-theme', next);
+    try {
+      localStorage.setItem('oc-theme', next);
+    } catch {
+      /* storage unavailable; the toggle still applies for this session */
+    }
+    onNotify(`Switched to ${next} theme`);
+    onClose();
+  }
 
   return (
     <div className="cmdk-scrim" onClick={onClose}>
@@ -41,26 +55,28 @@ export function CommandPalette({ open, onClose, onAction }: Props) {
         <input
           autoFocus
           className="cmdk-input"
-          placeholder="Type a command…"
+          placeholder="Jump to a channel..."
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Escape') onClose();
-            if (e.key === 'Enter' && items[0]) onAction(items[0].label);
+            if (e.key === 'Enter' && matches[0]) onJump(matches[0].id);
           }}
         />
         <div className="cmdk-list">
-          {items.map((a) => (
-            <button key={a.id} className="cmdk-item" onClick={() => onAction(a.label)}>
-              <IconCommand width={15} height={15} />
-              {a.label}
-              <span className="k">{a.k}</span>
+          {matches.map((c) => (
+            <button key={c.id} className="cmdk-item" onClick={() => onJump(c.id)}>
+              <IconHash width={15} height={15} />
+              {c.name}
             </button>
           ))}
-          {items.length === 0 && (
-            <div style={{ padding: 12, color: 'var(--text-faint)', fontSize: 'var(--text-sm)' }}>
-              No matching commands
-            </div>
+          <button className="cmdk-item" onClick={toggleTheme}>
+            <IconCommand width={15} height={15} />
+            Toggle theme
+            <span className="k">T</span>
+          </button>
+          {matches.length === 0 && needle.length > 0 && (
+            <div className="cmdk-none">No channel matches “{q}”</div>
           )}
         </div>
       </div>

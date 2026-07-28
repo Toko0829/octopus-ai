@@ -75,6 +75,37 @@ export const ListMessagesResponse = z.object({
 });
 export type ListMessagesResponse = z.infer<typeof ListMessagesResponse>;
 
+/** A room the caller belongs to. Renders as an entry in the guild rail. */
+export const Room = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  projectId: z.string().uuid().nullable(),
+});
+export type Room = z.infer<typeof Room>;
+
+export const Channel = z.object({
+  id: z.string().uuid(),
+  roomId: z.string().uuid(),
+  name: z.string(),
+  section: z.string(),
+  kind: z.enum(['text', 'topic']),
+  position: z.number().int(),
+});
+export type Channel = z.infer<typeof Channel>;
+
+/**
+ * A room member joined to their profile. `displayName` is nullable because a
+ * profile row is auto-created on signup before the person has named themselves.
+ */
+export const RoomMember = z.object({
+  userId: z.string().uuid(),
+  displayName: z.string().nullable(),
+  role: z.enum(['user', 'human_node', 'verified_pro', 'admin', 'ops']),
+  scope: z.string(),
+  expiresAt: z.string().nullable(),
+});
+export type RoomMember = z.infer<typeof RoomMember>;
+
 const RoomParams = z.object({ roomId: z.string().uuid() });
 
 export const contract = c.router(
@@ -86,6 +117,52 @@ export const contract = c.router(
         200: HealthResponse,
       },
       summary: 'Liveness probe',
+    },
+
+    listRooms: {
+      method: 'GET',
+      path: '/rooms',
+      responses: {
+        200: z.object({ rooms: z.array(Room) }),
+        401: ApiError,
+      },
+      summary: 'Rooms the caller is a current member of',
+    },
+
+    createRoom: {
+      method: 'POST',
+      path: '/rooms',
+      body: z.object({ name: z.string().trim().min(1).max(80) }),
+      responses: {
+        201: Room,
+        400: ApiError,
+        401: ApiError,
+      },
+      summary: 'Create a room and join it as the first member',
+    },
+
+    listChannels: {
+      method: 'GET',
+      path: '/rooms/:roomId/channels',
+      pathParams: RoomParams,
+      responses: {
+        200: z.object({ channels: z.array(Channel) }),
+        401: ApiError,
+        404: ApiError,
+      },
+      summary: 'Channels in a room',
+    },
+
+    listMembers: {
+      method: 'GET',
+      path: '/rooms/:roomId/members',
+      pathParams: RoomParams,
+      responses: {
+        200: z.object({ members: z.array(RoomMember) }),
+        401: ApiError,
+        404: ApiError,
+      },
+      summary: 'Current members of a room, with profile basics',
     },
 
     listMessages: {

@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import { loadServerEnv } from '@octopus/config';
 import { healthRoutes } from './routes/health';
 import { messageRoutes } from './routes/messages';
+import { roomRoutes } from './routes/rooms';
 import { createAuthVerifier } from './plugins/auth';
 import { requireSupabaseConfig } from './lib/supabase';
 
@@ -35,6 +36,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   }
   const verify = createAuthVerifier(env.SUPABASE_JWKS_URL, env.SUPABASE_JWT_ISSUER);
 
+  await app.register(roomRoutes, { verify, supabase });
   await app.register(messageRoutes, { verify, supabase });
 
   return app;

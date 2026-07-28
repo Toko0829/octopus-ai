@@ -17,6 +17,8 @@ import type { Env } from '@octopus/config';
 export interface SupabaseConfig {
   url: string;
   publishableKey: string;
+  /** Present only where trusted writes are needed. Never sent anywhere. */
+  secretKey?: string;
 }
 
 /**
@@ -35,7 +37,27 @@ export function requireSupabaseConfig(env: Env): SupabaseConfig {
   return {
     url: env.SUPABASE_URL as string,
     publishableKey: env.SUPABASE_PUBLISHABLE_KEY as string,
+    ...(env.SUPABASE_SECRET_KEY ? { secretKey: env.SUPABASE_SECRET_KEY } : {}),
   };
+}
+
+/**
+ * A client that BYPASSES RLS. Only for operations that legitimately have no user
+ * row-context to act within, and only after the route has authorised the caller
+ * itself.
+ *
+ * Bootstrapping a room is the case: the creator cannot insert their own
+ * membership under RLS (they are not a member until the row exists), which is the
+ * same chicken-and-egg the matcher resolves when it admits a node to a task
+ * thread. Never reach for this to make a permission error go away.
+ */
+export function createServiceClient(config: SupabaseConfig): SupabaseClient {
+  if (!config.secretKey) {
+    throw new Error('SUPABASE_SECRET_KEY is required for this operation. See .env.example.');
+  }
+  return createClient(config.url, config.secretKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
 }
 
 /**
