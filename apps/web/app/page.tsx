@@ -53,7 +53,7 @@ export default function Home() {
           marginTop: 28,
         }}
       >
-        An AI that runs full-funnel digital marketing end-to-end for solo founders and creators —
+        An AI that runs full-funnel digital marketing end-to-end for solo founders and creators,
         with expert humans dropped in only where judgment, taste, or access is required. It gets
         smarter with every campaign it runs.
       </p>

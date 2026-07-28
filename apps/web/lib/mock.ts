@@ -45,7 +45,7 @@ export const channels: Channel[] = [
   { id: 'seo', name: 'seo', section: 'Channels', kind: 'text' },
   { id: 'email', name: 'email', section: 'Channels', kind: 'text' },
   { id: 'measure', name: 'measurement', section: 'Channels', kind: 'text' },
-  { id: 'launch-topic', name: 'launch — week 1', section: 'Topics', kind: 'topic' },
+  { id: 'launch-topic', name: 'launch · week 1', section: 'Topics', kind: 'topic' },
 ];
 
 export const plan: PlanCardData = {
@@ -71,7 +71,7 @@ export const plan: PlanCardData = {
     {
       id: 's3',
       title: 'Creative direction',
-      detail: 'Art-direct the hero ad set + brand kit — routed to a human creative node.',
+      detail: 'Art-direct the hero ad set + brand kit, routed to a human creative node.',
       owner: 'HUMAN',
       metric: 'Lena Ortiz',
     },
@@ -85,7 +85,7 @@ export const plan: PlanCardData = {
     {
       id: 's5',
       title: 'Connect ad accounts',
-      detail: 'Authorize Meta & Google — you approve; nothing spends without your sign-off.',
+      detail: 'Authorize Meta & Google. You approve; nothing spends without your sign-off.',
       owner: 'YOU',
     },
     {
@@ -129,14 +129,14 @@ export const seedMessages: Message[] = [
     id: 'm1',
     authorId: 'you',
     kind: 'text',
-    body: 'launch and grow my focus app Rune — get me to my first 1,000 paying users. budget is about $1,500/mo.',
+    body: 'launch and grow my focus app Rune, get me to my first 1,000 paying users. budget is about $1,500/mo.',
     ts: '09:12',
   },
   {
     id: 'm2',
     authorId: 'agent',
     kind: 'text',
-    body: 'On it. I pulled what’s worked for comparable indie SaaS launches and drafted a full-funnel plan — grounded and cited. Humans step in only for creative direction and account access. Here it is:',
+    body: 'On it. I pulled what’s worked for comparable indie SaaS launches and drafted a full-funnel plan, grounded and cited. Humans step in only for creative direction and account access. Here it is:',
     ts: '09:13',
   },
   {

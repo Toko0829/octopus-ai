@@ -31,6 +31,8 @@ Alternates for context:
 - **Honest about limits.** When something needs a human or a lawyer, we say so clearly — that honesty _is_ the trust.
 - **Never breathless AI-hype.** No "magical", no "revolutionary AI", no ✨. Confidence is quiet.
 
+- **No em dashes.** Product copy never uses em dashes (—); use commas, colons, periods, parentheses, or a middot (·). Enforced as an [AGENTS.md](../../AGENTS.md) rule.
+
 ## What the brand is not
 
 - Not a "chatbot" brand. Not a purple-gradient AI startup. Not a hustle/"get-rich" brand. Not a legal/financial advisor (we're informational + accountable hand-off).

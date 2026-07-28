@@ -21,7 +21,7 @@ export function Composer({ onSend }: { onSend: (text: string) => void }) {
         </button>
         <input
           className="composer-input"
-          placeholder="Message #brief — tell Octopus a goal…"
+          placeholder="Message #brief · tell Octopus a goal…"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {

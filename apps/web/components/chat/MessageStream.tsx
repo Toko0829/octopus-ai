@@ -17,7 +17,7 @@ export function MessageStream({ messages, membersById, onApprove, onRequestChang
         <h2 className="display"># brief</h2>
         <p>
           This is where Octopus plans your growth. State a goal and it drafts a cited, full-funnel
-          plan. Nothing goes live — no spend, no publishing — until you approve.
+          plan. Nothing goes live (no spend, no publishing) until you approve.
         </p>
       </div>
 
