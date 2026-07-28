@@ -13,6 +13,8 @@
 - Own the **role model** and the **RLS membership model** that gates every query.
 - Contain `service_role` to trusted server code.
 
+> **Implementation status (Phase 1):** the JWKS verifier is wired as a Fastify `preHandler` (`createRequireAuth`, attached per-route so `/api/health` stays public) and enforced on the chat routes. Verified: missing and malformed bearer tokens are both rejected with `401`.
+
 ## GoTrue asymmetric JWT / JWKS flow
 
 1. Next.js authenticates with `@supabase/ssr`; the session is stored in **httpOnly cookies**. Server Components read it; Route Handlers/Server Actions attach the access token when calling Fastify.

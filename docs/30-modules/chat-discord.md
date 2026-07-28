@@ -6,7 +6,7 @@
 >
 > The visual/interaction spec is in [discord-chat-spec.md](../20-design/discord-chat-spec.md); this module doc is the behavior/data view. Update both on any layout, role, embed, or transport change.
 >
-> **Implementation status (Phase 1, in progress):** the chat **UI shell** is built (mock-driven) at `apps/web/app/app` — 5 regions, roles/badges/presence, inline agent stream, plan-card action surface, ⌘K palette. The **server-authoritative write path + Supabase Realtime transport + persistence** are not wired yet (next Phase-1 step). See [design-system-frontend.md](design-system-frontend.md).
+> **Implementation status (Phase 1, in progress):** the chat **UI shell** is built (mock-driven) at `apps/web/app/app` — 5 regions, roles/badges/presence, inline agent stream, plan-card action surface, ⌘K palette. The **server-authoritative write path and persistence are now live**: `POST /api/rooms/:roomId/messages` and `GET /api/rooms/:roomId/messages` (since-cursor catch-up) in `apps/api`, with delivery to Realtime subscribers verified end-to-end. **Still mock-driven:** `apps/web` does not call these endpoints yet, and presence, threads, reactions, and action embeds are UI-only. See [design-system-frontend.md](design-system-frontend.md).
 
 ## 5-region layout
 
@@ -15,6 +15,12 @@ Guild rail (businesses) · channel sidebar (workstreams) · message list (the st
 ## Message model (server-authoritative)
 
 **Persist-then-broadcast:** client → Next BFF → Fastify `POST /rooms/:id/messages` (JWT) → RLS membership check → `INSERT` with `idempotency_key` + `seq` → Postgres trigger `realtime.broadcast_changes()` → topic `chat:room:{id}`. Optimistic UI reconciled on broadcast. This keeps Postgres the source of truth and lets the AI participate simply by inserting rows.
+
+Implementation notes that callers depend on:
+
+- **`authorId` / `authorKind` are never taken from the request body.** The server sets them from the verified JWT and the `messages_insert_own` policy re-checks both, so a client cannot post as the agent or as another user.
+- **`idempotencyKey` is client-generated and required**, one per composed message and reused across retries. A replayed key returns the original message with `200` instead of `201`; a key already used by a different author or room is refused with `409`.
+- **Broadcast failures are silent by construction.** `realtime.send()` traps its own exceptions, so a dropped broadcast still commits the row and returns `201`. Delivery cannot be inferred from a successful write and must be monitored separately (see [observability.md](../10-architecture/observability.md)); the since-cursor endpoint is the durable fallback.
 
 ## Roles & identity
 
