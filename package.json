@@ -15,7 +15,11 @@
     "lint": "prettier --check .",
     "format": "prettier --write .",
     "check:docs": "node scripts/check-docs.mjs",
-    "clean": "turbo run clean && rimraf node_modules"
+    "clean": "turbo run clean && rimraf node_modules",
+    "ai:install": "uv sync --extra dev --directory services/ai",
+    "ai:dev": "uv run --directory services/ai uvicorn octopus_ai.main:app --reload --port 8000",
+    "ai:lint": "uv run --directory services/ai ruff check .",
+    "ai:test": "uv run --directory services/ai pytest -q"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

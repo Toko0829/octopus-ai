@@ -6,6 +6,7 @@ How to run the Octopus monorepo locally. Product docs live in [README.md](README
 
 - **Node** ≥ 20 (repo targets 22 LTS — see [.nvmrc](.nvmrc); it also runs on 24)
 - **pnpm** 10.x (`corepack enable` will provide it)
+- **Python** ≥ 3.12 and **uv**, for `services/ai` ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). Only needed to run the agent; the rest of the stack works without it.
 
 ## Setup
 
@@ -29,29 +30,55 @@ Run a single app: `pnpm --filter @octopus/web dev` or `pnpm --filter @octopus/ap
 
 ### The Python AI service
 
-`services/ai` is Python and sits outside the pnpm workspace ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). It needs [uv](https://docs.astral.sh/uv/):
+`services/ai` is Python and sits outside the pnpm workspace ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). It needs [uv](https://docs.astral.sh/uv/) on your PATH. If `uv --version` fails after `pip install uv`, the executable is in the per-user scripts directory; add it once:
+
+```powershell
+[Environment]::SetEnvironmentVariable('Path', $env:Path + ';' + (python -c "import site;print(site.USER_BASE)") + '\Scripts', 'User')
+```
+
+Then, from the repo root:
 
 ```bash
-uv sync --extra dev --directory services/ai
+pnpm ai:install
 ```
 
 ```bash
-uv run --directory services/ai uvicorn octopus_ai.main:app --reload --port 8000
+pnpm ai:dev
 ```
 
 Its checks are separate from the Node ones and run as their own CI job:
 
 ```bash
-uv run --directory services/ai ruff check .
+pnpm ai:lint
 ```
 
 ```bash
-uv run --directory services/ai pytest -q
+pnpm ai:test
 ```
 
-`apps/api` finds it via `AI_SERVICE_URL` (default `http://localhost:8000`). With the service down, an agent run posts a system message saying so rather than failing silently.
+`apps/api` finds it via `AI_SERVICE_URL` (default `http://localhost:8000`). With the service down, an agent run posts a system message into the room saying so, rather than failing silently.
 
-**Both must be running.** `apps/web` reads and writes through `apps/api`; with the API down, `/app` renders a "Cannot reach the API" card naming the URL it tried.
+## Running the whole thing
+
+Three processes, one per terminal, all from the repo root:
+
+| Terminal | Command                          | Serves                                    |
+| -------- | -------------------------------- | ----------------------------------------- |
+| 1        | `pnpm --filter @octopus/api dev` | Fastify API (`API_PORT`, default `:3001`) |
+| 2        | `pnpm ai:dev`                    | Python reasoning service (`:8000`)        |
+| 3        | `pnpm --filter @octopus/web dev` | Next.js app (`:3000`)                     |
+
+`pnpm dev` alone starts only the Node apps; the Python service is outside Turborepo and needs its own terminal.
+
+Then open the web app, sign in, create a workspace if you have none, and post a goal. The agent replies inline. If the reply never arrives, check terminal 1 for `agent run failed`, and confirm terminal 2 answers on `/health`.
+
+All three matter, and each fails visibly rather than silently:
+
+- **API down** → `/app` renders a "Cannot reach the API" card naming the URL it tried.
+- **Python service down** → the run posts a system message into the room saying the reasoning service did not respond.
+- **Realtime not connected** → a banner says live updates are off. Messages still load on reload.
+
+> **If the app 500s or behaves oddly after a long editing session,** restart the dev server. Next's dev cache can go stale after many file changes (especially to `package.json` or `.env.local`), and the symptom looks like a code bug that a fresh start clears.
 
 ### If a port is already taken
 
@@ -67,12 +94,13 @@ Next reloads `.env.local` on change; the Fastify service needs a restart.
 
 ## Workspaces
 
-| Path                 | Package              | What                                                        |
-| -------------------- | -------------------- | ----------------------------------------------------------- |
-| `apps/web`           | `@octopus/web`       | Next.js 15 frontend + thin BFF (Phase 0: editorial landing) |
-| `apps/api`           | `@octopus/api`       | Fastify 5 API (Phase 0: `/api/health` + JWKS auth util)     |
-| `packages/config`    | `@octopus/config`    | Zod-validated env + shared constants                        |
-| `packages/contracts` | `@octopus/contracts` | ts-rest + Zod API contract (shared client/server)           |
+| Path                 | Package              | What                                                      |
+| -------------------- | -------------------- | --------------------------------------------------------- |
+| `apps/web`           | `@octopus/web`       | Next.js 15 frontend + thin BFF; chat shell at `/app`      |
+| `apps/api`           | `@octopus/api`       | Fastify 5 API: chat write path, rooms, agent runs         |
+| `packages/config`    | `@octopus/config`    | Zod-validated env + shared constants                      |
+| `packages/contracts` | `@octopus/contracts` | ts-rest + Zod API contract (shared client/server)         |
+| `services/ai`        | `octopus-ai` (uv)    | **Python.** RAG + reasoning core. Outside the pnpm graph. |
 
 Future apps/packages are created when their roadmap phase arrives — see [infra-devops.md](docs/30-modules/infra-devops.md) for the full intended layout.
 
