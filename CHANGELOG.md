@@ -12,6 +12,8 @@ All notable changes to Project Octopus. Every PR appends a one-line entry here (
 
 ### Phase 1 (in progress)
 
+- **Chat schema live on Supabase.** Applied `20260728120000_chat.sql` (rooms/channels/room_members/messages, membership RLS via a `SECURITY DEFINER` helper, `realtime.broadcast_changes()` insert trigger, Realtime subscribe policy) and `20260728160000_harden_security_definer.sql`, which moves the policy helper into a non-exposed `private` schema and drops the default PUBLIC execute grant on the trigger functions — clearing all 8 Supabase security-advisor lints. Updated `data-model.md`.
+
 - **Discord-style chat shell** (branch `phase-1-chat-shell`). Mock-driven `/app` workspace: 5-region layout (guild rail · channels · stream · context panel), roles/badges/presence, inline agent messages with the bioluminescent working pulse, the marquee **plan card** (funnel stages, owner chips, citations with verified dates, approve/request-changes → flywheel-signal capture), composer, and a ⌘K command palette. "Ink & Bioluminescence" tokens (`globals.css` + `chat.css`), distinctive type via `next/font` (Fraunces · Hanken Grotesk · JetBrains Mono), light + dark skins, accessible. Verified: typecheck, build, lint green; renders + interactions confirmed in-browser; no console errors.
 
 ### Changed
