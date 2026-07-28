@@ -24,7 +24,13 @@ export default async function WorkspacePage() {
   // No rooms is the normal state for a new account, not an error. Say what is
   // true rather than rendering an empty chrome that looks broken.
   if (rooms.length === 0) {
-    return <EmptyWorkspace reachedApi={roomsResult !== null} email={user.email ?? null} />;
+    return (
+      <EmptyWorkspace
+        reachedApi={roomsResult !== null}
+        email={user.email ?? null}
+        apiUrl={process.env.API_URL ?? 'http://localhost:3001'}
+      />
+    );
   }
 
   const active = rooms[0]!;

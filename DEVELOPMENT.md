@@ -27,6 +27,20 @@ pnpm check:docs  # doc-drift check against .docmeta.yml (see below)
 
 Run a single app: `pnpm --filter @octopus/web dev` or `pnpm --filter @octopus/api dev`.
 
+**Both must be running.** `apps/web` reads and writes through `apps/api`; with the API down, `/app` renders a "Cannot reach the API" card naming the URL it tried.
+
+### If a port is already taken
+
+The defaults are web `:3000` and api `:3001`, and unrelated dev servers commonly squat them. To move the API, set **both** halves or the web app will keep calling the old address:
+
+| Where                 | Variable   | Example                 |
+| --------------------- | ---------- | ----------------------- |
+| `apps/api/.env`       | `API_PORT` | `3011`                  |
+| `apps/web/.env.local` | `API_URL`  | `http://localhost:3011` |
+| `apps/api/.env`       | `WEB_URL`  | web's origin, for CORS  |
+
+Next reloads `.env.local` on change; the Fastify service needs a restart.
+
 ## Workspaces
 
 | Path                 | Package              | What                                                        |

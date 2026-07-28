@@ -11,9 +11,13 @@ import { CreateRoom } from './CreateRoom';
 export function EmptyWorkspace({
   reachedApi,
   email,
+  apiUrl,
 }: {
   reachedApi: boolean;
   email: string | null;
+  /** Where the server actually looked. Naming a fixed port here misleads whenever
+      API_URL is overridden, which is exactly when this message gets read. */
+  apiUrl: string;
 }) {
   return (
     <main className="empty-wrap">
@@ -29,8 +33,10 @@ export function EmptyWorkspace({
             </>
           ) : (
             <>
-              The workspace could not load because the API did not respond. Check that it is running
-              on port 3001, then reload.
+              The workspace could not load because the API at <code>{apiUrl}</code> did not respond.
+              Start it with <code>pnpm --filter @octopus/api dev</code>. If that port is taken by
+              something else, set <code>API_PORT</code> in <code>apps/api/.env</code> and a matching{' '}
+              <code>API_URL</code> in <code>apps/web/.env.local</code>, then restart both.
             </>
           )}
         </p>
