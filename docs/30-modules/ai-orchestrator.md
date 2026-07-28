@@ -2,7 +2,7 @@
 
 > The **business-operator brain**: a durable, supervisor-pattern agent that plans a task DAG, executes AI-capable steps via typed tools, grounds every step in RAG, enforces guardrails, and suspends on human waitpoints. The **single writer** to the task graph.
 >
-> **Owner paths:** `apps/agent/**`, `packages/agent-tools/**` · **Depends on:** rag-knowledge, business-projects-workflow, chat-discord, human-nodes-marketplace, payments-billing, integrations.
+> **Owner paths:** `services/ai/**` (Python reasoning core + RAG), `apps/agent/**` (Node durable runner + tool execution), `packages/agent-tools/**` · **Depends on:** rag-knowledge, business-projects-workflow, chat-discord, human-nodes-marketplace, payments-billing, integrations.
 >
 > Update this doc on any change to the planning loop, tool registry, guardrails, escalation triggers, or state model.
 

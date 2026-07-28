@@ -32,9 +32,16 @@
            │ complete waitpoint                          │ INSERT rows (AI as member)
            ▼                                             │
    ┌───────────────────────────────┐          ┌──────────┴───────────────┐
-   │ Trigger.dev v3 (durable)      │─────────▶│ apps/agent (AI SDK loop)  │
-   │ waitpoints · retries · run UI │◀─────────│ runs AS durable tasks     │
-   └───────────────────────────────┘          └──────────────────────────┘
+   │ Trigger.dev v3 (durable)      │─────────▶│ apps/agent (Node)         │
+   │ waitpoints · retries · run UI │◀─────────│ durable steps · TOOLS     │
+   └───────────────────────────────┘          └──────────┬───────────────┘
+                                                         │ OpenAPI HTTP
+                                                         ▼
+                                              ┌──────────────────────────┐
+                                              │ services/ai (Python)      │
+                                              │ RAG · reasoning · eval    │
+                                              │ PROPOSES, never writes    │
+                                              └──────────────────────────┘
    pg-boss (utility jobs) · Stripe Connect (escrow/payouts) · Storage (artifacts)
 ```
 
@@ -42,22 +49,23 @@ Region co-location: Supabase + Fly.io services are co-located in the region near
 
 ## Service map
 
-| Service        | Tech                                                                                     | Responsibility                                                                                                                                                                         |
-| -------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/web`     | Next.js 15 App Router (Vercel), `@supabase/ssr`, RSC, ts-rest client                     | Discord-style UI; holds the session cookie; light read-aggregation; **proxies all mutations/long work to Fastify**; streams assistant tokens from Realtime. Never runs agent loops.    |
-| `apps/api`     | Node 22 + Fastify 5 (Fly.io), jose/JWKS, `fastify-type-provider-zod`, `@fastify/swagger` | Authoritative REST API. Verifies JWTs; owns the chat **write** path; project/task CRUD; triggers agent runs; hosts webhooks (Stripe, Trigger.dev, IDV).                                |
-| `apps/matcher` | Fastify (may start as a module of `api`), `service_role`, geo + skill/rating filters     | Finds eligible nodes for a human task, notifies, manages accept/decline, adds the accepted node to the room (RLS membership), and **completes the agent's waitpoint** on verification. |
-| `apps/agent`   | Vercel AI SDK v5 / Anthropic SDK, executed **as Trigger.dev tasks**, Zod-typed tools     | The business-operator loop: plans, calls tools, persists plan/tasks/artifacts, streams tokens to chat, calls `request_human_node`.                                                     |
-| Trigger.dev v3 | Managed (Trigger Cloud) or self-host on Fly.io                                           | Durable orchestration: long-run compute, waitpoints, retries, idempotency, per-run trace UI.                                                                                           |
-| pg-boss        | On Supabase Postgres                                                                     | Utility jobs (email, thumbnails, RAG re-index, reconciliation) — no Redis at MVP.                                                                                                      |
-| Supabase       | Postgres 16 + RLS, GoTrue (JWKS), Storage, Realtime                                      | Single source of truth + auth + storage + chat transport.                                                                                                                              |
+| Service        | Tech                                                                                     | Responsibility                                                                                                                                                                                                                     |
+| -------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/web`     | Next.js 15 App Router (Vercel), `@supabase/ssr`, RSC, ts-rest client                     | Discord-style UI; holds the session cookie; light read-aggregation; **proxies all mutations/long work to Fastify**; streams assistant tokens from Realtime. Never runs agent loops.                                                |
+| `apps/api`     | Node 22 + Fastify 5 (Fly.io), jose/JWKS, `fastify-type-provider-zod`, `@fastify/swagger` | Authoritative REST API. Verifies JWTs; owns the chat **write** path; project/task CRUD; triggers agent runs; hosts webhooks (Stripe, Trigger.dev, IDV).                                                                            |
+| `apps/matcher` | Fastify (may start as a module of `api`), `service_role`, geo + skill/rating filters     | Finds eligible nodes for a human task, notifies, manages accept/decline, adds the accepted node to the room (RLS membership), and **completes the agent's waitpoint** on verification.                                             |
+| `apps/agent`   | Node 22, executed **as Trigger.dev tasks**, Zod-typed tools                              | Drives the run: calls `services/ai` for each reasoning step, then **executes the side effects** it proposes — persists plan/tasks/artifacts, posts to chat, `request_human_node`. Authz and spend caps live here, in tool code.    |
+| `services/ai`  | **Python** (FastAPI + Pydantic, LlamaIndex), OpenAPI-typed seam, stateless               | The reasoning core and RAG: retrieval, planning, drafting, tool **selection**, eval gates, provider calls. **Proposes only** — it never writes rows or moves money. ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) |
+| Trigger.dev v3 | Managed (Trigger Cloud) or self-host on Fly.io                                           | Durable orchestration: long-run compute, waitpoints, retries, idempotency, per-run trace UI.                                                                                                                                       |
+| pg-boss        | On Supabase Postgres                                                                     | Utility jobs (email, thumbnails, RAG re-index, reconciliation) — no Redis at MVP.                                                                                                                                                  |
+| Supabase       | Postgres 16 + RLS, GoTrue (JWKS), Storage, Realtime                                      | Single source of truth + auth + storage + chat transport.                                                                                                                                                                          |
 
 ## The two-layer brain
 
 1. **Durable execution backbone** (Trigger.dev v3) — survives crashes/deploys, retries steps, and _sleeps for days_ on human waitpoints at zero compute cost. It owns _when_ work runs and guarantees replay-safety.
-2. **Supervisor / orchestrator reasoning core** (`apps/agent`) — decides _what_ to do: plans the task DAG (single writer), routes tasks (AI/HUMAN/USER), calls typed tools, and runs a maker-checker critic. Read-only sub-agents are spawned as tools; they never write the DAG.
+2. **Supervisor / orchestrator reasoning core** (`services/ai`, Python) — decides _what_ to do: plans the task DAG, routes tasks (AI/HUMAN/USER), selects tools, and runs a maker-checker critic. Read-only sub-agents are spawned as tools; they never write the DAG. It **proposes**; `apps/agent` (Node) commits the result and performs every side effect.
 
-Separation matters: the reasoning core can be non-deterministic and fallible; the backbone makes the _system_ deterministic, resumable, and auditable around it.
+Separation matters: the reasoning core can be non-deterministic and fallible; the backbone makes the _system_ deterministic, resumable, and auditable around it. The language split reinforces it — a jailbroken prompt in the Python core still cannot move money, because money only exists behind Node tool code and Postgres.
 
 ## Language split — Python AI service ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md))
 
