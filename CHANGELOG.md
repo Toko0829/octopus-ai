@@ -22,6 +22,7 @@ All notable changes to Project Octopus. Every PR appends a one-line entry here (
 
 ### Changed
 
+- **Decision: Python AI service + Node/Fastify backend** ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). The AI/RAG layer (ingestion, retrieval, agent reasoning, eval, models) runs as a separate Python service (FastAPI + LlamaIndex); Node/Fastify keeps chat/auth/marketplace/payments + the durable backbone + all side-effecting tools. _Python proposes, Node executes._ Updated `README.md`, `architecture.md`, `rag.md`, `tech-stack.md`, `ai-orchestrator.md`, `rag-knowledge.md`, `infra-devops.md`, `.docmeta.yml`.
 - **Strategy: wedge-first go-to-market.** First shipped vertical is now **full-funnel digital marketing for solo founders/creators**; business-formation (the cafe story, incl. Georgia/Tbilisi) becomes a later expansion vertical (north star unchanged). Introduced the **learning flywheel** as the moat — ingest campaigns+outcomes · human-node feedback as labeled data · auto-optimize on live metrics · fine-tune a proprietary model later.
 - New docs: `docs/10-architecture/learning-flywheel.md`, `docs/30-modules/marketing-growth-engine.md`, `docs/60-playbooks/full-funnel-creator.md`.
 - Updated to reflect the pivot: `README.md`, `docs/00-overview/vision.md`, `core-loop.md`, `personas.md`, `glossary.md`, `docs/10-architecture/roadmap.md`, `rag.md`, `docs/30-modules/{rag-knowledge,analytics,integrations,ai-orchestrator}.md`, `docs/60-playbooks/README.md`, `.docmeta.yml`.
