@@ -1,3 +1,6 @@
+'use client';
+
+import { useCallback, useEffect, useRef } from 'react';
 import type { UiMember, UiMessage } from '../../lib/types';
 import { RoleBadge } from './ui';
 import { OctopusMark } from './icons';
@@ -33,9 +36,33 @@ function authorOf(m: UiMessage, membersById: Record<string, UiMember>): UiMember
   };
 }
 
+/** Treat the reader as "following" if they are within this many px of the end. */
+const PINNED_THRESHOLD_PX = 80;
+
 export function MessageStream({ channelName, messages, membersById }: Props) {
+  const streamRef = useRef<HTMLDivElement>(null);
+  // Start pinned: a freshly opened room should show the newest message.
+  const pinnedRef = useRef(true);
+
+  const onScroll = useCallback(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedRef.current = distanceFromBottom < PINNED_THRESHOLD_PX;
+  }, []);
+
+  const newest = messages[messages.length - 1]?.id;
+
+  useEffect(() => {
+    const el = streamRef.current;
+    // Only follow if the reader is already at the bottom. Yanking someone who
+    // scrolled up to read history is worse than missing the newest line.
+    if (!el || !pinnedRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [newest, messages.length]);
+
   return (
-    <div className="stream">
+    <div className="stream" ref={streamRef} onScroll={onScroll}>
       <div className="stream-intro">
         <h2 className="display">{channelName ? `#${channelName}` : 'Workspace'}</h2>
         <p>

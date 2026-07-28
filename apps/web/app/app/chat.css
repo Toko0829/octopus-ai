@@ -18,6 +18,14 @@
   align-items: center;
   gap: var(--sp-2);
   padding: var(--sp-3) 0;
+  /* One entry per business, so this list grows unbounded with the user. */
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.rail::-webkit-scrollbar {
+  display: none;
 }
 .rail-home {
   width: 40px;
@@ -96,6 +104,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 .sidebar-head {
   padding: var(--sp-4) var(--sp-4) var(--sp-3);
@@ -114,6 +123,7 @@
 }
 .chan-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--sp-3) var(--sp-2);
 }
@@ -184,10 +194,16 @@
 }
 
 /* ============================ Main column ============================ */
+/* min-height: 0 on every scroll ancestor is load-bearing, not defensive.
+   Flex and grid items default to min-height: auto, which refuses to shrink below
+   the content's intrinsic height. Without it the child's `overflow-y: auto` never
+   gets a bounded height to scroll inside, so a full message list simply overflows
+   and is clipped by .shell's overflow: hidden. */
 .main {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: var(--bg);
 }
 .topbar {
@@ -241,11 +257,20 @@
 /* ============================ Message stream ============================ */
 .stream {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--sp-6) var(--sp-6) var(--sp-4);
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
+}
+
+/* Sit the conversation at the bottom while it is shorter than the viewport, the
+   way every chat does. Done with an auto margin rather than
+   `justify-content: flex-end`, which clips overflow at the TOP of a scroll
+   container in some engines and would make old messages unreachable. */
+.stream > *:first-child {
+  margin-top: auto;
 }
 .stream-intro {
   padding: var(--sp-4) 0 var(--sp-6);
@@ -654,6 +679,7 @@
 .context {
   background: var(--surface);
   border-left: 1px solid var(--border);
+  min-height: 0;
   overflow-y: auto;
   padding: var(--sp-5) var(--sp-4);
 }
