@@ -53,6 +53,10 @@ RSC for reads; streaming; **ts-rest** typed client from `packages/contracts`; op
 
 Automated checks (lint rules / CI) reject: violet / 2-stop purple gradient, sparkle/"magic"/AI badges, default un-customized shadcn + Inter + zinc, glassmorphism-everywhere, conic/neon glows, pure-`#000` dark, and any corner chatbot bubble. See [ADR-0005](../40-adr/0005-house-style-not-purple-gradient.md).
 
+## Copy conventions
+
+Product copy follows the brand voice ([brand.md](../20-design/brand.md)): **no em dashes** (—) in any user-facing text (landing, chat, plan cards, agent messages, labels). Use a comma, colon, period, parentheses, or a middot (·) instead. Enforced as [AGENTS.md](../../AGENTS.md) rule 22; lint/CI should flag em dashes in `apps/web` strings.
+
 ## Key entities
 
 `packages/ui` components · design tokens (CSS vars) · theme definitions · chat UI components · command-palette actions.
