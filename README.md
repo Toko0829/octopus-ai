@@ -42,7 +42,7 @@ Full 10-step trace: [docs/00-overview/core-loop.md](docs/00-overview/core-loop.m
 | Backend services                 | **Node.js 22 + Fastify 5** (`apps/api` authoritative REST, `apps/matcher` marketplace) on Fly.io                                                                   |
 | Data · auth · realtime · storage | **Supabase** — Postgres 16 (RLS), GoTrue asymmetric JWT/JWKS, Storage, Realtime (Broadcast + Presence)                                                             |
 | Durable agent orchestration      | **Trigger.dev v3** (baseline) with human-in-the-loop waitpoints; **Temporal** as the documented escape hatch; **pg-boss** for utility jobs                         |
-| RAG                              | **pgvector** (`halfvec`/HNSW) hybrid search in the same Postgres · **OpenAI `text-embedding-3-large`** (1024 dims) · **Cohere Rerank 3.5**                         |
+| RAG                              | **pgvector** (`halfvec`/HNSW) hybrid search in the same Postgres · **OpenAI `text-embedding-3-large`** (1024 dims) · **Cohere Rerank v3.5**                         |
 | AI providers                     | **OpenAI** for generation + embeddings; **Cohere** for rerank (OpenAI has no reranker). [ADR-0007](docs/40-adr/0007-openai-generation-embeddings-cohere-rerank.md) |
 | Contract boundary                | OpenAPI + **ts-rest**, Zod schemas shared in `packages/contracts`                                                                                                  |
 
@@ -53,7 +53,7 @@ Pinned versions, rejected alternatives, and upgrade policy: [tech-stack.md](docs
 ## 4. RAG Summary
 
 - **Stay in Postgres** — `pgvector` `halfvec(1024)`, HNSW cosine, iterative scans. Relational, permissioned (RLS multi-tenant isolation), transactionally consistent. ([ADR-0002](docs/40-adr/0002-stay-in-postgres-pgvector.md))
-- **Hybrid retrieval:** dense (OpenAI `text-embedding-3-large` @ 1024 dims, on _contextualized_ chunks) + sparse (`tsvector`/BM25) fused via **RRF (k=60)**, then **Cohere Rerank 3.5** over top-40 → top 6–8. ([ADR-0007](docs/40-adr/0007-openai-generation-embeddings-cohere-rerank.md))
+- **Hybrid retrieval:** dense (OpenAI `text-embedding-3-large` @ 1024 dims, on _contextualized_ chunks) + sparse (`tsvector`/BM25) fused via **RRF (k=60)**, then **Cohere Rerank v3.5** over top-40 → top 6–8. ([ADR-0007](docs/40-adr/0007-openai-generation-embeddings-cohere-rerank.md))
 - **Multilingual by construction** (EU languages + Georgian/Russian for the future pack); **one** embedding model across the whole corpus so a single HNSW index is shared.
 - **Contextual retrieval** (Anthropic-style) + layout-aware parsing; structured sources (suppliers, cost benchmarks) stored as **typed rows**, not prose chunks.
 - **Freshness is a first-order feature:** effective-dating, content-hash change detection, `pg_cron` re-crawls, "last verified" dates, human re-verification on high-stakes stale data.

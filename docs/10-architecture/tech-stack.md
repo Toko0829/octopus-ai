@@ -19,7 +19,7 @@
 | Utility jobs      | `pg-boss`                                                 | latest                                           | on Postgres, no Redis                                                                                     |
 | RAG orchestration | LlamaIndex (TS + Python worker)                           | latest                                           | ingestion + retrieval                                                                                     |
 | Embeddings        | **OpenAI `text-embedding-3-large`**                       | request `dimensions: 1024`                       | one model for the whole corpus ([ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md)) |
-| Rerank            | Cohere `rerank-3.5`                                       | —                                                | cross-encoder over top-40; OpenAI has no reranker                                                         |
+| Rerank            | Cohere `rerank-v3.5`                                       | —                                                | cross-encoder over top-40; OpenAI has no reranker                                                         |
 | Generation        | **OpenAI** (tiered: strong / fast / cheap)                | latest IDs — verify, do not hardcode from memory | planner/executor/classifier tiering                                                                       |
 | AI SDK            | `openai` (Python) in `services/ai`                        | latest 1.x                                       | the reasoning loop is Python ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md))               |
 | Payments          | Stripe Connect (Express)                                  | latest API                                       | escrow-equivalent + payouts                                                                               |
@@ -50,7 +50,7 @@
 ## RAG stack
 
 - **pgvector** in-Postgres (`halfvec(1024)`, HNSW cosine, iterative scans) — [ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md).
-- **OpenAI `text-embedding-3-large`** embeddings at `dimensions: 1024` (Matryoshka-trained), **Cohere Rerank 3.5**, Postgres FTS (`tsvector`/GIN) for sparse, RRF fusion. See [ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md).
+- **OpenAI `text-embedding-3-large`** embeddings at `dimensions: 1024` (Matryoshka-trained), **Cohere Rerank v3.5**, Postgres FTS (`tsvector`/GIN) for sparse, RRF fusion. See [ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md).
 - **LlamaIndex** for ingestion + query transformation; **LlamaParse / Unstructured / Docling** for layout-aware parsing/OCR.
 - Full spec: [rag.md](rag.md).
 

@@ -7,7 +7,7 @@
 
 ## Context
 
-The pinned stack chose **Voyage** `voyage-3-large` for embeddings, **Cohere** `rerank-3.5` for reranking, and **Anthropic Claude** for generation. The project owner has elected to standardise on the **OpenAI API**.
+The pinned stack chose **Voyage** `voyage-3-large` for embeddings, **Cohere** `rerank-v3.5` for reranking, and **Anthropic Claude** for generation. The project owner has elected to standardise on the **OpenAI API**.
 
 "Use OpenAI" covers three distinct jobs, and OpenAI covers them unevenly:
 
@@ -28,7 +28,7 @@ The decision is being taken while **the corpus is empty**, so it costs nothing n
 
 - **Generation → OpenAI.** Model tiering (strong for planning/critic, fast for executor steps, cheap for classification) is preserved; only the provider changes. Model IDs are resolved from configuration and **verified against the provider**, never hardcoded from memory (AGENTS.md rule 21).
 - **Embeddings → OpenAI `text-embedding-3-large`, requested at `dimensions: 1024`.** The model is trained with Matryoshka Representation Learning and accepts a `dimensions` parameter, so it emits 1024-dim vectors directly. **`doc_chunks.embedding halfvec(1024)` and the HNSW index are unchanged.**
-- **Rerank → Cohere `rerank-3.5`, retained.** This is the one stage OpenAI cannot serve. Rerank is billed per search rather than per token, so the marginal cost of keeping one extra provider for it is small relative to the retrieval quality it buys.
+- **Rerank → Cohere `rerank-v3.5`, retained.** This is the one stage OpenAI cannot serve. Rerank is billed per search rather than per token, so the marginal cost of keeping one extra provider for it is small relative to the retrieval quality it buys.
 - `embed_model` continues to be versioned on every `doc_chunks` row, so a future re-embed stays traceable.
 
 ## Rationale

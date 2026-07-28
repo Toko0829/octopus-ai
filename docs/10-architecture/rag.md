@@ -58,7 +58,7 @@ Heavy ingestion runs as background jobs (pg-boss / Trigger.dev), **never in the 
 2. **Dense** — `halfvec` HNSW cosine over pre-filtered chunks (OpenAI embeddings, 1024 dims).
 3. **Sparse** — Postgres FTS (`websearch_to_tsquery`, GIN), per-language configs. Catches exact tokens (statute numbers, license codes, form IDs) that dense blurs. Upgrade path: ParadeDB `pg_search` for true BM25.
 4. **Fusion** — **RRF (k=60)** merging dense + sparse in one SQL query (two CTEs + fused rank). Rank-based → no score normalization.
-5. **Rerank** — **Cohere Rerank 3.5** cross-encoder over the fused **top-40** → return **top 6–8**. Apply a relevance-score **threshold to DROP** weak chunks rather than pad context. Optional MMR dedup before rerank when sources are redundant.
+5. **Rerank** — **Cohere Rerank v3.5** cross-encoder over the fused **top-40** → return **top 6–8**. Apply a relevance-score **threshold to DROP** weak chunks rather than pad context. Optional MMR dedup before rerank when sources are redundant.
 
 ## Two corpora: reference knowledge + real outcomes
 

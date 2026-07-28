@@ -23,7 +23,7 @@ Vectors live in the same Postgres as everything else — relational, RLS-permiss
 
 ## Retrieval
 
-Query transformation (self-query filters, multi-query/HyDE, decomposition, routing) → dense (OpenAI `text-embedding-3-large`, 1024 dims) + sparse (`tsvector`/BM25) → **RRF (k=60)** → **Cohere Rerank 3.5** over top-40 → top 6–8, with a relevance threshold that **drops** weak chunks.
+Query transformation (self-query filters, multi-query/HyDE, decomposition, routing) → dense (OpenAI `text-embedding-3-large`, 1024 dims) + sparse (`tsvector`/BM25) → **RRF (k=60)** → **Cohere Rerank v3.5** over top-40 → top 6–8, with a relevance threshold that **drops** weak chunks.
 
 ## Jurisdiction packs
 
