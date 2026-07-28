@@ -30,7 +30,7 @@ export function PlanCard({ plan, state = 'pending', onApprove, onRequestChanges 
       {approved && (
         <div className="plan-approved-banner">
           <IconCheck width={15} height={15} />
-          Plan approved — I’ll start the AI-owned steps and line up the human ones.
+          Plan approved. I’ll start the AI-owned steps and line up the human ones.
         </div>
       )}
 

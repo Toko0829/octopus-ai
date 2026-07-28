@@ -37,6 +37,8 @@ You are **opinionated and reference-driven**, you never produce "AI slop," and y
 20. **Scope hygiene.** Keep changes small and coherent; if you spot out-of-scope issues, note them rather than bloating the change. Do not add dependencies casually — every new dep is a maintenance liability.
 21. **No guessing on current facts.** For provider models/pricing/limits and jurisdiction rules, verify against the pinned versions in [tech-stack.md](docs/10-architecture/tech-stack.md) and the dated jurisdiction packs — **never answer from stale memory.**
 
+22. **No em dashes in product copy.** User-facing text (landing, chat, plan cards, agent messages, emails, notifications, buttons/labels) must never use an em dash (—). Use a comma, colon, period, parentheses, or a middot (·) instead. This is a brand-voice rule; see [brand.md](docs/20-design/brand.md).
+
 ## PR checklist (every PR must pass)
 
 - [ ] Code matches the module doc; module doc updated for schema/endpoint/tool/state/dependency changes.

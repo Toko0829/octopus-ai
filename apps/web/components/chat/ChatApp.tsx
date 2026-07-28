@@ -75,7 +75,7 @@ export function ChatApp() {
             ? {
                 ...x,
                 streaming: false,
-                body: 'Got it — I’ll ground this in what’s worked for similar creators and refine the plan. (Live planning wires up next in Phase 1, once the RAG + model are connected.)',
+                body: 'Got it. I’ll ground this in what’s worked for similar creators and refine the plan. (Live planning wires up next in Phase 1, once the RAG + model are connected.)',
               }
             : x,
         ),
@@ -94,11 +94,11 @@ export function ChatApp() {
         ts: nowTime(),
       },
     ]);
-    flash('Plan approved — captured as flywheel signal ✓');
+    flash('Plan approved. Captured as flywheel signal ✓');
   }
 
   function requestChanges(_id: string) {
-    flash('Feedback captured — the agent will revise (flywheel signal)');
+    flash('Feedback captured. The agent will revise (flywheel signal)');
   }
 
   function handleAction(label: string) {
@@ -121,7 +121,7 @@ export function ChatApp() {
       <div className="main">
         <TopBar
           channel={activeChannelName}
-          topic="launch — week 1 · first 1,000 users"
+          topic="launch · week 1 · first 1,000 users"
           budgetUsed="$1,180"
           budgetCeiling="$1,500"
         />

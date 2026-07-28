@@ -20,7 +20,7 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Octopus — the AI that runs your business',
+  title: 'Octopus · the AI that runs your business',
   description:
     'Full-funnel digital marketing, run end-to-end by an AI with expert humans in the loop.',
 };
