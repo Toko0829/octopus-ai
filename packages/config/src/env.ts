@@ -9,13 +9,14 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
-  // Public — safe for the browser. Optional in Phase 0 (no Supabase project yet);
-  // make required in Phase 1 when auth is enforced. See docs/10-architecture/roadmap.md.
+  // Web (public, browser-safe). Publishable key only, never a secret key.
   NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional(),
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1).optional(),
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().min(1).optional(),
 
-  // Server-only.
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  // API (server-only). Supabase new key format: sb_publishable_... and sb_secret_...
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_PUBLISHABLE_KEY: z.string().min(1).optional(),
+  SUPABASE_SECRET_KEY: z.string().min(1).optional(),
   SUPABASE_JWKS_URL: z.string().url().optional(),
   SUPABASE_JWT_ISSUER: z.string().url().optional(),
 

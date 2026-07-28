@@ -26,5 +26,7 @@ Thumbs.db
 # Vercel / deploy
 .vercel
 
-# Editor tooling
+# Editor / agent tooling
 .claude/
+.agents/
+skills-lock.json
