@@ -63,6 +63,17 @@ Managed Trigger.dev first; self-host (then Temporal) as the documented escape ha
 
 OpenTelemetry, Sentry, LLM-trace sink, Logflare, PostHog, uptime/synthetics — wired centrally in `packages/observability`. Conventions in [observability.md](../10-architecture/observability.md).
 
+## Python AI service ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md))
+
+The AI/RAG layer lives in `services/ai` (Python), alongside the Node workspaces:
+
+- **Layout:** `services/ai` with `pyproject.toml` + **uv** lockfile (kept out of the pnpm workspace graph; Turborepo can shell out to its scripts).
+- **CI:** a parallel job — `uv sync`, **ruff** (lint/format), **pytest**, and the **Ragas/DeepEval eval gate** on the RAG golden set (same thresholds as [rag.md](../10-architecture/rag.md)).
+- **Deploy:** Fly.io container **co-located with Supabase Postgres** to keep pgvector round-trips cheap.
+- **Secrets/config:** same Doppler/Infisical source; `service_role` is server-only; the service never ships to a client.
+- **Seam:** FastAPI auto-OpenAPI → a generated typed TS client for the Node side (consistent with [ADR-0004](../40-adr/0004-tsrest-over-trpc.md)).
+- **Doc registry:** `.docmeta.yml` maps `services/ai/**` to its owning docs.
+
 ## Scaling escape hatches (with triggers)
 
 | Escape hatch                                   | Trigger                                                                                                                           |

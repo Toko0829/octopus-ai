@@ -45,6 +45,8 @@ Full 10-step trace: [docs/00-overview/core-loop.md](docs/00-overview/core-loop.m
 | RAG                              | **pgvector** (`halfvec`/HNSW) hybrid search in the same Postgres · **Voyage-3-large** embeddings · **Cohere Rerank 3.5**                   |
 | Contract boundary                | OpenAPI + **ts-rest**, Zod schemas shared in `packages/contracts`                                                                          |
 
+> The AI/RAG layer runs as a **separate Python service** (FastAPI); Node/Fastify owns everything else. _Python proposes, Node executes._ See [ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md).
+
 Pinned versions, rejected alternatives, and upgrade policy: [tech-stack.md](docs/10-architecture/tech-stack.md).
 
 ## 4. RAG Summary
@@ -66,6 +68,8 @@ Full spec: [rag.md](docs/10-architecture/rag.md) · Flywheel: [learning-flywheel
 - **Chat transport:** Supabase Realtime **Broadcast-from-Postgres** + Presence behind an abstraction, with a documented migration to a Fastify uWebSockets gateway past the ~500-concurrent ceiling. ([ADR-0003](docs/40-adr/0003-realtime-broadcast-not-postgres-changes.md))
 - **Authorization is defense-in-depth:** Fastify JWKS verification **plus** Postgres RLS membership as the real backstop; `service_role` never reaches the client.
 - **Every side effect is idempotent and event-sourced;** money/irreversible tools enforce spend caps and RBAC **in tool code, not prompts.**
+
+- **Language split ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)):** a **Python AI service** (FastAPI) owns RAG + agent reasoning + eval + models; **Node/Fastify** owns chat, auth, marketplace, payments, and the durable backbone + all side-effecting tools. Python decides _what_; Node does the side effects with guardrails.
 
 Full topology + 10-step data flow: [architecture.md](docs/10-architecture/architecture.md).
 

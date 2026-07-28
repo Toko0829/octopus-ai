@@ -11,6 +11,10 @@
 - **Durable execution backbone** (Trigger.dev v3): each agent run is a durable task — survives crashes/deploys, retries steps, and **sleeps for days on waitpoints** at zero compute. See [ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md).
 - **Supervisor / orchestrator reasoning core**: the single writer to the task DAG. Spawns **ephemeral, read-only sub-agents as tools** (research, critique); they never write the DAG.
 
+## Language & service boundary ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md))
+
+The **reasoning core runs in the Python AI service** (`services/ai`, FastAPI + LlamaIndex): planning, drafting, RAG retrieval, and **tool selection** (deciding _what_ to do). The **durable backbone stays in Node** (`apps/agent`, Trigger.dev): it drives the Python core per step, holds human waitpoints, and executes **all side-effecting tools** (`post_message`, `write_artifact`, escrow, `request_human_node`) in the Postgres/RLS/Stripe world. **Python proposes, Node executes** — so authz + spend caps stay in Node tool code, and a jailbroken prompt in the Python core still cannot move money.
+
 ## Planner / executor loop
 
 - **Model tiering:** stronger model for planning + critic, faster model for executor steps, cheap model for classification/routing. Never a single hardcoded model.
