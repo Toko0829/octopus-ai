@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '../../lib/supabase/client';
 import './sign-in.css';
@@ -15,7 +15,7 @@ import './sign-in.css';
 type Mode = 'signin' | 'signup';
 type Msg = { tone: 'error' | 'ok'; text: string } | null;
 
-export default function SignInPage() {
+function SignInForm() {
   const router = useRouter();
   const params = useSearchParams();
   const next = params.get('next') ?? '/app';
@@ -162,5 +162,26 @@ export default function SignInPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+/**
+ * `useSearchParams` (we read `?next=`) opts a route out of prerendering unless it
+ * sits behind a Suspense boundary. Without this the production build fails on
+ * /sign-in, which `next dev` never reveals because dev does not prerender.
+ */
+export default function SignInPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="auth-wrap">
+          <div className="auth-card">
+            <div className="auth-mark">Octopus</div>
+          </div>
+        </main>
+      }
+    >
+      <SignInForm />
+    </Suspense>
   );
 }
