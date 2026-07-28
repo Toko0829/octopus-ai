@@ -23,7 +23,7 @@ Vectors live in the same Postgres as everything else — relational, RLS-permiss
 
 ## Retrieval
 
-Query transformation (self-query filters, multi-query/HyDE, decomposition, routing) → dense (Voyage-3-large) + sparse (`tsvector`/BM25) → **RRF (k=60)** → **Cohere Rerank 3.5** over top-40 → top 6–8, with a relevance threshold that **drops** weak chunks.
+Query transformation (self-query filters, multi-query/HyDE, decomposition, routing) → dense (OpenAI `text-embedding-3-large`, 1024 dims) + sparse (`tsvector`/BM25) → **RRF (k=60)** → **Cohere Rerank 3.5** over top-40 → top 6–8, with a relevance threshold that **drops** weak chunks.
 
 ## Jurisdiction packs
 
@@ -48,7 +48,7 @@ Suppliers and cost benchmarks are stored as **typed rows**, not prose chunks, so
 
 ## Multilingual handling
 
-One strong multilingual embedder (Voyage-3-large) across the corpus; per-language `tsvector` configs for sparse. EU languages now; Georgian/Russian for the founding pack.
+One strong multilingual embedder (OpenAI `text-embedding-3-large`) across the corpus; per-language `tsvector` configs for sparse. Retrieval quality for the later Georgian/Russian pack must be **measured at the eval gate**, not assumed ([ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md)). EU languages now; Georgian/Russian for the founding pack.
 
 ## Implementation (Python service)
 

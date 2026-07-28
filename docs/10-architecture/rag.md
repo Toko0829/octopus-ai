@@ -25,11 +25,11 @@ Reassess (Qdrant / pgvectorscale StreamingDiskANN) only past tens of millions of
 
 ## Embedding model
 
-- **Primary: Voyage-3-large @ 1024 dims** (Matryoshka-truncatable), stored as `halfvec(1024)`, cosine.
-- **Multilingual by construction** — EU languages now; Georgian/Russian for the founding pack. An English-first model is disqualifying.
-- **One model across the whole corpus** — different models yield incompatible vector spaces and cannot share an HNSW index. Version `embed_model` on every row for traceable re-embeds and A/B.
+- **Primary: OpenAI `text-embedding-3-large`, requested at `dimensions: 1024`** ([ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md)). Matryoshka-trained, so it emits 1024 dims directly; stored as `halfvec(1024)`, cosine. **No schema change from the original pin.**
+- **Multilingual by construction** — EU languages now; Georgian/Russian for the founding pack. An English-first model is disqualifying. `text-embedding-3-large` clears that bar for **US + EU** (MIRACL ~54.9%), but is weaker on lower-resource languages than the Voyage model it replaced: **treat the Georgian/Russian pack's retrieval quality as something to measure at the eval gate, not assume.**
+- **One model across the whole corpus** — different models yield incompatible vector spaces and cannot share an HNSW index. Changing it after ingestion means re-embedding everything. Version `embed_model` on every row for traceable re-embeds and A/B.
 - **Embed the _contextualized_ chunk** (chunk + generated situating context), not the raw chunk.
-- Alternatives: Cohere embed-v4 (multimodal for scanned permit PDFs), OpenAI text-embedding-3-large (ubiquitous fallback, weaker on some languages), BGE-M3 / Qwen3-Embedding (self-host for data residency).
+- Alternatives: Voyage-3-large (stronger multilingual; the prior pin), Cohere embed-v4 (multimodal for scanned permit PDFs), BGE-M3 / Qwen3-Embedding (self-host for data residency).
 
 ## Ingestion pipeline (12 steps)
 
@@ -40,7 +40,7 @@ Reassess (Qdrant / pgvectorscale StreamingDiskANN) only past tens of millions of
 5. **Normalize** — clean, language-tag, extract structured fields.
 6. **Chunk** — structure-first, ~512 tokens, small-to-big / parent-doc.
 7. **Contextualize** — Anthropic-style: prepend a 1–2 sentence LLM-generated situating blurb (cache the parent doc to bound cost).
-8. **Embed** — Voyage-3-large on the contextualized text.
+8. **Embed** — `text-embedding-3-large` at `dimensions: 1024` on the contextualized text.
 9. **Index** — write `doc_chunks` (embedding + generated `tsvector`), HNSW/GIN.
 10. **Structured-load** — suppliers/cost benchmarks go into **typed rows**, not prose chunks.
 11. **Validate** — schema + citation-coverage + eval spot-checks.
@@ -55,7 +55,7 @@ Heavy ingestion runs as background jobs (pg-boss / Trigger.dev), **never in the 
    - _Multi-query + HyDE_ → cover vocabulary gaps between casual phrasing and statutory language.
    - _Decomposition_ → split compound asks ("permits + suppliers + hiring") into sub-retrievals.
    - _Routing_ → send each sub-query to the right corpus (permits vs suppliers vs cost benchmarks).
-2. **Dense** — `halfvec` HNSW cosine over pre-filtered chunks.
+2. **Dense** — `halfvec` HNSW cosine over pre-filtered chunks (OpenAI embeddings, 1024 dims).
 3. **Sparse** — Postgres FTS (`websearch_to_tsquery`, GIN), per-language configs. Catches exact tokens (statute numbers, license codes, form IDs) that dense blurs. Upgrade path: ParadeDB `pg_search` for true BM25.
 4. **Fusion** — **RRF (k=60)** merging dense + sparse in one SQL query (two CTEs + fused rank). Rank-based → no score normalization.
 5. **Rerank** — **Cohere Rerank 3.5** cross-encoder over the fused **top-40** → return **top 6–8**. Apply a relevance-score **threshold to DROP** weak chunks rather than pad context. Optional MMR dedup before rerank when sources are redundant.
@@ -112,4 +112,4 @@ RAG — ingestion **and** query-time retrieval — is implemented in the **Pytho
 
 ## Libraries
 
-`pgvector` · Supabase (`pg_cron`, Edge Functions, Storage, Realtime) · LlamaIndex (TS + Python) · LlamaParse/Unstructured/Docling · Voyage SDK · Cohere SDK · Anthropic SDK (contextualization, query transform, grounded generation w/ prompt caching) · Ragas · DeepEval · Langfuse · tiktoken. Optional in-Postgres upgrades: ParadeDB `pg_search`, `pgvectorscale`.
+`pgvector` · Supabase (`pg_cron`, Edge Functions, Storage, Realtime) · LlamaIndex (TS + Python) · LlamaParse/Unstructured/Docling · OpenAI SDK (embeddings, contextualization, query transform, grounded generation) · Cohere SDK (rerank) · Ragas · DeepEval · Langfuse · tiktoken. Optional in-Postgres upgrades: ParadeDB `pg_search`, `pgvectorscale`.

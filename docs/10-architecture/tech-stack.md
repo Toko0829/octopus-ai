@@ -4,30 +4,30 @@
 
 ## Pinned versions
 
-| Area              | Package                                                   | Version (target)                                 | Notes                                            |
-| ----------------- | --------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------ |
-| Frontend          | `next`                                                    | 15.x (App Router)                                | RSC, Server Actions, on Vercel                   |
-| Frontend          | `react` / `react-dom`                                     | 19.x                                             | —                                                |
-| Auth (client)     | `@supabase/ssr`, `@supabase/supabase-js`                  | latest 2.x                                       | cookie-based sessions                            |
-| Runtime           | Node.js                                                   | 22 LTS                                           | services + agent                                 |
-| Backend           | `fastify`                                                 | 5.x                                              | authoritative API                                |
-| Backend           | `fastify-type-provider-zod`, `@fastify/swagger`, `jose`   | latest                                           | typed routes, OpenAPI, JWKS verify               |
-| Contracts         | `@ts-rest/core` + `zod`                                   | latest                                           | shared client/server contract                    |
-| DB                | Postgres (Supabase)                                       | 16                                               | RLS, triggers                                    |
-| Vector            | `pgvector`                                                | 0.8.x                                            | `halfvec`, HNSW, iterative scans                 |
-| Orchestration     | Trigger.dev                                               | v3                                               | durable runs + waitpoints                        |
-| Utility jobs      | `pg-boss`                                                 | latest                                           | on Postgres, no Redis                            |
-| RAG orchestration | LlamaIndex (TS + Python worker)                           | latest                                           | ingestion + retrieval                            |
-| Embeddings        | Voyage `voyage-3-large`                                   | 1024-dim (Matryoshka)                            | one model for the whole corpus                   |
-| Rerank            | Cohere `rerank-3.5`                                       | —                                                | cross-encoder over top-40                        |
-| Generation        | Anthropic Claude (Opus/Sonnet/Haiku tiers)                | latest IDs — verify, do not hardcode from memory | planner/executor/classifier tiering              |
-| AI SDK            | Vercel AI SDK v5 (or Anthropic SDK)                       | 5.x                                              | tools, `stopWhen`, streaming                     |
-| Payments          | Stripe Connect (Express)                                  | latest API                                       | escrow-equivalent + payouts                      |
-| KYC/IDV           | Persona (or Stripe Identity)                              | —                                                | liveness, Face Match/Search                      |
-| Monorepo          | Turborepo + pnpm                                          | latest                                           | remote cache                                     |
-| Observability     | OpenTelemetry, Sentry, LLM-trace sink (Langfuse), PostHog | latest                                           | traces, errors, LLM cost/eval, product analytics |
+| Area              | Package                                                   | Version (target)                                 | Notes                                                                                                     |
+| ----------------- | --------------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| Frontend          | `next`                                                    | 15.x (App Router)                                | RSC, Server Actions, on Vercel                                                                            |
+| Frontend          | `react` / `react-dom`                                     | 19.x                                             | —                                                                                                         |
+| Auth (client)     | `@supabase/ssr`, `@supabase/supabase-js`                  | latest 2.x                                       | cookie-based sessions                                                                                     |
+| Runtime           | Node.js                                                   | 22 LTS                                           | services + agent                                                                                          |
+| Backend           | `fastify`                                                 | 5.x                                              | authoritative API                                                                                         |
+| Backend           | `fastify-type-provider-zod`, `@fastify/swagger`, `jose`   | latest                                           | typed routes, OpenAPI, JWKS verify                                                                        |
+| Contracts         | `@ts-rest/core` + `zod`                                   | latest                                           | shared client/server contract                                                                             |
+| DB                | Postgres (Supabase)                                       | 16                                               | RLS, triggers                                                                                             |
+| Vector            | `pgvector`                                                | 0.8.x                                            | `halfvec`, HNSW, iterative scans                                                                          |
+| Orchestration     | Trigger.dev                                               | v3                                               | durable runs + waitpoints                                                                                 |
+| Utility jobs      | `pg-boss`                                                 | latest                                           | on Postgres, no Redis                                                                                     |
+| RAG orchestration | LlamaIndex (TS + Python worker)                           | latest                                           | ingestion + retrieval                                                                                     |
+| Embeddings        | **OpenAI `text-embedding-3-large`**                       | request `dimensions: 1024`                       | one model for the whole corpus ([ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md)) |
+| Rerank            | Cohere `rerank-3.5`                                       | —                                                | cross-encoder over top-40; OpenAI has no reranker                                                         |
+| Generation        | **OpenAI** (tiered: strong / fast / cheap)                | latest IDs — verify, do not hardcode from memory | planner/executor/classifier tiering                                                                       |
+| AI SDK            | `openai` (Python) in `services/ai`                        | latest 1.x                                       | the reasoning loop is Python ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md))               |
+| Payments          | Stripe Connect (Express)                                  | latest API                                       | escrow-equivalent + payouts                                                                               |
+| KYC/IDV           | Persona (or Stripe Identity)                              | —                                                | liveness, Face Match/Search                                                                               |
+| Monorepo          | Turborepo + pnpm                                          | latest                                           | remote cache                                                                                              |
+| Observability     | OpenTelemetry, Sentry, LLM-trace sink (Langfuse), PostHog | latest                                           | traces, errors, LLM cost/eval, product analytics                                                          |
 
-> **Model IDs and provider pricing change.** Always confirm the current Claude model ID and limits against the provider before pinning in code — never from memory. Version the embedding model name on every `doc_chunks` row so re-embeds are traceable.
+> **Model IDs and provider pricing change.** Always confirm the current model ID and limits against the provider before pinning in code — never from memory. Version the embedding model name on every `doc_chunks` row so re-embeds are traceable.
 
 ## Frontend + BFF
 
@@ -50,13 +50,13 @@
 ## RAG stack
 
 - **pgvector** in-Postgres (`halfvec(1024)`, HNSW cosine, iterative scans) — [ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md).
-- **Voyage-3-large** embeddings (multilingual, Matryoshka-truncatable), **Cohere Rerank 3.5**, Postgres FTS (`tsvector`/GIN) for sparse, RRF fusion.
+- **OpenAI `text-embedding-3-large`** embeddings at `dimensions: 1024` (Matryoshka-trained), **Cohere Rerank 3.5**, Postgres FTS (`tsvector`/GIN) for sparse, RRF fusion. See [ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md).
 - **LlamaIndex** for ingestion + query transformation; **LlamaParse / Unstructured / Docling** for layout-aware parsing/OCR.
 - Full spec: [rag.md](rag.md).
 
 ## AI SDKs & model tiering
 
-- **Vercel AI SDK v5** or **Anthropic SDK** for the plan-then-act loop.
+- The **`openai` Python SDK** in `services/ai` for the plan-then-act loop. The loop is Python because the reasoning core is ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)); Node drives it per step and executes the side effects.
 - **Model tiering:** a stronger model for planning/critic, a faster model for executor steps, a cheap model for classification/routing. Configured centrally; never hardcode a single model.
 
 ## Observability
@@ -67,17 +67,17 @@
 
 The AI/RAG layer is a separate **Python** service; the rest of the backend is Node/Fastify. Pinned Python tooling:
 
-| Area                      | Choice                                                                                                |
-| ------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Web framework             | **FastAPI** + **Pydantic v2** (auto-OpenAPI → typed TS client)                                        |
-| Runtime / packaging       | Python 3.12, **uv** (lockfile + venv)                                                                 |
-| RAG orchestration         | **LlamaIndex** (Python)                                                                               |
-| Parsing / OCR             | LlamaParse / Unstructured / Docling                                                                   |
-| Embeddings / rerank / gen | Voyage · Cohere · Anthropic SDKs (managed); `sentence-transformers` / `FlagEmbedding` if self-hosting |
-| Eval                      | **Ragas** + **DeepEval** (CI gate)                                                                    |
-| Lint / format / test      | **ruff** + **pytest**                                                                                 |
-| DB access                 | psycopg / SQLAlchemy over the same Supabase Postgres (`service_role`, server-side only)               |
-| Deploy                    | Fly.io container, co-located with Postgres                                                            |
+| Area                      | Choice                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| Web framework             | **FastAPI** + **Pydantic v2** (auto-OpenAPI → typed TS client)                            |
+| Runtime / packaging       | Python 3.12, **uv** (lockfile + venv)                                                     |
+| RAG orchestration         | **LlamaIndex** (Python)                                                                   |
+| Parsing / OCR             | LlamaParse / Unstructured / Docling                                                       |
+| Embeddings / rerank / gen | OpenAI · Cohere SDKs (managed); `sentence-transformers` / `FlagEmbedding` if self-hosting |
+| Eval                      | **Ragas** + **DeepEval** (CI gate)                                                        |
+| Lint / format / test      | **ruff** + **pytest**                                                                     |
+| DB access                 | psycopg / SQLAlchemy over the same Supabase Postgres (`service_role`, server-side only)   |
+| Deploy                    | Fly.io container, co-located with Postgres                                                |
 
 Seam: OpenAPI-typed HTTP + shared Postgres + job queue for ingestion. Node owns durability (Trigger.dev) and all side-effecting tools. See [architecture.md](architecture.md) and [ai-orchestrator.md](../30-modules/ai-orchestrator.md).
 

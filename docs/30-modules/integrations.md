@@ -12,21 +12,21 @@ Every provider sits behind a **typed adapter** with Zod-validated I/O. Callers d
 
 ## Provider surfaces
 
-| Surface                 | Provider(s)                                      | Notes                                                                                                                |
-| ----------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| Payments                | **Stripe Connect (Express)**                     | escrow-equivalent + payouts ([payments-billing.md](payments-billing.md))                                             |
-| KYC / IDV               | **Persona** / Stripe Identity                    | liveness, Face Match 1:1, Face Search 1:N                                                                            |
-| Embeddings              | **Voyage** (voyage-3-large)                      | one model across corpus; fallback embedder behind a version flag                                                     |
-| Rerank                  | **Cohere** (rerank-3.5)                          | cross-encoder                                                                                                        |
-| Generation              | **Anthropic** (Claude, tiered) / OpenAI fallback | prompt caching; verify model IDs, don't hardcode from memory                                                         |
-| **Ad platforms**        | **Meta Ads**, Google Ads                         | create/manage campaigns; **spend-capped, approval-gated** ([marketing-growth-engine.md](marketing-growth-engine.md)) |
-| **Social publishing**   | platform APIs                                    | schedule/publish organic content (post-approval)                                                                     |
-| **Creative generation** | image / video / audio models                     | campaign assets; stored as artifacts                                                                                 |
-| **Web analytics**       | GA4 · Microsoft Clarity                          | performance, attribution, the auto-optimize loop                                                                     |
-| Doc parsing / OCR       | **LlamaParse** / Unstructured / Docling          | layout-aware                                                                                                         |
-| Source crawlers         | custom (Edge Functions)                          | government/registry sources, supplier directories                                                                    |
-| Maps / geo              | maps provider                                    | location scouting, service-geo checks                                                                                |
-| Email / push / SMS      | Resend/Postmark · Expo · Twilio                  | behind the notifications abstraction                                                                                 |
+| Surface                 | Provider(s)                                | Notes                                                                                                                |
+| ----------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| Payments                | **Stripe Connect (Express)**               | escrow-equivalent + payouts ([payments-billing.md](payments-billing.md))                                             |
+| KYC / IDV               | **Persona** / Stripe Identity              | liveness, Face Match 1:1, Face Search 1:N                                                                            |
+| Embeddings              | **OpenAI** (`text-embedding-3-large`)      | `dimensions: 1024`; one model across corpus; fallback embedder behind a version flag                                 |
+| Rerank                  | **Cohere** (rerank-3.5)                    | cross-encoder                                                                                                        |
+| Generation              | **OpenAI** (tiered: strong / fast / cheap) | verify model IDs, don't hardcode from memory                                                                         |
+| **Ad platforms**        | **Meta Ads**, Google Ads                   | create/manage campaigns; **spend-capped, approval-gated** ([marketing-growth-engine.md](marketing-growth-engine.md)) |
+| **Social publishing**   | platform APIs                              | schedule/publish organic content (post-approval)                                                                     |
+| **Creative generation** | image / video / audio models               | campaign assets; stored as artifacts                                                                                 |
+| **Web analytics**       | GA4 · Microsoft Clarity                    | performance, attribution, the auto-optimize loop                                                                     |
+| Doc parsing / OCR       | **LlamaParse** / Unstructured / Docling    | layout-aware                                                                                                         |
+| Source crawlers         | custom (Edge Functions)                    | government/registry sources, supplier directories                                                                    |
+| Maps / geo              | maps provider                              | location scouting, service-geo checks                                                                                |
+| Email / push / SMS      | Resend/Postmark · Expo · Twilio            | behind the notifications abstraction                                                                                 |
 
 ## Untrusted-content quarantine
 

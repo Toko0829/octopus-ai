@@ -36,14 +36,15 @@ Full 10-step trace: [docs/00-overview/core-loop.md](docs/00-overview/core-loop.m
 
 ## 3. Hard Stack (pinned)
 
-| Layer                            | Choice                                                                                                                                     |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Frontend + thin BFF              | **Next.js 15** (App Router, `@supabase/ssr`) on Vercel — never runs agent loops or long jobs                                               |
-| Backend services                 | **Node.js 22 + Fastify 5** (`apps/api` authoritative REST, `apps/matcher` marketplace) on Fly.io                                           |
-| Data · auth · realtime · storage | **Supabase** — Postgres 16 (RLS), GoTrue asymmetric JWT/JWKS, Storage, Realtime (Broadcast + Presence)                                     |
-| Durable agent orchestration      | **Trigger.dev v3** (baseline) with human-in-the-loop waitpoints; **Temporal** as the documented escape hatch; **pg-boss** for utility jobs |
-| RAG                              | **pgvector** (`halfvec`/HNSW) hybrid search in the same Postgres · **Voyage-3-large** embeddings · **Cohere Rerank 3.5**                   |
-| Contract boundary                | OpenAPI + **ts-rest**, Zod schemas shared in `packages/contracts`                                                                          |
+| Layer                            | Choice                                                                                                                                                             |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Frontend + thin BFF              | **Next.js 15** (App Router, `@supabase/ssr`) on Vercel — never runs agent loops or long jobs                                                                       |
+| Backend services                 | **Node.js 22 + Fastify 5** (`apps/api` authoritative REST, `apps/matcher` marketplace) on Fly.io                                                                   |
+| Data · auth · realtime · storage | **Supabase** — Postgres 16 (RLS), GoTrue asymmetric JWT/JWKS, Storage, Realtime (Broadcast + Presence)                                                             |
+| Durable agent orchestration      | **Trigger.dev v3** (baseline) with human-in-the-loop waitpoints; **Temporal** as the documented escape hatch; **pg-boss** for utility jobs                         |
+| RAG                              | **pgvector** (`halfvec`/HNSW) hybrid search in the same Postgres · **OpenAI `text-embedding-3-large`** (1024 dims) · **Cohere Rerank 3.5**                         |
+| AI providers                     | **OpenAI** for generation + embeddings; **Cohere** for rerank (OpenAI has no reranker). [ADR-0007](docs/40-adr/0007-openai-generation-embeddings-cohere-rerank.md) |
+| Contract boundary                | OpenAPI + **ts-rest**, Zod schemas shared in `packages/contracts`                                                                                                  |
 
 > The AI/RAG layer runs as a **separate Python service** (FastAPI); Node/Fastify owns everything else. _Python proposes, Node executes._ See [ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md).
 
@@ -52,7 +53,7 @@ Pinned versions, rejected alternatives, and upgrade policy: [tech-stack.md](docs
 ## 4. RAG Summary
 
 - **Stay in Postgres** — `pgvector` `halfvec(1024)`, HNSW cosine, iterative scans. Relational, permissioned (RLS multi-tenant isolation), transactionally consistent. ([ADR-0002](docs/40-adr/0002-stay-in-postgres-pgvector.md))
-- **Hybrid retrieval:** dense (Voyage-3-large on _contextualized_ chunks) + sparse (`tsvector`/BM25) fused via **RRF (k=60)**, then **Cohere Rerank 3.5** over top-40 → top 6–8.
+- **Hybrid retrieval:** dense (OpenAI `text-embedding-3-large` @ 1024 dims, on _contextualized_ chunks) + sparse (`tsvector`/BM25) fused via **RRF (k=60)**, then **Cohere Rerank 3.5** over top-40 → top 6–8. ([ADR-0007](docs/40-adr/0007-openai-generation-embeddings-cohere-rerank.md))
 - **Multilingual by construction** (EU languages + Georgian/Russian for the future pack); **one** embedding model across the whole corpus so a single HNSW index is shared.
 - **Contextual retrieval** (Anthropic-style) + layout-aware parsing; structured sources (suppliers, cost benchmarks) stored as **typed rows**, not prose chunks.
 - **Freshness is a first-order feature:** effective-dating, content-hash change detection, `pg_cron` re-crawls, "last verified" dates, human re-verification on high-stakes stale data.
@@ -97,7 +98,7 @@ Each module has its own doc in [`docs/30-modules/`](docs/30-modules/) and must b
 | [chat-discord](docs/30-modules/chat-discord.md)                             | Channels/threads/messages/presence/embeds                                                | auth-identity, notifications, design-system-frontend                             |
 | [payments-billing](docs/30-modules/payments-billing.md)                     | Escrow, Stripe Connect payouts, double-entry ledger, subscriptions                       | human-nodes-marketplace, auth-identity                                           |
 | [notifications](docs/30-modules/notifications.md)                           | Multi-channel fan-out, offer expiry/cascade, digests                                     | chat-discord, integrations                                                       |
-| [integrations](docs/30-modules/integrations.md)                             | External providers (Stripe, Persona, Voyage/Cohere, crawlers, maps)                      | infra-devops                                                                     |
+| [integrations](docs/30-modules/integrations.md)                             | External providers (Stripe, Persona, OpenAI/Cohere, crawlers, maps)                      | infra-devops                                                                     |
 | [admin-ops](docs/30-modules/admin-ops.md)                                   | Dispute resolution, moderation, node/payment ops consoles                                | all domain modules                                                               |
 | [analytics](docs/30-modules/analytics.md)                                   | Product analytics, LLM cost/eval traces, funnels                                         | observability, ai-orchestrator                                                   |
 | [infra-devops](docs/30-modules/infra-devops.md)                             | Monorepo, CI/CD, deployment, secrets, observability wiring                               | foundation for all                                                               |
