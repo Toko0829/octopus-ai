@@ -17,7 +17,7 @@ Every provider sits behind a **typed adapter** with Zod-validated I/O. Callers d
 | Payments                | **Stripe Connect (Express)**               | escrow-equivalent + payouts ([payments-billing.md](payments-billing.md))                                             |
 | KYC / IDV               | **Persona** / Stripe Identity              | liveness, Face Match 1:1, Face Search 1:N                                                                            |
 | Embeddings              | **OpenAI** (`text-embedding-3-large`)      | `dimensions: 1024`; one model across corpus; fallback embedder behind a version flag                                 |
-| Rerank                  | **Cohere** (rerank-v3.5)                    | cross-encoder                                                                                                        |
+| Rerank                  | **Cohere** (rerank-v3.5)                   | cross-encoder                                                                                                        |
 | Generation              | **OpenAI** (tiered: strong / fast / cheap) | verify model IDs, don't hardcode from memory                                                                         |
 | **Ad platforms**        | **Meta Ads**, Google Ads                   | create/manage campaigns; **spend-capped, approval-gated** ([marketing-growth-engine.md](marketing-growth-engine.md)) |
 | **Social publishing**   | platform APIs                              | schedule/publish organic content (post-approval)                                                                     |

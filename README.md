@@ -42,7 +42,7 @@ Full 10-step trace: [docs/00-overview/core-loop.md](docs/00-overview/core-loop.m
 | Backend services                 | **Node.js 22 + Fastify 5** (`apps/api` authoritative REST, `apps/matcher` marketplace) on Fly.io                                                                   |
 | Data · auth · realtime · storage | **Supabase** — Postgres 16 (RLS), GoTrue asymmetric JWT/JWKS, Storage, Realtime (Broadcast + Presence)                                                             |
 | Durable agent orchestration      | **Trigger.dev v3** (baseline) with human-in-the-loop waitpoints; **Temporal** as the documented escape hatch; **pg-boss** for utility jobs                         |
-| RAG                              | **pgvector** (`halfvec`/HNSW) hybrid search in the same Postgres · **OpenAI `text-embedding-3-large`** (1024 dims) · **Cohere Rerank v3.5**                         |
+| RAG                              | **pgvector** (`halfvec`/HNSW) hybrid search in the same Postgres · **OpenAI `text-embedding-3-large`** (1024 dims) · **Cohere Rerank v3.5**                        |
 | AI providers                     | **OpenAI** for generation + embeddings; **Cohere** for rerank (OpenAI has no reranker). [ADR-0007](docs/40-adr/0007-openai-generation-embeddings-cohere-rerank.md) |
 | Contract boundary                | OpenAPI + **ts-rest**, Zod schemas shared in `packages/contracts`                                                                                                  |
 
