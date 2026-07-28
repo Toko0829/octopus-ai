@@ -2,7 +2,7 @@
 
 > **Single source of truth.** Anyone — human or AI build-agent — starts here. This file states the vision, the canonical core loop, the pinned stack, and links to every supporting and module doc. It is an **index + summary**, not a dumping ground: depth lives in the linked docs. **Update this file on any change to scope, stack, the core loop, or the module map.** See [AGENTS.md](AGENTS.md) for the binding documentation-maintenance rule.
 
-- **Status:** Documentation / pre-build (Phase 0). This repository currently contains the _source-of-truth documentation set_ only — no application code yet.
+- **Status:** Phase 1, in progress. Phase 0 is complete (source-of-truth documentation set + Turborepo monorepo scaffold). Landed since: the chat schema on Supabase (`rooms` / `channels` / `room_members` / `messages` with membership RLS), the **server-authoritative chat write path** in `apps/api`, and the Discord-style chat shell in `apps/web` now running **entirely on live data** — Supabase sign-in, real rooms/channels/members, message history, and Realtime delivery and presence. Surfaces with no backend yet (the plan card, agent replies, budget) are deliberately not rendered rather than faked; they return with the orchestrator in Phase 2. Still to wire: OpenAPI generation and an automated test harness. See [CHANGELOG.md](CHANGELOG.md) for what exists and [roadmap.md](docs/10-architecture/roadmap.md) for what is next.
 - **Owner persona for AI build-agents:** senior software developer **and** business analyst. See [AGENTS.md](AGENTS.md).
 - **First vertical (what we ship first):** full-funnel **digital marketing** for **solo founders / creators**. The everything-product is the north star, not the first ship — see the wedge strategy in [vision.md](docs/00-overview/vision.md).
 - **First markets:** United States + EU (ad-policy / FTC / GDPR compliance). Business-formation packs (the cafe story, incl. Georgia / Tbilisi) are a later expansion vertical.
@@ -108,7 +108,7 @@ Each module has its own doc in [`docs/30-modules/`](docs/30-modules/) and must b
 - **Overview:** [vision](docs/00-overview/vision.md) · [core-loop](docs/00-overview/core-loop.md) · [glossary](docs/00-overview/glossary.md) · [personas](docs/00-overview/personas.md)
 - **Architecture:** [architecture](docs/10-architecture/architecture.md) · [tech-stack](docs/10-architecture/tech-stack.md) · [data-model](docs/10-architecture/data-model.md) · [rag](docs/10-architecture/rag.md) · [learning-flywheel](docs/10-architecture/learning-flywheel.md) · [security-compliance](docs/10-architecture/security-compliance.md) · [observability](docs/10-architecture/observability.md) · [roadmap](docs/10-architecture/roadmap.md)
 - **Design:** [design-system](docs/20-design/design-system.md) · [discord-chat-spec](docs/20-design/discord-chat-spec.md) · [brand](docs/20-design/brand.md)
-- **Modules:** [`docs/30-modules/`](docs/30-modules/) (13 docs, table above)
+- **Modules:** [`docs/30-modules/`](docs/30-modules/) (14 docs, table above)
 - **Decisions:** [`docs/40-adr/`](docs/40-adr/) · **Runbooks:** [`docs/50-runbooks/`](docs/50-runbooks/) · **Playbooks:** [`docs/60-playbooks/`](docs/60-playbooks/) · **Diagrams:** [`docs/70-diagrams/`](docs/70-diagrams/) · **Legal:** [`docs/80-legal/`](docs/80-legal/)
 - **Engineering:** [DEVELOPMENT.md](DEVELOPMENT.md) (local setup & commands) · **AI rules:** [AGENTS.md](AGENTS.md) / [CLAUDE.md](CLAUDE.md) · **Change log:** [CHANGELOG.md](CHANGELOG.md) · **Doc registry:** [.docmeta.yml](.docmeta.yml)
 

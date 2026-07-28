@@ -14,7 +14,7 @@
 ## Identity & authentication
 
 - **Supabase Auth (GoTrue)** is the sole IdP, issuing **asymmetric JWTs (ES256/RS256)** published via JWKS.
-- Next.js stores the session in httpOnly cookies (`@supabase/ssr`); Fastify verifies every request's JWT **locally** against cached JWKS (`jose`) in a `preHandler` — no round-trip to Supabase.
+- Next.js stores the session in cookies (`@supabase/ssr`, refreshed in middleware); Fastify verifies every request's JWT **locally** against cached JWKS (`jose`) in a `preHandler` — no round-trip to Supabase. Note these cookies are **not** `httpOnly`: the browser client must read the session to authenticate the Realtime socket. See the correction in [auth-identity.md](../30-modules/auth-identity.md).
 - Roles/claims (`user` / `human_node` / `verified_pro` / `admin` / `ops`) drive both RLS and app authorization.
 
 ## Authorization: defense-in-depth

@@ -1,4 +1,10 @@
-import type { PlanCardData, TaskOwner } from '../../lib/types';
+/**
+ * NOT CURRENTLY RENDERED. The plan card is the marquee surface in
+ * docs/20-design/design-system.md, but nothing produces a plan until the
+ * orchestrator arrives in Phase 2. It was previously driven by fabricated demo
+ * data; the component and its styling are kept so the spec'd work is not lost.
+ */
+import type { PlanCardData, TaskOwner } from './plan-types';
 import { IconCheck, IconEdit, IconRefresh } from './icons';
 
 const ownerMeta: Record<TaskOwner, { cls: string; label: string }> = {

@@ -1,11 +1,11 @@
 import type { CSSProperties } from 'react';
-import type { Member, PlanCardData, Role } from '../../lib/types';
+import type { Role, UiMember } from '../../lib/types';
 import { RoleBadge } from './ui';
-import { IconLink } from './icons';
 
 function avatarBg(role: Role): CSSProperties {
   const map: Record<Role, string> = {
     you: 'linear-gradient(160deg,var(--ink-500),var(--ink-700))',
+    member: 'linear-gradient(160deg,var(--ink-400),var(--ink-600))',
     agent: 'linear-gradient(160deg,var(--teal-400),var(--teal-600))',
     node: 'linear-gradient(160deg,var(--coral-400),var(--coral-600))',
     pro: 'linear-gradient(160deg,var(--coral-400),var(--coral-600))',
@@ -14,15 +14,18 @@ function avatarBg(role: Role): CSSProperties {
   return { background: map[role] };
 }
 
-interface Props {
-  members: Member[];
-  plan?: PlanCardData;
-}
-
-export function ContextPanel({ members, plan }: Props) {
+/**
+ * Members panel. Presence comes from Realtime Presence, so it reflects who is
+ * actually subscribed right now.
+ *
+ * The "Plan sources" section is intentionally absent: citations come from the
+ * planner, which lands in Phase 2 (docs/10-architecture/roadmap.md).
+ */
+export function ContextPanel({ members }: { members: UiMember[] }) {
   return (
     <aside className="context">
-      <div className="ctx-label">In this channel</div>
+      <div className="ctx-label">In this room</div>
+      {members.length === 0 && <div className="ctx-empty">No members loaded.</div>}
       {members.map((m) => (
         <div className="member" key={m.id}>
           <div className="member-av" style={avatarBg(m.role)}>
@@ -34,27 +37,13 @@ export function ContextPanel({ members, plan }: Props) {
               {m.name}
               <RoleBadge role={m.role} />
             </div>
-            {m.activity && <div className="member-activity">{m.activity}</div>}
+            <div className="member-activity">
+              {m.presence === 'online' ? 'Online' : 'Offline'}
+              {m.expiresAt ? ` · access until ${new Date(m.expiresAt).toLocaleDateString()}` : ''}
+            </div>
           </div>
         </div>
       ))}
-
-      {plan && (
-        <>
-          <div className="ctx-label">Plan sources</div>
-          {plan.citations.map((c) => (
-            <div className="ctx-source" key={c.id}>
-              <div className="ctx-source-title">
-                <IconLink width={13} height={13} />
-                {c.label}
-              </div>
-              <div className="ctx-source-meta">
-                {c.source} · verified {c.verified}
-              </div>
-            </div>
-          ))}
-        </>
-      )}
     </aside>
   );
 }

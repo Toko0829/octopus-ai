@@ -36,6 +36,7 @@ The differentiator for an agent that runs businesses:
 
 - Supabase/Postgres logs (Logflare): slow queries, **RLS denials** (a spike signals a bug or an attack), connection-pool saturation.
 - Realtime metrics: concurrent connections (watch the ~500 ceiling), broadcast rate, presence churn.
+- **Broadcast delivery is a blind spot by default and needs its own signal.** `realtime.send()` traps its own exceptions, so when a broadcast fails the message still commits and the client still gets `201` — the write path looks perfectly healthy while nothing is delivered. This is not hypothetical: it happened on this project, where `realtime.messages` had no partitions until the Realtime service cold-started, and subscribers saw `MissingPartition` while writes kept succeeding. Alert on broadcast rate diverging from message-insert rate rather than on write errors, and treat `MissingPartition` in Realtime logs as an incident.
 - Auth logs: sign-in anomalies, JWKS refresh.
 
 ## Product analytics
@@ -52,6 +53,7 @@ The differentiator for an agent that runs businesses:
 | Signal                         | Alert when                                                  |
 | ------------------------------ | ----------------------------------------------------------- |
 | Chat write availability        | error rate > 0.5% or p95 latency regression                 |
+| Chat broadcast delivery        | writes committing without a matching broadcast (see below)  |
 | Agent-start success            | `202` path failing / runs not starting                      |
 | Parse-failure rate (ingestion) | sudden spike (source format changed)                        |
 | Stale sources                  | any high-stakes source past its freshness SLA               |

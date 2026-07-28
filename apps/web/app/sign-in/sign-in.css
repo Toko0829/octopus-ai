@@ -1,0 +1,71 @@
+/* Sign-in — Light Editorial skin. Calm and quiet: this is a trust surface.
+   See docs/20-design/design-system.md. */
+
+.auth-wrap {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6, 24px);
+  background: var(--bg);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 32px;
+  box-shadow: var(--shadow-sm);
+}
+
+.auth-mark {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.auth-title {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: var(--text-lg);
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.auth-sub {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: 0 0 24px;
+  line-height: 1.5;
+}
+
+.auth-field {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.auth-toggle {
+  margin-top: 18px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.auth-toggle button {
+  font: inherit;
+  color: var(--accent-text);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Form primitives (.auth-label / .auth-input / .auth-submit / .auth-msg) live in
+   globals.css because the workspace's create-room form reuses them. */

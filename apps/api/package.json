@@ -4,14 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "start": "tsx --env-file-if-exists=.env src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
     "@octopus/config": "workspace:*",
     "@octopus/contracts": "workspace:*",
+    "@supabase/supabase-js": "^2.111.0",
     "fastify": "^5.1.0",
     "jose": "^5.9.6",
     "zod": "^3.24.0"

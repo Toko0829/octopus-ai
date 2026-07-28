@@ -3,12 +3,15 @@ import { ThemeToggle } from './ui';
 
 interface Props {
   channel: string;
-  topic: string;
-  budgetUsed: string;
-  budgetCeiling: string;
+  memberCount: number;
 }
 
-export function TopBar({ channel, topic, budgetUsed, budgetCeiling }: Props) {
+/**
+ * The spec puts live budget here (docs/20-design/discord-chat-spec.md). It is
+ * omitted until projects carry a budget ceiling, because a number on a trust
+ * surface has to be real.
+ */
+export function TopBar({ channel, memberCount }: Props) {
   return (
     <header className="topbar">
       <div className="topbar-chan">
@@ -18,11 +21,10 @@ export function TopBar({ channel, topic, budgetUsed, budgetCeiling }: Props) {
         {channel}
       </div>
       <div className="topbar-divider" />
-      <div className="topbar-topic">{topic}</div>
-      <div className="topbar-spacer" />
-      <div className="budget mono">
-        planned <b>{budgetUsed}</b> / {budgetCeiling}
+      <div className="topbar-topic mono">
+        {memberCount} {memberCount === 1 ? 'member' : 'members'}
       </div>
+      <div className="topbar-spacer" />
       <ThemeToggle />
     </header>
   );

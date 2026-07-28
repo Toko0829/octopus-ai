@@ -1,15 +1,25 @@
-import type { Business, Channel } from '../../lib/types';
+import type { UiBusiness, UiChannel, UiMember } from '../../lib/types';
 import { IconHash, IconTopic } from './icons';
+import { SignOutButton } from './SignOutButton';
 
 interface Props {
-  business: Business;
-  channels: Channel[];
-  activeId: string;
+  business: UiBusiness;
+  channels: UiChannel[];
+  activeId: string | null;
   onSelect: (id: string) => void;
+  viewer: UiMember | null;
+  viewerEmail: string | null;
 }
 
-export function ChannelSidebar({ business, channels, activeId, onSelect }: Props) {
-  const bySection = new Map<string, Channel[]>();
+export function ChannelSidebar({
+  business,
+  channels,
+  activeId,
+  onSelect,
+  viewer,
+  viewerEmail,
+}: Props) {
+  const bySection = new Map<string, UiChannel[]>();
   const order: string[] = [];
   for (const c of channels) {
     if (!bySection.has(c.section)) {
@@ -19,14 +29,18 @@ export function ChannelSidebar({ business, channels, activeId, onSelect }: Props
     bySection.get(c.section)!.push(c);
   }
 
+  const label = viewer?.name ?? viewerEmail ?? 'Signed in';
+  const initials = viewer?.initials ?? (viewerEmail?.[0] ?? '?').toUpperCase();
+
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
         <div className="sidebar-title">{business.name}</div>
-        <div className="sidebar-sub">Grow · full-funnel</div>
+        <div className="sidebar-sub">Workspace</div>
       </div>
 
       <div className="chan-list">
+        {channels.length === 0 && <div className="chan-empty">No channels in this room yet.</div>}
         {order.map((section) => (
           <div key={section}>
             <div className="chan-section">{section}</div>
@@ -45,7 +59,6 @@ export function ChannelSidebar({ business, channels, activeId, onSelect }: Props
                   )}
                 </span>
                 <span className="chan-name">{c.name}</span>
-                {c.unread ? <span className="chan-unread mono">{c.unread}</span> : null}
               </button>
             ))}
           </div>
@@ -61,9 +74,10 @@ export function ChannelSidebar({ business, channels, activeId, onSelect }: Props
             background: 'linear-gradient(160deg,var(--ink-500),var(--ink-700))',
           }}
         >
-          MA
+          {initials}
         </div>
-        <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>Maya</div>
+        <div className="sidebar-foot-name">{label}</div>
+        <SignOutButton className="sidebar-signout" />
       </div>
     </aside>
   );

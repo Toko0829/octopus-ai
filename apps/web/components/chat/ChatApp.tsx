@@ -1,8 +1,19 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { businesses, channels, members, seedMessages } from '../../lib/mock';
-import type { Member, Message } from '../../lib/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { RealtimeChannel } from '@supabase/supabase-js';
+import type { Channel, Message, Room, RoomMember } from '@octopus/contracts';
+import type { Presence, UiMember, UiMessage } from '../../lib/types';
+import {
+  fromBroadcastRecord,
+  mergeMessages,
+  toBusiness,
+  toChannel,
+  toMember,
+  toMessage,
+} from '../../lib/adapt';
+import { getChannels, getMembers, getMessages, postMessage } from '../../lib/api-client';
+import { createClient } from '../../lib/supabase/client';
 import { GuildRail } from './GuildRail';
 import { ChannelSidebar } from './ChannelSidebar';
 import { TopBar } from './TopBar';
@@ -11,26 +22,127 @@ import { Composer } from './Composer';
 import { ContextPanel } from './ContextPanel';
 import { CommandPalette } from './CommandPalette';
 
-let idCounter = 100;
-const nextId = () => `m${++idCounter}`;
-
-function nowTime(): string {
-  const d = new Date();
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+interface Props {
+  viewerId: string;
+  viewerEmail: string | null;
+  rooms: Room[];
+  initialRoomId: string;
+  initialChannels: Channel[];
+  initialMembers: RoomMember[];
+  initialMessages: Message[];
 }
 
-export function ChatApp() {
-  const [activeBiz, setActiveBiz] = useState('rune');
-  const [activeChan, setActiveChan] = useState('brief');
-  const [messages, setMessages] = useState<Message[]>(seedMessages);
+export function ChatApp({
+  viewerId,
+  viewerEmail,
+  rooms,
+  initialRoomId,
+  initialChannels,
+  initialMembers,
+  initialMessages,
+}: Props) {
+  const [roomId, setRoomId] = useState(initialRoomId);
+  const [channels, setChannels] = useState<Channel[]>(initialChannels);
+  const [members, setMembers] = useState<RoomMember[]>(initialMembers);
+  const [messages, setMessages] = useState<UiMessage[]>(() => initialMessages.map(toMessage));
+  const [activeChan, setActiveChan] = useState<string | null>(initialChannels[0]?.id ?? null);
+  const [presence, setPresence] = useState<Record<string, Presence>>({});
   const [cmdkOpen, setCmdkOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
 
-  const membersById = useMemo<Record<string, Member>>(
-    () => Object.fromEntries(members.map((m) => [m.id, m] as const)),
-    [],
+  // Read inside the Realtime callback without making it a dependency, which would
+  // tear down and rebuild the subscription on every message.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  const businesses = useMemo(() => rooms.map(toBusiness), [rooms]);
+  const uiChannels = useMemo(() => channels.map(toChannel), [channels]);
+  const uiMembers = useMemo<UiMember[]>(
+    () => members.map((m) => toMember(m, viewerId, presence[m.userId] ?? 'offline')),
+    [members, viewerId, presence],
   );
-  const business = businesses.find((b) => b.id === activeBiz) ?? businesses[0]!;
+  const membersById = useMemo(
+    () => Object.fromEntries(uiMembers.map((m) => [m.id, m] as const)),
+    [uiMembers],
+  );
+
+  const flash = useCallback((text: string) => {
+    setToast(text);
+    window.setTimeout(() => setToast(null), 2600);
+  }, []);
+
+  /** Pull anything that landed while we were not subscribed. */
+  const catchUp = useCallback(async (id: string) => {
+    const highest = messagesRef.current.reduce(
+      (max, m) => (m.seq !== null && m.seq > max ? m.seq : max),
+      0,
+    );
+    try {
+      const res = await getMessages(id, highest || undefined);
+      if (res.messages.length > 0) {
+        setMessages((cur) => mergeMessages(cur, res.messages.map(toMessage)));
+      }
+    } catch (err) {
+      console.error('[chat] catch-up failed', err);
+      setBanner('Could not load recent messages. They may be missing until you reload.');
+    }
+  }, []);
+
+  /**
+   * Live delivery. The database broadcasts on insert (ADR-0003), so this listens
+   * rather than polling. On (re)subscribe it also runs a since-cursor catch-up,
+   * because a live subscription is not durable catch-up.
+   */
+  useEffect(() => {
+    const supabase = createClient();
+    let channel: RealtimeChannel | null = null;
+    let cancelled = false;
+
+    (async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session || cancelled) return;
+
+      await supabase.realtime.setAuth(session.access_token);
+      channel = supabase.channel(`chat:room:${roomId}`, {
+        config: { private: true, presence: { key: viewerId } },
+      });
+
+      channel.on('broadcast', { event: 'INSERT' }, (payload) => {
+        const record = (payload as { payload?: { record?: unknown } }).payload?.record;
+        const msg = fromBroadcastRecord(record);
+        if (msg) setMessages((cur) => mergeMessages(cur, [msg]));
+      });
+
+      channel.on('presence', { event: 'sync' }, () => {
+        const state = channel?.presenceState() ?? {};
+        const next: Record<string, Presence> = {};
+        for (const key of Object.keys(state)) next[key] = 'online';
+        setPresence(next);
+      });
+
+      channel.subscribe(async (status) => {
+        if (cancelled) return;
+        if (status === 'SUBSCRIBED') {
+          setBanner(null);
+          await channel?.track({ at: new Date().toISOString() });
+          await catchUp(roomId);
+        }
+        // Silence here would mean messages quietly stop arriving, which is the
+        // exact failure the write path cannot detect on its own.
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setBanner('Live updates are disconnected. Reload to catch up.');
+        }
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [roomId, viewerId, catchUp]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -44,97 +156,103 @@ export function ChatApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  function flash(msg: string) {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 2600);
+  async function selectRoom(id: string) {
+    if (id === roomId) return;
+    setRoomId(id);
+    setMessages([]);
+    setPresence({});
+    try {
+      const [ch, mem, msg] = await Promise.all([getChannels(id), getMembers(id), getMessages(id)]);
+      setChannels(ch.channels);
+      setActiveChan(ch.channels[0]?.id ?? null);
+      setMembers(mem.members);
+      setMessages(msg.messages.map(toMessage));
+    } catch (err) {
+      console.error('[chat] room switch failed', err);
+      setBanner('Could not open that workspace.');
+    }
   }
 
-  function handleSend(text: string) {
-    setMessages((m) => [
-      ...m,
-      { id: nextId(), authorId: 'you', kind: 'text', body: text, ts: nowTime() },
-    ]);
-    const thinkingId = nextId();
-    window.setTimeout(() => {
-      setMessages((m) => [
-        ...m,
-        {
-          id: thinkingId,
-          authorId: 'agent',
-          kind: 'text',
-          body: '',
-          ts: nowTime(),
-          streaming: true,
-        },
-      ]);
-    }, 500);
-    window.setTimeout(() => {
-      setMessages((m) =>
-        m.map((x) =>
-          x.id === thinkingId
-            ? {
-                ...x,
-                streaming: false,
-                body: 'Got it. I’ll ground this in what’s worked for similar creators and refine the plan. (Live planning wires up next in Phase 1, once the RAG + model are connected.)',
-              }
-            : x,
-        ),
-      );
-    }, 1900);
-  }
+  async function handleSend(text: string) {
+    const idempotencyKey = crypto.randomUUID();
+    const localId = `local-${idempotencyKey}`;
 
-  function approve(id: string) {
-    setMessages((m) => [
-      ...m.map((x) => (x.id === id ? { ...x, planState: 'approved' as const } : x)),
+    // Optimistic render, reconciled when the server copy arrives (either from this
+    // response or from the broadcast; mergeMessages dedupes by id).
+    setMessages((cur) => [
+      ...cur,
       {
-        id: nextId(),
-        authorId: 'system',
-        kind: 'system',
-        body: 'Maya approved the plan. AI-owned steps queued; human steps will be offered to matched experts.',
-        ts: nowTime(),
+        id: localId,
+        authorId: viewerId,
+        authorKind: 'user',
+        body: text,
+        seq: null,
+        ts: new Date().toTimeString().slice(0, 5),
+        pending: true,
       },
     ]);
-    flash('Plan approved. Captured as flywheel signal ✓');
+
+    try {
+      const saved = await postMessage(roomId, {
+        body: text,
+        ...(activeChan ? { channelId: activeChan } : {}),
+        idempotencyKey,
+      });
+      setMessages((cur) =>
+        mergeMessages(
+          cur.filter((m) => m.id !== localId),
+          [toMessage(saved)],
+        ),
+      );
+    } catch (err) {
+      // Keep the text on screen and mark it failed. Dropping it would lose what
+      // the person wrote.
+      setMessages((cur) =>
+        cur.map((m) => (m.id === localId ? { ...m, pending: false, failed: true } : m)),
+      );
+      setBanner(err instanceof Error ? err.message : 'Message failed to send.');
+    }
   }
 
-  function requestChanges(_id: string) {
-    flash('Feedback captured. The agent will revise (flywheel signal)');
-  }
-
-  function handleAction(label: string) {
-    setCmdkOpen(false);
-    flash(label);
-  }
-
-  const activeChannelName = channels.find((c) => c.id === activeChan)?.name ?? 'brief';
-  const currentPlan = messages.find((x) => x.kind === 'plan')?.plan;
+  const activeChannel = uiChannels.find((c) => c.id === activeChan);
+  const business = businesses.find((b) => b.id === roomId) ?? businesses[0]!;
 
   return (
     <div className="shell">
-      <GuildRail businesses={businesses} activeId={activeBiz} onSelect={setActiveBiz} />
+      <GuildRail businesses={businesses} activeId={roomId} onSelect={selectRoom} />
       <ChannelSidebar
         business={business}
-        channels={channels}
+        channels={uiChannels}
         activeId={activeChan}
         onSelect={setActiveChan}
+        viewer={membersById[viewerId] ?? null}
+        viewerEmail={viewerEmail}
       />
       <div className="main">
-        <TopBar
-          channel={activeChannelName}
-          topic="launch · week 1 · first 1,000 users"
-          budgetUsed="$1,180"
-          budgetCeiling="$1,500"
-        />
+        <TopBar channel={activeChannel?.name ?? business.name} memberCount={uiMembers.length} />
+        {banner && (
+          <div className="banner" role="status">
+            {banner}
+          </div>
+        )}
         <MessageStream
+          channelName={activeChannel?.name ?? null}
           messages={messages}
           membersById={membersById}
-          onApprove={approve}
-          onRequestChanges={requestChanges}
         />
-        <Composer onSend={handleSend} />
+        <Composer channelName={activeChannel?.name ?? null} onSend={handleSend} />
       </div>
-      <ContextPanel members={members} plan={currentPlan} />
-      <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} onAction={handleAction} />
+      <ContextPanel members={uiMembers} />
+      <CommandPalette
+        open={cmdkOpen}
+        channels={uiChannels}
+        onClose={() => setCmdkOpen(false)}
+        onJump={(id) => {
+          setActiveChan(id);
+          setCmdkOpen(false);
+        }}
+        onNotify={flash}
+      />
       {toast && (
         <div className="toast">
           <span className="pulse" aria-hidden />
