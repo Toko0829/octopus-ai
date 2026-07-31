@@ -1,6 +1,12 @@
 # RAG System
 
-> The complete Retrieval-Augmented Generation spec: ingestion, hybrid retrieval + rerank, contextual enrichment, jurisdiction packs, freshness, evaluation, and risk mitigations. Source of truth for anyone touching knowledge or retrieval. Owns `packages/rag/**` alongside [rag-knowledge.md](../30-modules/rag-knowledge.md). Update on any change to ingestion, retrieval, models, or eval gates.
+> The complete Retrieval-Augmented Generation spec: ingestion, hybrid retrieval + rerank, contextual enrichment, jurisdiction packs, freshness, evaluation, and risk mitigations. Source of truth for anyone touching knowledge or retrieval. Update on any change to ingestion, retrieval, models, or eval gates.
+>
+> **Implemented in `services/ai` (Python), not `packages/rag`.** [ADR-0006](../40-adr/0006-python-ai-service-node-backend.md) moved the AI layer to Python after this doc was written; the `packages/rag` path referenced in older text does not exist.
+>
+> **Implementation status (Phase 1).** Live: the schema (`20260728210000_rag_schema.sql`), hybrid retrieval with RRF fusion in SQL (`public.hybrid_search`), Cohere rerank with a calibrated drop-threshold, structure-first chunking, batched embedding, and content-hash supersession. A four-document internally-authored seed corpus covers paid acquisition, advertising disclosure, lifecycle email and early-stage SEO for US.
+>
+> **Not built yet, in this doc's order:** crawlers and the freshness pipeline (steps 1 to 3 and the `pg_cron` re-crawl), layout-aware parsing and OCR (step 4), **LLM-generated contextual prefixes** (step 7 uses a metadata-derived prefix instead), structured supplier/cost-benchmark rows (step 10), the query-transformation stage (self-query, multi-query/HyDE, decomposition, routing), and the whole **evaluation section** — `eval_golden_set` exists as an empty table and no Ragas/DeepEval gate runs. Treat the rest of this document as specification, not description.
 
 ## Why RAG is load-bearing here
 

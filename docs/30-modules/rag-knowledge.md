@@ -2,7 +2,7 @@
 
 > The jurisdiction-aware knowledge system: ingest, contextualize, index, and retrieve legal, permit, tax, supplier, and cost-benchmark knowledge with citations, freshness, and hybrid retrieval + rerank. Exposed to the agent as the `rag_retrieve` tool.
 >
-> **Owner paths:** `packages/rag/**` · **Depends on:** infra-devops (pgvector, `pg_cron`, storage), integrations (embedding/rerank/parser providers, crawlers) · **Depended on by:** ai-orchestrator, business-projects-workflow.
+> **Owner paths:** `services/ai/**` (Python; `packages/rag` never existed and predates [ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) · **Depends on:** infra-devops (pgvector, `pg_cron`, storage), integrations (embedding/rerank/parser providers, crawlers) · **Depended on by:** ai-orchestrator, business-projects-workflow.
 >
 > The full engineering spec lives in [rag.md](../10-architecture/rag.md); this module doc is the operational/domain view. Update both on any ingestion/retrieval/model/eval change.
 

@@ -110,7 +110,27 @@ Future apps/packages are created when their roadmap phase arrives — see [infra
 
 ## Supabase (local)
 
-`supabase/` holds `config.toml`, the initial migration ([20260724000000_init.sql](supabase/migrations/20260724000000_init.sql), profiles + RLS), and `seed.sql`. Bring up a local stack with the Supabase CLI (`supabase start`) once you're ready to wire auth in Phase 1.
+`supabase/` holds `config.toml`, `seed.sql`, and the migrations in `supabase/migrations/` (identity, chat, grants, RAG schema, hybrid search). Bring up a local stack with the Supabase CLI (`supabase start`).
+
+Migration versions must match their filenames. If you apply one through a tool that stamps its own timestamp, correct the `version` in `supabase_migrations.schema_migrations` afterwards, or `supabase db push` will try to replay it.
+
+## Seeding the knowledge base
+
+Retrieval needs a corpus. The seed documents live in `services/ai/corpus/` as markdown with front matter:
+
+```bash
+uv run --directory services/ai python -m octopus_ai.seed
+```
+
+Pass a query to ingest and then probe retrieval in one go:
+
+```bash
+uv run --directory services/ai python -m octopus_ai.seed "how do I lower CPA"
+```
+
+Re-running is safe and cheap: a document whose content hash is unchanged is skipped without re-embedding. Changing a document supersedes the previous version rather than duplicating it. The hash covers `CHUNKER_VERSION` too, so changing how documents split forces a re-ingest.
+
+With an empty corpus the agent will refuse every goal, which is correct behaviour rather than a bug.
 
 ## Notes
 

@@ -9,6 +9,10 @@
 #   - `owner` is the module doc that must change when the code changes.
 #   - `also_touch` lists docs that frequently must change together (advisory, not enforced).
 #   - A PR touching schema/RLS also touches docs/10-architecture/data-model.md.
+#   - Mappings may be FORWARD-REGISTERED for paths that do not exist yet (apps/matcher,
+#     packages/core, and so on). That is deliberate: the gate then fires the moment that
+#     code first lands. Do not prune an entry merely because its directory is absent.
+#     Prune only when a path is genuinely superseded, as `packages/rag/**` was by ADR-0006.
 
 version: 1
 
@@ -38,9 +42,9 @@ mappings:
     owner: 'docs/10-architecture/data-model.md'
     also_touch: ['docs/10-architecture/security-compliance.md']
 
-  - path: 'packages/rag/**'
-    owner: 'docs/30-modules/rag-knowledge.md'
-    also_touch: ['docs/10-architecture/rag.md', 'docs/10-architecture/learning-flywheel.md']
+  # `packages/rag/**` was the pre-ADR-0006 home for retrieval. It never existed
+  # on disk and the AI layer is Python now, so that mapping could never fire.
+  # RAG lives under `services/ai/**` below, which carries the same owning docs.
 
   # Python AI service (RAG + agent reasoning + eval + models) — see ADR-0006.
   - path: 'services/ai/**'
@@ -50,6 +54,7 @@ mappings:
         'docs/10-architecture/rag.md',
         'docs/30-modules/rag-knowledge.md',
         'docs/10-architecture/tech-stack.md',
+        'docs/10-architecture/learning-flywheel.md',
       ]
 
   - path: 'packages/marketing/**'

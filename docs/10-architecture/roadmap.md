@@ -27,14 +27,16 @@
 
 **Goal:** a creator gets a real, grounded, full-funnel growth plan in chat — no execution yet.
 
-- Discord-style chat shell (5 regions, roles/badges, presence, inline messages) on Supabase Realtime.
-- `rag-knowledge` for **marketing**: pgvector schema, ingestion of marketing playbooks + channel best-practices + ad-policy rules (US/EU), hybrid retrieval + RRF + rerank, eval golden set + CI thresholds.
-- Orchestrator **planning pass**: creator goal → RAG-grounded **full-funnel task DAG** (positioning, offer, content, channels, creative brief, conversion, measurement) rendered as a plan card with citations.
-- AI participates **inline**; **no side effects** (no publishing, no spend).
-- `design-system-frontend` tokens + core components (editorial house style, no slop).
-- **Flywheel v0:** capture user approve/reject/edit signals on plans as the first labeled data.
+- ✅ Discord-style chat shell (5 regions, roles/badges, presence, inline messages) on Supabase Realtime.
+- 🟡 `rag-knowledge` for **marketing**: pgvector schema, hybrid retrieval + RRF + rerank **done**; ingestion works but from a hand-authored seed corpus rather than crawled sources; **eval golden set + CI thresholds not started**.
+- 🟡 Orchestrator **planning pass**: a creator goal returns a grounded, cited reply, and refuses when nothing clears the relevance threshold. **Not yet a task DAG and not yet a plan card** — the reply is prose, so the plan card stays unrendered.
+- ✅ AI participates **inline**; **no side effects** (no publishing, no spend).
+- ✅ `design-system-frontend` tokens + core components (editorial house style, no slop).
+- ❌ **Flywheel v0:** capture user approve/reject/edit signals on plans as the first labeled data.
 
 **Exit gate:** a creator gets a correct, tailored full-funnel plan; eval gates pass; design review passes the anti-slop checklist.
+
+> **Gate status: not met.** Retrieval and grounded generation are live and the refusal path works, but the output is a cited prose reply rather than a structured full-funnel DAG on a plan card, and **there is no eval gate at all**, which the gate names explicitly. Remaining: golden set + Ragas/DeepEval thresholds, the DAG-shaped planner output, and flywheel v0 signal capture.
 
 ## Phase 2 — Execution + Channels + Creative + Marketplace + Escrow
 
