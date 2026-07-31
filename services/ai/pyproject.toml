@@ -14,6 +14,7 @@ dev = [
     "pytest>=8.3",
     "httpx>=0.27",
     "ruff>=0.8",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [build-system]
@@ -34,3 +35,7 @@ select = ["E", "F", "I", "B", "C4", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# `auto` so async tests need no per-test marker; every async test here is a
+# plain coroutine and the marker would be pure ceremony.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

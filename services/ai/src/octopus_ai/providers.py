@@ -1,0 +1,203 @@
+"""Typed adapters over OpenAI and Cohere.
+
+integrations.md requires every provider to sit behind an adapter so a swap lands
+in one file. ADR-0007 makes that concrete: embeddings and generation are OpenAI,
+rerank is Cohere because OpenAI has no reranking endpoint.
+
+Deliberately plain `httpx` rather than the vendor SDKs. Two calls, two well
+documented HTTP endpoints, and no extra dependency tree to keep current in a
+service whose whole job is to stay swappable.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+
+import httpx
+
+from .config import Settings
+
+logger = logging.getLogger("octopus.ai.providers")
+
+OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/chat/completions"
+COHERE_RERANK_URL = "https://api.cohere.com/v2/rerank"
+
+# Transient statuses worth retrying: rate limit and the 5xx family.
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
+_MAX_ATTEMPTS = 3
+
+
+class ProviderError(RuntimeError):
+    """A provider call failed in a way the caller must handle, not ignore."""
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json: dict,
+    what: str,
+) -> dict:
+    """POST with bounded exponential backoff.
+
+    Retries only transient failures. A 400 means our request is wrong and
+    retrying it just burns quota, so it fails immediately.
+    """
+    delay = 0.5
+    last_detail = ""
+
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            response = await client.post(url, headers=headers, json=json)
+        except httpx.RequestError as exc:
+            last_detail = f"transport error: {exc}"
+            if attempt == _MAX_ATTEMPTS:
+                break
+            await asyncio.sleep(delay)
+            delay *= 2
+            continue
+
+        if response.status_code < 400:
+            return response.json()
+
+        last_detail = f"{response.status_code} {response.text[:300]}"
+        if response.status_code not in _RETRY_STATUSES or attempt == _MAX_ATTEMPTS:
+            break
+
+        # Honour Retry-After when the provider sends one; it knows better than
+        # our backoff curve does.
+        retry_after = response.headers.get("retry-after")
+        wait = float(retry_after) if retry_after and retry_after.isdigit() else delay
+        logger.warning(
+            "%s attempt %d failed (%s); retrying in %.1fs", what, attempt, last_detail, wait
+        )
+        await asyncio.sleep(wait)
+        delay *= 2
+
+    raise ProviderError(f"{what} failed after {_MAX_ATTEMPTS} attempts: {last_detail}")
+
+
+@dataclass(frozen=True)
+class RerankHit:
+    index: int
+    score: float
+
+
+class Providers:
+    """Provider calls for one process. Holds a pooled client; close it on shutdown."""
+
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
+        self._s = settings
+        self._client = client or httpx.AsyncClient(timeout=settings.request_timeout_s)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed texts, preserving input order.
+
+        Batched because the endpoint accepts arrays: one request per chunk would
+        multiply latency and per-call overhead across a whole document.
+
+        `dimensions` is sent explicitly (ADR-0007). Without it the model returns
+        3072 dims and every insert would fail against halfvec(1024) — better to
+        be explicit here than to debug a dimension mismatch at write time.
+        """
+        if not texts:
+            return []
+
+        out: list[list[float]] = []
+        batch = self._s.embed_batch_size
+
+        for start in range(0, len(texts), batch):
+            window = texts[start : start + batch]
+            payload = await _post_with_retry(
+                self._client,
+                OPENAI_EMBEDDINGS_URL,
+                headers={"Authorization": f"Bearer {self._s.openai_api_key}"},
+                json={
+                    "model": self._s.embed_model,
+                    "input": window,
+                    "dimensions": self._s.embed_dimensions,
+                },
+                what="openai embeddings",
+            )
+
+            data = payload.get("data") or []
+            if len(data) != len(window):
+                raise ProviderError(
+                    f"openai embeddings returned {len(data)} vectors for {len(window)} inputs"
+                )
+            # The API documents index ordering, but sorting makes the guarantee
+            # ours rather than borrowed: a misaligned batch would attach the
+            # wrong vector to the wrong chunk, and nothing downstream could tell.
+            for item in sorted(data, key=lambda d: d["index"]):
+                vector = item["embedding"]
+                if len(vector) != self._s.embed_dimensions:
+                    raise ProviderError(
+                        f"expected {self._s.embed_dimensions} dims, got {len(vector)}"
+                    )
+                out.append(vector)
+
+        return out
+
+    async def complete(self, *, system: str, user: str) -> str:
+        """One generation call. Returns the message text.
+
+        The system prompt and the retrieved sources travel in separate messages
+        so the instruction channel stays distinct from untrusted reference data
+        (AGENTS.md rule 8).
+        """
+        payload = await _post_with_retry(
+            self._client,
+            OPENAI_RESPONSES_URL,
+            headers={"Authorization": f"Bearer {self._s.openai_api_key}"},
+            json={
+                "model": self._s.generation_model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": 0.3,
+                # `max_completion_tokens`, not `max_tokens`: the gpt-5 family
+                # rejects the older parameter outright ("Unsupported parameter").
+                # Verified against the API, not assumed.
+                "max_completion_tokens": self._s.generation_max_tokens,
+            },
+            what="openai chat completion",
+        )
+
+        choices = payload.get("choices") or []
+        if not choices:
+            raise ProviderError("openai returned no choices")
+        content = (choices[0].get("message") or {}).get("content")
+        if not content or not content.strip():
+            raise ProviderError("openai returned an empty completion")
+        return content
+
+    async def rerank(self, query: str, documents: list[str], top_n: int) -> list[RerankHit]:
+        """Cross-encoder rescoring. Returns (index into `documents`, score), best first."""
+        if not documents:
+            return []
+
+        payload = await _post_with_retry(
+            self._client,
+            COHERE_RERANK_URL,
+            headers={"Authorization": f"Bearer {self._s.cohere_api_key}"},
+            json={
+                "model": self._s.rerank_model,
+                "query": query,
+                "documents": documents,
+                "top_n": min(top_n, len(documents)),
+            },
+            what="cohere rerank",
+        )
+
+        return [
+            RerankHit(index=int(r["index"]), score=float(r["relevance_score"]))
+            for r in payload.get("results", [])
+        ]

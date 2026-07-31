@@ -13,6 +13,12 @@
 - Serve grounded, cited retrieval to the agent, **preferring real outcomes** ("what worked for customers like this") as they accrue.
 - Run the outcome-ingestion side of the [learning flywheel](../10-architecture/learning-flywheel.md).
 
+> **Implementation status (Phase 1):** ingestion and hybrid retrieval are live in `services/ai`. Schema in `20260728210000_rag_schema.sql`, RRF fusion in `public.hybrid_search`. A four-document seed corpus lives in `services/ai/corpus/` covering paid acquisition, advertising disclosure, lifecycle email and early-stage SEO for the US market. Seed or re-seed with `uv run --directory services/ai python -m octopus_ai.seed`; re-running is a no-op unless a document or the chunker changed.
+>
+> **The seed corpus is internally authored and labelled `internal`.** It is deliberately not attributed to regulators or ad platforms: a fabricated citation is worse than none, because the entire value of a citation is that the reader can check it. Real external sources arrive with the crawlers.
+>
+> **Not built yet:** crawlers and the freshness pipeline (`pg_cron` re-crawl, content-hash re-check against live sources), LLM-generated contextual prefixes (a metadata-derived prefix is used instead), query transformation (self-query, HyDE, decomposition), and the Ragas/DeepEval gate. `eval_golden_set` exists as a table but is empty.
+
 ## In-Postgres pgvector (rationale)
 
 Vectors live in the same Postgres as everything else — relational, RLS-permissioned, transactionally consistent, one system to run. See [ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md). Schema: `documents` + `doc_chunks` (`halfvec(1024)` HNSW cosine + generated `tsvector`), plus typed `suppliers` / `cost_benchmarks` rows.

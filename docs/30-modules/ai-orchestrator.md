@@ -8,7 +8,12 @@
 
 > **Implementation status (Phase 1):** the **seam is live end to end, with a deliberately trivial core.** `services/ai` (FastAPI) exposes `GET /health` and `POST /plan`, returning typed **proposals**; `apps/api` exposes `POST /api/rooms/:roomId/agent-runs` which returns `202 + runId` and executes those proposals, posting to chat as `author_kind='agent'`. The agent is therefore a real chat member: its messages persist under RLS and reach clients over Realtime like anyone else's.
 >
-> The core is `deterministic-v0` and **calls no model**. It acknowledges the goal and declines to plan, because planning without retrieval cannot be cited and rule 10 forbids uncited output gating action. It reports `grounded: false` with empty `citations`, and Node records that on every run. Swapping in a real model plus RAG is a contained change behind the same contract.
+> **RAG is live and the core now answers from it.** `/plan` retrieves before it reasons and picks a core from the result:
+>
+> - **`grounded-v1`** — retrieval found in-scope sources, so the reply is written from them and cites them by document title.
+> - **`refusing-v0`** — nothing cleared the relevance threshold, so it declines to plan and says why. Retrieval failing or generation failing both degrade to this, never to an ungrounded answer.
+>
+> Verified end to end: "my cost per acquisition on Meta ads is too high" returns a cited plan drawn from the corpus, while "get a restaurant liquor licence in Tbilisi" is refused rather than invented.
 >
 > **Not yet durable.** The run executes in-process, so a crash or deploy mid-run loses it; ADR-0001 puts this on Trigger.dev v3, which needs credentials this project does not have yet. `startRun` is already shaped for that move (one function, a run id, no shared state, no dependency on the request staying open). Verified: 11 API assertions plus a Realtime probe confirming the agent's message is broadcast to a subscribed member.
 
@@ -44,6 +49,16 @@ Every tool is a Zod-typed function with a **risk tier**. Tools have **no ambient
 | `request_human_node`             | high-risk  | creates task, hands matcher requirements, **suspends run on waitpoint** |
 
 > **First-vertical tools:** the marketing growth engine adds typed, guardrailed tools — `generate_creative`, `draft_copy`, `connect_channel`, `create_campaign`/`create_ad_set`/`create_ad`, `publish_content`, `set_budget`, `pull_metrics`, `optimize_campaign` — all `high-risk` where they publish or spend (spend caps enforced in tool code). See [marketing-growth-engine.md](marketing-growth-engine.md).
+
+## The retrieval pipeline (`services/ai`)
+
+`query -> embed -> [dense + sparse fused by RRF inside Postgres] -> cross-encoder rerank -> drop below threshold`
+
+- **Fusion happens in SQL, not Python.** `public.hybrid_search` runs both candidate lists and the RRF merge in one query, so the network carries the final top-N instead of two candidate lists. RRF is rank-based, which is the point: cosine distance and `ts_rank_cd` are not comparable quantities and would need normalising otherwise.
+- **The threshold is calibrated, not guessed.** Measured against the seed corpus: clearly relevant chunks score 0.063 to 0.667, a related-but-wrong document tops out near 0.068, and an off-topic query never exceeds 0.015. `0.05` separates them. **Re-calibrate as the corpus grows**; Cohere's scores are corpus-dependent.
+- **Weak chunks are dropped, never used as padding.** Handing a model six loosely related paragraphs is how confident, wrong, "grounded" answers get produced.
+- **Ingestion supersedes rather than duplicates.** A changed document closes the previous version's validity window before the new one is inserted. Without that step re-ingestion silently produces two live copies that then get reranked against each other, which is exactly what happened the first time it was run.
+- **Change detection covers the chunker, not just the text.** `content_hash` folds in a `CHUNKER_VERSION`, so changing how documents split forces a re-ingest instead of leaving the index built by code that no longer exists.
 
 ## The proposal boundary (how "Python proposes, Node executes" is actually enforced)
 
