@@ -1,15 +1,18 @@
-# packages/ — shared libraries (future)
+# packages/ — shared libraries
 
-> **No code yet.** Reserved for the shared workspace packages. Full layout in [infra-devops.md](../docs/30-modules/infra-devops.md).
+> `config` and `contracts` exist; the rest are created when their roadmap phase arrives. Full intended layout in [infra-devops.md](../docs/30-modules/infra-devops.md).
 
-| Package         | Purpose                                                                  | Owner doc                                                                                                     |
-| --------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `db`            | Supabase migrations, RLS policies, generated types, query layer, pg-boss | [data-model](../docs/10-architecture/data-model.md)                                                           |
-| `contracts`     | Zod schemas + ts-rest/OpenAPI contract                                   | [architecture](../docs/10-architecture/architecture.md) ([ADR-0004](../docs/40-adr/0004-tsrest-over-trpc.md)) |
-| `core`          | Domain logic (projects, tasks, escrow, room membership)                  | [business-projects-workflow](../docs/30-modules/business-projects-workflow.md)                                |
-| `rag`           | Chunking, embedding, hybrid pgvector retrieval, ingestion                | [rag-knowledge](../docs/30-modules/rag-knowledge.md)                                                          |
-| `agent-tools`   | Zod-typed agent tools                                                    | [ai-orchestrator](../docs/30-modules/ai-orchestrator.md)                                                      |
-| `realtime`      | Chat transport abstraction (Broadcast now, WS later)                     | [chat-discord](../docs/30-modules/chat-discord.md)                                                            |
-| `ui`            | Shared React components / design system                                  | [design-system-frontend](../docs/30-modules/design-system-frontend.md)                                        |
-| `observability` | OpenTelemetry, Sentry, LLM-trace wiring                                  | [observability](../docs/10-architecture/observability.md)                                                     |
-| `config`        | eslint, tsconfig, env schema (Zod), constants                            | [infra-devops](../docs/30-modules/infra-devops.md)                                                            |
+| Package         | Status     | Purpose                                                                  | Owner doc                                                                                                     |
+| --------------- | ---------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `config`        | ✅ built   | eslint, tsconfig, env schema (Zod), constants                            | [infra-devops](../docs/30-modules/infra-devops.md)                                                            |
+| `contracts`     | ✅ built   | Zod schemas + ts-rest/OpenAPI contract                                   | [architecture](../docs/10-architecture/architecture.md) ([ADR-0004](../docs/40-adr/0004-tsrest-over-trpc.md)) |
+| `db`            | ❌ pending | Supabase migrations, RLS policies, generated types, query layer, pg-boss | [data-model](../docs/10-architecture/data-model.md)                                                           |
+| `core`          | ❌ pending | Domain logic (projects, tasks, escrow, room membership)                  | [business-projects-workflow](../docs/30-modules/business-projects-workflow.md)                                |
+| `agent-tools`   | ❌ pending | Zod-typed agent tools                                                    | [ai-orchestrator](../docs/30-modules/ai-orchestrator.md)                                                      |
+| `realtime`      | ❌ pending | Chat transport abstraction (Broadcast now, WS later)                     | [chat-discord](../docs/30-modules/chat-discord.md)                                                            |
+| `ui`            | ❌ pending | Shared React components / design system                                  | [design-system-frontend](../docs/30-modules/design-system-frontend.md)                                        |
+| `observability` | ❌ pending | OpenTelemetry, Sentry, LLM-trace wiring                                  | [observability](../docs/10-architecture/observability.md)                                                     |
+
+> **There is no `packages/rag`.** Retrieval lives in the Python service at `services/ai` ([ADR-0006](../docs/40-adr/0006-python-ai-service-node-backend.md)); the package was superseded before it was ever created, and `.docmeta.yml` drops the mapping for the same reason.
+>
+> Migrations currently live in `supabase/migrations/` and are applied with the Supabase CLI. `packages/db` is where the authored migrations and generated types are intended to land.

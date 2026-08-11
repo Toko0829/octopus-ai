@@ -3,10 +3,12 @@ import { getAccessToken } from '../../../../lib/supabase/server';
 
 /**
  * The thin BFF. Forwards /api/bff/* to Fastify with the caller's access token
- * attached from their httpOnly session cookie.
+ * attached server-side from their session cookie.
  *
- * This exists so the browser never holds a bearer token and never talks to
- * Fastify directly (docs/10-architecture/architecture.md: "reads/aggregates ·
+ * The cookies are not `httpOnly` (docs/30-modules/auth-identity.md), so this is not
+ * about hiding the token from page scripts. It exists so the token is attached in
+ * exactly one place, the browser never talks to Fastify directly, and the API origin
+ * stays unexposed (docs/10-architecture/architecture.md: "reads/aggregates ·
  * PROXIES mutations"). It deliberately does no business logic: it adds auth and
  * relays. Anything heavier belongs in Fastify, and anything long-running belongs
  * in a durable task returning 202 + runId (AGENTS.md rule 4).

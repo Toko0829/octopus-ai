@@ -2,8 +2,13 @@ import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 
 /**
- * Server-side Supabase client bound to the request's cookies. The session lives in
- * httpOnly cookies, so it is never readable by page scripts
+ * Server-side Supabase client bound to the request's cookies.
+ *
+ * The session cookies are deliberately **not** `httpOnly`: `@supabase/ssr`'s browser
+ * client has to read them to authenticate the Realtime socket, which `httpOnly` would
+ * prevent. The access token is therefore reachable by page scripts, exactly as in
+ * Supabase's standard SSR setup. A genuinely `httpOnly` session would require
+ * brokering Realtime server-side too, and that is an ADR-level change
  * (docs/30-modules/auth-identity.md).
  */
 export async function createClient() {

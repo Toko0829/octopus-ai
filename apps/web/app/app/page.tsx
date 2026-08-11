@@ -10,6 +10,16 @@ export const metadata: Metadata = {
   title: 'Octopus · Workspace',
 };
 
+/**
+ * The workspace is per-request by definition: it resolves the caller's session and
+ * reads their rooms. Declare that rather than letting it fall out of `cookies()`
+ * throwing Next's dynamic bailout, because `createClient()` validates env *before*
+ * it reaches `cookies()`. Without this line a build with no Supabase env tries to
+ * prerender the page, hits that validation, and fails, which is how CI broke while
+ * every local build passed on the strength of a present `.env.local`.
+ */
+export const dynamic = 'force-dynamic';
+
 /** Reads happen here (RSC), so the shell renders with real data already in place. */
 export default async function WorkspacePage() {
   const supabase = await createClient();
