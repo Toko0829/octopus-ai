@@ -48,12 +48,22 @@ _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+\S", re.MULTILINE)
 CHUNKER_VERSION = "2"
 
 
-def content_hash(text: str) -> str:
+def content_hash(text: str, embed_model: str = "") -> str:
     """Stable hash for change detection, so unchanged documents are never re-embedded.
 
-    Covers the chunking pipeline as well as the text, for the reason above.
+    Covers the chunking pipeline and **the embedding model**, not just the text.
+
+    The embedding model belongs here for the same reason CHUNKER_VERSION does,
+    and the consequence of omitting it is worse. Switching embedder leaves the
+    source bytes identical, so every document would be skipped as unchanged: the
+    corpus keeps vectors from the old model while new rows claim the new one, and
+    query vectors from the new model then get compared against old ones inside
+    the same HNSW index. Nothing errors. Retrieval just quietly degrades, which
+    on a system whose whole promise is grounded, cited answers is the worst
+    available failure. rag.md is explicit that one model must cover the whole
+    corpus; this is what makes that enforceable rather than aspirational.
     """
-    payload = f"{CHUNKER_VERSION}\x00{text}"
+    payload = f"{CHUNKER_VERSION}\x00{embed_model}\x00{text}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -178,12 +188,12 @@ class Ingestor:
             label=source_label, authority=authority, url=source_url
         )
 
-        digest = content_hash(text)
+        digest = content_hash(text, self._s.active_embed_model)
         current = await self._db.find_current_version(source_id, title)
 
         if current and current["content_hash"] == digest:
-            # Same bytes and same chunker as last time: re-embedding would cost
-            # money and change nothing.
+            # Same bytes, same chunker, and same embedding model as last time:
+            # re-embedding would cost money and change nothing.
             logger.info("document unchanged, skipping", extra={"title": title})
             return IngestResult(
                 document_id=current["id"], chunks_written=0, skipped_unchanged=True
@@ -230,7 +240,7 @@ class Ingestor:
                 "chunk_text": piece,
                 "context_prefix": prefix,
                 "embedding": to_pgvector(vector),
-                "embed_model": self._s.embed_model,
+                "embed_model": self._s.active_embed_model,
                 "embedded_at": "now()",
                 "lang": lang,
             }

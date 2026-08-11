@@ -16,6 +16,13 @@ dev = [
     "ruff>=0.8",
     "pytest-asyncio>=1.4.0",
 ]
+# EMBED_PROVIDER=local only (ADR-0008). Deliberately an extra, not a base
+# dependency: FlagEmbedding pulls torch and transformers, several GB that an
+# OpenAI-backed deployment and every CI run would otherwise carry for nothing.
+# Install with: uv sync --extra local-embed
+local-embed = [
+    "FlagEmbedding>=1.3",
+]
 
 [build-system]
 requires = ["hatchling"]

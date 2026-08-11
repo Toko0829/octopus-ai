@@ -58,6 +58,30 @@ def _require(name: str) -> str:
     return value
 
 
+def _choice(name: str, default: str, allowed: set[str]) -> str:
+    """Read an enum-ish setting, failing loudly on anything unrecognised.
+
+    A typo'd EMBED_PROVIDER must not quietly fall back to the default: that is how
+    a corpus ends up embedded by a model nobody selected.
+    """
+    value = (os.environ.get(name) or default).strip()
+    if value not in allowed:
+        raise ConfigError(f"{name} must be one of {sorted(allowed)}, got {value!r}")
+    return value
+
+
+def _bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    normalised = raw.strip().lower()
+    if normalised in {"1", "true", "yes", "on"}:
+        return True
+    if normalised in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be a boolean, got {raw!r}")
+
+
 def _int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
@@ -76,11 +100,32 @@ class Settings:
     openai_api_key: str
     cohere_api_key: str
 
-    # ADR-0007. The embedding model and its dimension count are a matched pair:
-    # doc_chunks.embedding is halfvec(1024), and one model must cover the whole
-    # corpus, so changing either means re-embedding everything.
+    # ADR-0007, amended by ADR-0008. The embedding model and its dimension count
+    # are a matched pair: doc_chunks.embedding is halfvec(1024), and one model
+    # must cover the whole corpus, so changing either means re-embedding
+    # everything.
+    #
+    # `local` runs BAAI/bge-m3 in-process instead of calling OpenAI. It emits 1024
+    # dims natively (verified against the model config, not assumed), so halfvec
+    # (1024) and the HNSW index are unchanged either way. Default stays `openai`
+    # so neither CI nor a plain `uv sync` has to carry torch; opting in is an env
+    # var, and the two are never mixed within one corpus.
+    embed_provider: str = "openai"
     embed_model: str = "text-embedding-3-large"
+    # The model's IDENTITY: stamped on every doc_chunks row and folded into the
+    # ingestion hash. Deliberately separate from where the weights happen to sit,
+    # so moving this machine's cache, or deploying to a server with a different
+    # layout, does not rewrite every row's provenance or force a spurious
+    # re-embed of an identical model.
+    embed_local_model: str = "BAAI/bge-m3"
+    # Optional LOCATION override: a filesystem path to load from. Empty means
+    # resolve `embed_local_model` through the HF cache as a repo id. Required for
+    # HF_HUB_OFFLINE, where a repo id fails on the unused onnx/ files.
+    embed_local_path: str = ""
     embed_dimensions: int = 1024
+    # fp16 halves the resident model and speeds inference. Meaningless on CPU-only
+    # hosts, where the local embedder falls back to fp32 rather than failing.
+    embed_local_fp16: bool = True
     rerank_model: str = "rerank-v3.5"
 
     # Model tiering (tech-stack.md): strong for planning and critique, fast for
@@ -122,6 +167,25 @@ class Settings:
 
     tags: dict[str, str] = field(default_factory=dict)
 
+    @property
+    def active_embed_model(self) -> str:
+        """The embedding model actually in use, whichever provider is selected.
+
+        This is the identity that gets stamped on every `doc_chunks.embed_model`
+        row and folded into the ingestion content hash, so a provider switch is
+        both traceable after the fact and self-invalidating before it.
+        """
+        return self.embed_local_model if self.embed_provider == "local" else self.embed_model
+
+    @property
+    def embed_local_source(self) -> str:
+        """Where to load the local weights from: an explicit path, else the repo id.
+
+        Kept apart from `active_embed_model` on purpose. This one may be a
+        machine-specific path and must never reach the database or the hash.
+        """
+        return self.embed_local_path or self.embed_local_model
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
@@ -132,8 +196,12 @@ def get_settings() -> Settings:
         supabase_secret_key=_require("SUPABASE_SECRET_KEY"),
         openai_api_key=_require("OPENAI_API_KEY"),
         cohere_api_key=_require("COHERE_API_KEY"),
+        embed_provider=_choice("EMBED_PROVIDER", "openai", {"openai", "local"}),
         embed_model=os.environ.get("EMBED_MODEL", "text-embedding-3-large"),
+        embed_local_model=os.environ.get("EMBED_LOCAL_MODEL", "BAAI/bge-m3"),
+        embed_local_path=os.environ.get("EMBED_LOCAL_PATH", ""),
         embed_dimensions=_int("EMBED_DIMENSIONS", 1024),
+        embed_local_fp16=_bool("EMBED_LOCAL_FP16", True),
         rerank_model=os.environ.get("RERANK_MODEL", "rerank-v3.5"),
         generation_model=os.environ.get("GENERATION_MODEL", "gpt-5.4"),
         generation_model_fast=os.environ.get("GENERATION_MODEL_FAST", "gpt-5.4-mini"),

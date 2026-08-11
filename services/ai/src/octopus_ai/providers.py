@@ -93,12 +93,60 @@ class Providers:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self._s = settings
         self._client = client or httpx.AsyncClient(timeout=settings.request_timeout_s)
+        # Built on first use and reused for the process lifetime: loading bge-m3
+        # costs seconds and a couple of GB, so it must not happen per request.
+        self._local_embedder: object | None = None
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts, preserving input order.
+
+        Dispatches on `embed_provider` (ADR-0008). Both paths return 1024 dims,
+        so `doc_chunks.embedding halfvec(1024)` holds either way, but the two
+        vector spaces are NOT interchangeable: a corpus must be embedded wholly
+        by one or wholly by the other. The ingestion content hash covers the
+        active model precisely so switching forces a re-embed instead of quietly
+        mixing them.
+        """
+        if not texts:
+            return []
+        if self._s.embed_provider == "local":
+            return await self._embed_local(texts)
+        return await self._embed_openai(texts)
+
+    async def _embed_local(self, texts: list[str]) -> list[list[float]]:
+        """In-process BGE-M3.
+
+        Imported here rather than at module scope so torch is only required when
+        it is actually selected, and run in a worker thread because the encode is
+        blocking CPU work that would otherwise stall the whole event loop.
+        """
+        from .local_embedder import LocalEmbedder, LocalEmbedderError
+
+        if self._local_embedder is None:
+            self._local_embedder = LocalEmbedder(
+                self._s.embed_local_source,
+                dimensions=self._s.embed_dimensions,
+                use_fp16=self._s.embed_local_fp16,
+            )
+
+        out: list[list[float]] = []
+        batch = self._s.embed_batch_size
+        for start in range(0, len(texts), batch):
+            window = texts[start : start + batch]
+            try:
+                out.extend(await asyncio.to_thread(self._local_embedder.encode, window))
+            except LocalEmbedderError as exc:
+                # Same failure type as a provider outage, so callers keep their
+                # single error path and a broken local model cannot be mistaken
+                # for "no results".
+                raise ProviderError(str(exc)) from exc
+        return out
+
+    async def _embed_openai(self, texts: list[str]) -> list[list[float]]:
+        """Embed via the OpenAI endpoint, preserving input order.
 
         Batched because the endpoint accepts arrays: one request per chunk would
         multiply latency and per-call overhead across a whole document.
@@ -107,9 +155,6 @@ class Providers:
         3072 dims and every insert would fail against halfvec(1024) — better to
         be explicit here than to debug a dimension mismatch at write time.
         """
-        if not texts:
-            return []
-
         out: list[list[float]] = []
         batch = self._s.embed_batch_size
 
