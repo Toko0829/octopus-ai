@@ -132,6 +132,34 @@ Re-running is safe and cheap: a document whose content hash is unchanged is skip
 
 With an empty corpus the agent will refuse every goal, which is correct behaviour rather than a bug.
 
+### Embedding locally with BGE-M3 (optional)
+
+Embeddings default to OpenAI. To run **BAAI/bge-m3** in-process instead, so no corpus text leaves the machine ([ADR-0008](docs/40-adr/0008-local-bge-m3-embeddings.md)), install the extra and fetch the weights:
+
+```bash
+uv sync --extra dev --extra local-embed
+```
+
+```bash
+uv run --directory services/ai python -c "from huggingface_hub import snapshot_download; print(snapshot_download('BAAI/bge-m3', ignore_patterns=['onnx/*']))"
+```
+
+That prints the snapshot path and downloads ~2.2 GB. `onnx/*` is excluded because the repo ships a full ONNX duplicate of the weights that nothing here loads. Then set, in `services/ai/.env`:
+
+```
+EMBED_PROVIDER=local
+EMBED_LOCAL_MODEL=BAAI/bge-m3
+EMBED_LOCAL_PATH=<the snapshot path printed above>
+```
+
+> **Identity and location are two different settings, deliberately.** `EMBED_LOCAL_MODEL` is what gets written to `doc_chunks.embed_model` and folded into the ingestion hash, so it must stay stable across machines. `EMBED_LOCAL_PATH` is just where the weights happen to sit on this host. Collapsing them would mean a server with a different directory layout rewrites every row's provenance and triggers a full re-embed of an identical model.
+>
+> **Set the path if you intend to run offline.** FlagEmbedding re-resolves a repo id through `snapshot_download` without our exclusions, so under `HF_HUB_OFFLINE=1` it declares the cache incomplete and refuses to load over the missing ONNX files the model never needed. A filesystem path skips that check. Leaving `EMBED_LOCAL_PATH` empty is fine when the machine is online.
+
+The extra pulls torch and transformers, roughly 2.5 GB of wheels, which is why it is not a base dependency: CI and OpenAI-backed deployments never install it.
+
+**Switching provider re-embeds the whole corpus, by design.** The ingestion content hash covers the active embedding model, so the next seed run supersedes every document rather than skipping it as unchanged. That is what stops one corpus holding two incompatible vector spaces. Re-seed with the same command as above; at four documents it takes seconds.
+
 ## Notes
 
 - Phase 0 `build`/`typecheck` for services is `tsc --noEmit`; real per-service bundling lands in Phase 1+.

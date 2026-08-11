@@ -84,6 +84,24 @@ def test_content_hash_detects_change_and_ignores_nothing():
     assert a != content_hash("marketing plans")
 
 
+def test_content_hash_covers_the_embedding_model():
+    """Switching embedder must invalidate every document (ADR-0008).
+
+    Without this the source bytes are unchanged, so re-ingestion skips
+    everything: the corpus keeps the old model's vectors while queries are
+    embedded by the new one, in the same HNSW index. That mixes two
+    incompatible vector spaces and degrades retrieval silently, with nothing
+    raised and nothing logged.
+    """
+    openai = content_hash("marketing plan", "text-embedding-3-large")
+    local = content_hash("marketing plan", "BAAI/bge-m3")
+
+    assert openai != local
+    # Same model, same text: still a no-op re-ingest, which is what keeps
+    # re-running the seed cheap.
+    assert openai == content_hash("marketing plan", "text-embedding-3-large")
+
+
 def test_deterministic_context_includes_metadata():
     ctx = deterministic_context("CPA control", "US", "playbook")
     assert "CPA control" in ctx and "US" in ctx and "playbook" in ctx
