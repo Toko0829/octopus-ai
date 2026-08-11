@@ -13,7 +13,21 @@
 - Serve grounded, cited retrieval to the agent, **preferring real outcomes** ("what worked for customers like this") as they accrue.
 - Run the outcome-ingestion side of the [learning flywheel](../10-architecture/learning-flywheel.md).
 
-> **Implementation status (Phase 1):** ingestion and hybrid retrieval are live in `services/ai`. Schema in `20260728210000_rag_schema.sql`, RRF fusion in `public.hybrid_search`. A four-document seed corpus lives in `services/ai/corpus/` covering paid acquisition, advertising disclosure, lifecycle email and early-stage SEO for the US market. Seed or re-seed with `uv run --directory services/ai python -m octopus_ai.seed`; re-running is a no-op unless a document or the chunker changed.
+> **Implementation status (Phase 1):** ingestion and hybrid retrieval are live in `services/ai`. Schema in `20260728210000_rag_schema.sql`, RRF fusion in `public.hybrid_search`. A **ten-document** seed corpus lives in `services/ai/corpus/` for the US market. Seed or re-seed with `uv run --directory services/ai python -m octopus_ai.seed`; re-running is a no-op unless a document, the chunker, or the embedding model changed.
+>
+> Corpus coverage against the six funnel stages in [marketing-growth-engine.md](marketing-growth-engine.md):
+>
+> | Stage       | Documents                                                                            |
+> | ----------- | ------------------------------------------------------------------------------------ |
+> | Strategy    | `positioning-icp`, `offer-design`                                                    |
+> | Content     | `content-strategy`                                                                   |
+> | Creative    | `creative-direction`                                                                 |
+> | Channels    | `paid-ads-cpa-control`, `seo-early-stage`, `lifecycle-email`, `organic-social`       |
+> | Conversion  | `landing-conversion`                                                                 |
+> | Measurement | partial, inside `paid-ads-cpa-control` (attribution). **No dedicated document yet.** |
+> | Compliance  | `ftc-disclosure-basics`                                                              |
+>
+> Written to be durable: they carry principles and diagnostics rather than platform specifics (character limits, ad formats, current fee levels), because those go stale between crawls and [rag.md](../10-architecture/rag.md) forbids quoting them from memory. Volatile specifics belong in crawled sources with effective dates, or as typed rows, not in hand-authored prose.
 >
 > **The seed corpus is internally authored and labelled `internal`.** It is deliberately not attributed to regulators or ad platforms: a fabricated citation is worse than none, because the entire value of a citation is that the reader can check it. Real external sources arrive with the crawlers.
 >
