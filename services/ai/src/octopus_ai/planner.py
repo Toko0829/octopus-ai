@@ -64,12 +64,20 @@ def refuse(request: PlanRequest, retrieval: RetrievalResult | None = None) -> Pl
     """Decline to plan, because nothing retrieved supports one."""
     considered = retrieval.candidates_considered if retrieval else 0
 
+    # Deliberately describes the DOMAIN, not the document list. An enumeration of
+    # topics ("paid acquisition, lifecycle email, ...") drifts the moment the
+    # corpus grows, and the failure is one-directional and invisible: the agent
+    # keeps advertising a narrower corpus than it has, so a user whose question
+    # IS covered is told it is not and does not retry. The domain is fixed by the
+    # product's first vertical rather than by how many documents happen to be
+    # ingested, so it stays true as the corpus grows.
     body = (
         f'Recorded your goal: "{_echo(request.goal)}"\n\n'
         "I am not going to draft a plan for this yet. Nothing in my current knowledge "
         "base is relevant enough to ground one, and a growth plan I cannot cite is not "
-        "worth acting on. My corpus so far covers paid acquisition, advertising "
-        "disclosure, lifecycle email, and early-stage SEO for the US market.\n\n"
+        "worth acting on. What I can ground is full-funnel digital marketing for the US "
+        "market: positioning and offer, content and creative, paid acquisition, SEO, "
+        "email, organic social, conversion, and advertising disclosure.\n\n"
         "If your goal sits inside that, try stating it more specifically. Otherwise it "
         "needs sources I do not have yet.\n\n"
         "Nothing has been spent, published, or connected to your accounts."

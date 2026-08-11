@@ -97,6 +97,15 @@ Two corollaries that are easy to get wrong:
 - **RLS is not a grant.** A policy filters rows the role is already permitted to touch. A table with perfect policies and no `GRANT` is simply unreachable — the failure is `permission denied`, not an empty result. Every migration must issue both.
 - **Trust the database for membership.** Routes do not re-implement membership; they let the policy decide and translate the outcome. A non-member gets `404` (the room is invisible to them, and the API does not confirm it exists) rather than `403`.
 
+## Timeouts across the Node/Python seam
+
+`requestPlan` in `apps/api/src/lib/ai.ts` bounds a full grounded turn: embed, hybrid search, cross-encoder rerank, then generation. It is **90s**, raised from 30s when [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md) moved embedding in-process, because a CPU embed is work rather than an API call and a normal turn could exceed the old budget.
+
+Two properties this depends on, both easy to regress:
+
+- **The reasoning service warms its model at startup**, so the budget covers steady-state work rather than a cold load. Without that, the first request after a deploy pays several seconds of model load and the timeout fires on a service that is perfectly healthy.
+- **A timeout is reported as a timeout.** The failure previously surfaced to the user as "the reasoning service did not respond", which is indistinguishable from the service being down and sends debugging in the wrong direction. If this budget is ever hit in normal use, the answer is to find what got slower, not to raise the number again.
+
 ## Synchronous vs asynchronous boundary
 
 - **Synchronous (request thread):** verify JWT, persist a message, start a run. That's it.

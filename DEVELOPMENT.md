@@ -30,11 +30,20 @@ Run a single app: `pnpm --filter @octopus/web dev` or `pnpm --filter @octopus/ap
 
 ### The Python AI service
 
-`services/ai` is Python and sits outside the pnpm workspace ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). It needs [uv](https://docs.astral.sh/uv/) on your PATH. If `uv --version` fails after `pip install uv`, the executable is in the per-user scripts directory; add it once:
+`services/ai` is Python and sits outside the pnpm workspace ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). It needs [uv](https://docs.astral.sh/uv/) on your PATH, because `pnpm ai:dev` and the other `ai:*` scripts invoke `uv` by name. If `uv --version` fails after `pip install uv`, the executable is in a per-user scripts directory; add it once:
 
 ```powershell
-[Environment]::SetEnvironmentVariable('Path', $env:Path + ';' + (python -c "import site;print(site.USER_BASE)") + '\Scripts', 'User')
+$dir = python -c "import uv, os; print(os.path.dirname(uv.find_uv_bin()))"
+$user = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($user -notlike "*$dir*") { [Environment]::SetEnvironmentVariable('Path', ($user.TrimEnd(';') + ';' + $dir), 'User') }
 ```
+
+Two details this snippet is careful about, both of which bite silently:
+
+- **Ask the package where its binary is, rather than assuming the layout.** The directory varies by Python version and install mode: on Python 3.13 here it is `…\Roaming\Python\Python313\Scripts`, not the `…\Roaming\Python\Scripts` that `site.USER_BASE + '\Scripts'` predicts. Guessing yields a real directory that contains no `uv`, so PATH looks configured and the command still fails.
+- **Read the User path, not `$env:Path`.** `$env:Path` is the machine and user paths already merged, so writing it back into the `User` scope copies every system entry into your personal PATH permanently. The variable then grows on each run and the duplication outlives the shell.
+
+Open a new terminal afterwards; the current one keeps the old PATH. To fix only the current session instead, `$env:Path += ";$dir"`.
 
 Then, from the repo root:
 
