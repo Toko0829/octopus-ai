@@ -3,8 +3,13 @@
 import type { Channel, ListMessagesResponse, Message, RoomMember } from '@octopus/contracts';
 
 /**
- * Browser-side calls, always through the BFF at /api/bff/* so the access token
- * stays in an httpOnly cookie and never reaches page scripts.
+ * Browser-side calls, always through the BFF at /api/bff/*.
+ *
+ * This is not a secrecy boundary: the session cookies are not `httpOnly`, so page
+ * scripts can read the access token (docs/30-modules/auth-identity.md). What routing
+ * through the BFF actually buys is that the token is attached server-side in exactly
+ * one place, the browser never holds a long-lived credential for Fastify, and the API
+ * origin is never exposed to the client.
  */
 
 async function bff<T>(path: string, init?: RequestInit): Promise<T> {

@@ -7,8 +7,10 @@ import './sign-in.css';
 
 /**
  * Sign-in / sign-up. Supabase GoTrue is the sole IdP
- * (docs/30-modules/auth-identity.md); the session lands in httpOnly cookies via
+ * (docs/30-modules/auth-identity.md); the session lands in cookies via
  * @supabase/ssr, and middleware redirects here for any /app route without one.
+ * Those cookies are not httpOnly, because the browser client must read them to
+ * authenticate the Realtime socket.
  *
  * Copy convention: no em dashes in user-facing text (AGENTS.md rule 22).
  */
