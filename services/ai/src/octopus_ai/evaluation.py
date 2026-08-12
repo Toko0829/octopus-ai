@@ -215,15 +215,21 @@ async def run_eval(
     delay_s: float = 0.0,
     decomposer: Callable[[str], Awaitable[list[str]]] | None = None,
 ) -> EvalReport:
-    """Score every case. `delay_s` paces the run against provider rate limits.
+    """Score every case. `delay_s` adds an optional pause between cases.
 
-    One case is one rerank call, and the whole set fires back to back, so an eval
-    run is the densest burst of provider traffic this service ever produces. A
-    Cohere trial key allows 10 calls a minute, which the set exceeds outright; the
-    retry in `providers` cannot absorb that because its backoff is measured in
-    seconds and the window is a minute. Pacing here rather than in `providers`
-    keeps the rate limit an eval-harness concern instead of slowing every
-    production retrieval down to trial speed.
+    An eval run is the densest burst of provider traffic this service ever
+    produces, so it is where a rate limit bites first. Rate limiting itself now
+    lives in `providers` (`COHERE_RERANK_RPM`), NOT here.
+
+    That moved because the assumption this docstring used to state, "one case is
+    one rerank call", stopped being true the day query decomposition landed. A
+    positive case became one rerank for the goal plus one per sub-query, so a
+    harness pausing 10s between cases was still emitting bursts of up to seven
+    calls into a 10-per-minute quota, and CI failed. The harness could not pace
+    what it could not count; a limiter at the call site counts exactly.
+
+    `delay_s` is kept for coarse manual throttling, and defaults to 0 because the
+    limiter is now the real control.
     """
     import asyncio
 
@@ -254,9 +260,10 @@ async def _run() -> int:
     providers = Providers(settings)
     retriever = Retriever(settings, db, providers)
 
-    # Default paces below a Cohere trial key's 10 calls/minute. Set to 0 on a
-    # production key, where the whole set runs in seconds.
-    delay_s = float(os.environ.get("EVAL_CASE_DELAY_S", "7"))
+    # Defaults to 0: rate limiting is `COHERE_RERANK_RPM`'s job now, and a
+    # per-case pause cannot express a per-call quota once one case makes several
+    # calls. Kept as an escape hatch, not as the mechanism.
+    delay_s = float(os.environ.get("EVAL_CASE_DELAY_S", "0"))
 
     # The eval must exercise the production path. One that skipped decomposition
     # would measure a pipeline nobody runs, and would keep passing while the real
@@ -274,6 +281,8 @@ async def _run() -> int:
         print(f"corpus embedded by: {settings.active_embed_model}")
         print(f"rerank_min_score:   {settings.rerank_min_score}")
         print(f"decomposition:      {'on' if settings.query_decomposition else 'off'}")
+        rpm = settings.rerank_rpm
+        print(f"rerank limit:       {f'{rpm}/min' if rpm else 'unlimited'}")
         print(f"pacing:             {delay_s}s between cases\n")
         report = await run_eval(retriever, delay_s=delay_s, decomposer=decomposer)
         print(report.render())

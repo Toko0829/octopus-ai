@@ -31,7 +31,7 @@
 >
 > **The seed corpus is internally authored and labelled `internal`.** It is deliberately not attributed to regulators or ad platforms: a fabricated citation is worse than none, because the entire value of a citation is that the reader can check it. Real external sources arrive with the crawlers.
 >
-> **Not built yet:** crawlers and the freshness pipeline (`pg_cron` re-crawl, content-hash re-check against live sources), LLM-generated contextual prefixes (a metadata-derived prefix is used instead), query transformation (self-query, HyDE, decomposition), and the Ragas/DeepEval gate. `eval_golden_set` exists as a table but is empty.
+> **Not built yet:** crawlers and the freshness pipeline (`pg_cron` re-crawl, content-hash re-check against live sources), LLM-generated contextual prefixes (a metadata-derived prefix is used instead), the remaining query transformations (self-query, HyDE), and the Ragas/DeepEval gate. **Query decomposition is built** and is the production path. `eval_golden_set` exists as a table but is empty.
 
 ## In-Postgres pgvector (rationale)
 
@@ -87,9 +87,13 @@ Baseline on the ten-document corpus with bge-m3: **positive recall 1.00, MRR 1.0
 
 **Not built (generation).** Ragas/DeepEval faithfulness and answer relevancy (≥ 0.75 and ≥ 0.8, with context precision ≥ 0.7 and context recall ≥ 0.8) need an LLM judge, which costs money per run and returns a different number each time. Those belong in a separate credentialed pass, not in the deterministic gate above.
 
-**Rate limit worth knowing:** one case is one rerank call, so an eval run is the densest provider burst this service produces. A Cohere trial key allows 10 calls a minute and the set exceeds it outright; `EVAL_CASE_DELAY_S` paces the run and drops to 0 on a production key.
+**Rate limit worth knowing, and it is bigger than it looks.** An eval run is the densest provider burst this service produces, and decomposition multiplied it: a positive case is one rerank for the goal plus one per sub-query, up to seven, so 15 cases (11 positive) reach **~81 rerank calls**. A Cohere trial key allows 10 a minute. `COHERE_RERANK_RPM=8` holds a run under that ceiling at roughly 10 minutes; a production key removes the ceiling and the set finishes in seconds.
+
+`EVAL_CASE_DELAY_S` is **not** the control and must not be used as one. It paces cases, and one case stopped being one call the day decomposition landed, which is precisely how CI came to fail: the harness paused 10s between bursts of seven.
 
 - **CI:** wired as its own job, but **it cannot gate until repository secrets exist**, since retrieval needs the Supabase corpus and a rerank key. Until then it emits a warning saying it measured nothing, rather than reporting a green check that proves nothing.
+- **CI scope:** the job runs only when `services/ai/**` or the workflow changes. That is a deliberate limit on a **metered** gate rather than a weakening of it: a docs-only pull request cannot regress retrieval, and running it anyway spent ~81 rerank calls to prove nothing and then failed on the quota it had just consumed. A skipped run says so in the job summary.
+- **CI serialisation:** the job holds a repository-wide concurrency group, because the quota belongs to the key rather than to the branch. Two runs racing over one trial key is how the second one got rejected on its very first call.
 - **Production:** Langfuse tracing + online scoring + citation-coverage checks + thumbs-up/down from chat.
 
 ## Multilingual handling

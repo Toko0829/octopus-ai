@@ -72,6 +72,49 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
+  # Does this change touch anything the retrieval eval measures?
+  #
+  # The eval spends a metered, rate-limited rerank quota, so running it on every
+  # push is not merely slow, it is the thing that exhausts the quota. A
+  # README-only pull request burned ~81 rerank calls and then failed on the limit
+  # it had just spent. Nothing about that run could have detected a retrieval
+  # regression, because nothing in it could have caused one.
+  #
+  # Plain git rather than a filter action: one `diff --name-only` against the
+  # base is the whole requirement, and a dependency is a maintenance liability
+  # (AGENTS.md rule 20).
+  eval-scope:
+    name: ai · eval scope
+    runs-on: ubuntu-latest
+    outputs:
+      retrieval: ${{ steps.check.outputs.retrieval }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: check
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # A first push to a branch reports an all-zero "before" SHA, and a
+          # force-push can leave one unreachable. Either way the safe answer is
+          # to run the eval: skipping on an unknown diff would silently drop the
+          # gate exactly when history is unusual.
+          if [ -z "$BASE_SHA" ] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo "base commit unavailable; running the eval rather than assuming it is unnecessary"
+            echo "retrieval=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE_SHA" "${{ github.sha }}")
+          echo "$CHANGED"
+          if echo "$CHANGED" | grep -qE '^(services/ai/|\.github/workflows/ci\.yml$)'; then
+            echo "retrieval=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "retrieval=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Retrieval eval skipped::No changes under services/ai/, so retrieval cannot have regressed. The gate is scope-limited, not disabled."
+          fi
+
   # Retrieval eval against the golden set. Runs the real pipeline (embed, hybrid
   # search, rerank) over services/ai/eval/golden.json and fails on a regression.
   #
@@ -83,11 +126,28 @@ jobs:
   #
   # To arm it, add SUPABASE_URL, SUPABASE_SECRET_KEY, OPENAI_API_KEY and
   # COHERE_API_KEY as repository secrets. Note a Cohere trial key allows 10 calls
-  # a minute, which the set exceeds; EVAL_CASE_DELAY_S paces it, and can drop to 0
-  # on a production key.
+  # a minute, which the golden set exceeds many times over; COHERE_RERANK_RPM
+  # holds the run under that ceiling, and should be removed on a production key.
   eval:
     name: ai · retrieval eval (golden set)
     runs-on: ubuntu-latest
+    # ~10 minutes of that is the rate limiter holding, so the default 6h timeout
+    # would let a limiter bug idle for hours before anyone noticed.
+    timeout-minutes: 30
+    needs: eval-scope
+    if: needs.eval-scope.outputs.retrieval == 'true'
+    # The rerank quota belongs to the KEY, not to the branch, so the concurrency
+    # group must not be scoped by ref the way the workflow-level one is. Two runs
+    # racing is exactly how this broke: a pull-request run started while its own
+    # merge-to-main run was still going, and was rejected on its first call
+    # against a quota the other run had already spent.
+    #
+    # cancel-in-progress is false on purpose. Queueing costs wall-clock;
+    # cancelling would throw away a half-finished measurement to start another
+    # that competes for the same quota.
+    concurrency:
+      group: cohere-rerank-quota
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: services/ai
@@ -96,11 +156,18 @@ jobs:
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-      # A Cohere trial key allows 10 calls/minute and one case is one call. 7s
-      # (≈8.5/min) proved too close to the line and tripped the limit partway
-      # through the set; 10s (6/min) leaves real headroom. Drop to 0 on a
-      # production key, which is the actual fix.
-      EVAL_CASE_DELAY_S: '10'
+      # A Cohere trial key allows 10 calls/minute. 8 leaves headroom for the
+      # retry path and for anything else touching the key while CI runs.
+      #
+      # This replaces the old EVAL_CASE_DELAY_S pacing, which was calibrated when
+      # one case meant one rerank call. Query decomposition made a positive case
+      # cost one call for the goal plus one per sub-query, up to seven, so
+      # per-case pauses could not express the quota and the run failed on it.
+      #
+      # Budget honestly: 15 cases, 11 of them positive, is up to ~81 rerank calls,
+      # so this job takes ~10 minutes and is CAPPED BY THE TRIAL KEY, not by the
+      # work. Remove this line on a production key and it finishes in seconds.
+      COHERE_RERANK_RPM: '8'
       # MUST match how the corpus was embedded. The corpus is on bge-m3
       # (ADR-0008); leaving this at the `openai` default would embed queries in a
       # different vector space from the stored vectors and score near-zero, which
