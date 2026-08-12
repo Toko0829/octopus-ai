@@ -96,7 +96,11 @@ jobs:
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-      EVAL_CASE_DELAY_S: '7'
+      # A Cohere trial key allows 10 calls/minute and one case is one call. 7s
+      # (≈8.5/min) proved too close to the line and tripped the limit partway
+      # through the set; 10s (6/min) leaves real headroom. Drop to 0 on a
+      # production key, which is the actual fix.
+      EVAL_CASE_DELAY_S: '10'
       # MUST match how the corpus was embedded. The corpus is on bge-m3
       # (ADR-0008); leaving this at the `openai` default would embed queries in a
       # different vector space from the stored vectors and score near-zero, which

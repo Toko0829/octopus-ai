@@ -29,6 +29,18 @@ COHERE_RERANK_URL = "https://api.cohere.com/v2/rerank"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _MAX_ATTEMPTS = 3
 
+# A 429 is not a 5xx and must not share its backoff curve. Provider rate limits
+# are quoted per minute, so retrying half a second later cannot succeed: it burns
+# another call against the same exhausted quota and makes the next attempt more
+# likely to fail too. Observed exactly that against a Cohere trial key, where the
+# 0.5s and 1.0s retries were both rejected before the caller gave up.
+#
+# Deliberately not a full minute. This runs inside an agent step bounded by
+# Node's timeout, so waiting out the whole window would trade a fast failure for
+# a slow one. 20s is long enough to clear a partially-consumed quota and short
+# enough that one retry still fits the budget.
+_RATE_LIMIT_BACKOFF_S = 20.0
+
 
 class ProviderError(RuntimeError):
     """A provider call failed in a way the caller must handle, not ignore."""
@@ -69,9 +81,15 @@ async def _post_with_retry(
             break
 
         # Honour Retry-After when the provider sends one; it knows better than
-        # our backoff curve does.
+        # our backoff curve does. Absent that, a rate limit gets its own floor
+        # rather than the 5xx curve, for the reason above.
         retry_after = response.headers.get("retry-after")
-        wait = float(retry_after) if retry_after and retry_after.isdigit() else delay
+        if retry_after and retry_after.isdigit():
+            wait = float(retry_after)
+        elif response.status_code == 429:
+            wait = max(delay, _RATE_LIMIT_BACKOFF_S)
+        else:
+            wait = delay
         logger.warning(
             "%s attempt %d failed (%s); retrying in %.1fs", what, attempt, last_detail, wait
         )
