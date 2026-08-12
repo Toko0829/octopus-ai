@@ -169,6 +169,20 @@ The extra pulls torch and transformers, roughly 2.5 GB of wheels, which is why i
 
 **Switching provider re-embeds the whole corpus, by design.** The ingestion content hash covers the active embedding model, so the next seed run supersedes every document rather than skipping it as unchanged. That is what stops one corpus holding two incompatible vector spaces. Re-seed with the same command as above; at four documents it takes seconds.
 
+## Evaluating retrieval
+
+The golden set lives in `services/ai/eval/golden.json` and is run against the live corpus with:
+
+```bash
+uv run --directory services/ai python -m octopus_ai.evaluation
+```
+
+It exits non-zero on a regression, so it works as a gate. Two halves are scored differently on purpose: positives must surface the expected document (recall ≥ 0.80), and negatives must return **nothing at all** (zero tolerance). A miss is unhelpful; a leak lets the agent ground an answer in text that does not support it.
+
+Run it after any change to chunking, the embedder, the rerank threshold, or the corpus. Add a case whenever you add a document, and add a negative whenever you find a question the agent should refuse.
+
+> **A Cohere trial key allows 10 calls a minute**, and one case is one rerank call, so the set exceeds it. The run paces itself at 7s between cases by default, taking ~90s. On a production key set `EVAL_CASE_DELAY_S=0` and it finishes in seconds.
+
 ## Notes
 
 - Phase 0 `build`/`typecheck` for services is `tsc --noEmit`; real per-service bundling lands in Phase 1+.

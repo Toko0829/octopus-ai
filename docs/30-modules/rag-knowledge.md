@@ -64,8 +64,24 @@ Suppliers and cost benchmarks are stored as **typed rows**, not prose chunks, so
 
 ## Evaluation
 
-- **Offline:** Ragas on a golden set (context precision/recall, faithfulness, answer relevancy).
-- **CI gate:** DeepEval thresholds — faithfulness ≥ 0.75, answer relevancy ≥ 0.8, context precision ≥ 0.7, context recall ≥ 0.8. **Retrieval/ingestion/prompt changes must pass before merge.**
+**Built (retrieval).** `services/ai/eval/golden.json` + `python -m octopus_ai.evaluation` run the real pipeline over a versioned golden set and score two asymmetric halves:
+
+| Half          | Asks                                         | Gate                     |
+| ------------- | -------------------------------------------- | ------------------------ |
+| **Positives** | did the expected document surface            | recall ≥ 0.80            |
+| **Negatives** | did an out-of-scope query return **nothing** | zero leaks, no tolerance |
+
+The asymmetry is deliberate. A miss makes the agent refuse something it could have answered: unhelpful, but safe. A leak on a negative hands the planner loosely-related text, which it then grounds a confident cited answer in. One leak fails the run.
+
+The golden set is a **file, not `eval_golden_set` rows**, because document UUIDs are generated per ingest and differ between environments, so a set keyed on them cannot travel between a laptop, CI and production. It is keyed on document title, and its queries are phrased as a founder would ask rather than in the corpus's wording, since a set that echoes the corpus measures string matching and flatters every retriever. The table remains for online/production scoring, which does have stable ids.
+
+Baseline on the ten-document corpus with bge-m3: **positive recall 1.00, MRR 1.00, zero leaks.** True-positive rerank scores land between 0.127 and 0.637 while out-of-scope queries clear the 0.05 threshold not at all, so the threshold has real margin and did **not** need recalibrating after the corpus tripled.
+
+**Not built (generation).** Ragas/DeepEval faithfulness and answer relevancy (≥ 0.75 and ≥ 0.8, with context precision ≥ 0.7 and context recall ≥ 0.8) need an LLM judge, which costs money per run and returns a different number each time. Those belong in a separate credentialed pass, not in the deterministic gate above.
+
+**Rate limit worth knowing:** one case is one rerank call, so an eval run is the densest provider burst this service produces. A Cohere trial key allows 10 calls a minute and the set exceeds it outright; `EVAL_CASE_DELAY_S` paces the run and drops to 0 on a production key.
+
+- **CI:** wired as its own job, but **it cannot gate until repository secrets exist**, since retrieval needs the Supabase corpus and a rerank key. Until then it emits a warning saying it measured nothing, rather than reporting a green check that proves nothing.
 - **Production:** Langfuse tracing + online scoring + citation-coverage checks + thumbs-up/down from chat.
 
 ## Multilingual handling

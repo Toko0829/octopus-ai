@@ -1,0 +1,106 @@
+{
+  "$comment": [
+    "Golden set for retrieval evaluation (rag.md).",
+    "",
+    "A FILE, not rows in eval_golden_set, for two reasons. Document UUIDs are",
+    "generated per ingest and differ between environments, so a set keyed on them",
+    "cannot move between a laptop, CI and production. And a file is reviewable in",
+    "a diff by whoever changes retrieval, which is the point of a gate.",
+    "The table remains for online/production scoring, which does have stable ids.",
+    "",
+    "Cases are keyed on document TITLE because that is what the ingest pipeline",
+    "preserves and what citations render.",
+    "",
+    "Queries are deliberately phrased the way a founder would ask, not in the",
+    "wording of the documents. A golden set that echoes the corpus measures string",
+    "matching and flatters every retriever that has ever existed.",
+    "",
+    "NEGATIVE cases (expect_docs: []) are the load-bearing half. They assert the",
+    "system RETURNS NOTHING, which is what forces the agent to refuse instead of",
+    "grounding an answer in whatever was nearest. A retriever that scores well on",
+    "positives and leaks on negatives is worse than useless here: it produces",
+    "confident, cited, wrong plans."
+  ],
+
+  "cases": [
+    {
+      "id": "cpa-too-high",
+      "query": "my customer acquisition cost on facebook ads keeps climbing, what do I do",
+      "expect_docs": ["Controlling CPA on paid social for early-stage products"]
+    },
+    {
+      "id": "disclosure-sponsored",
+      "query": "do I have to tell people a post is sponsored if I got the product free",
+      "expect_docs": ["Advertising disclosure obligations for creators (US, informational)"]
+    },
+    {
+      "id": "email-welcome",
+      "query": "what emails should I send after someone signs up",
+      "expect_docs": ["Lifecycle email for a small paid product"]
+    },
+    {
+      "id": "seo-no-demand",
+      "query": "nobody searches for what I built, is SEO pointless for me",
+      "expect_docs": ["SEO for a product nobody is searching for yet"]
+    },
+    {
+      "id": "who-is-it-for",
+      "query": "I think my messaging is too general and speaks to nobody",
+      "expect_docs": ["Positioning and ICP for a solo founder"]
+    },
+    {
+      "id": "pricing-too-low",
+      "query": "should I raise my prices or will I lose customers",
+      "expect_docs": ["Designing the offer for an early-stage product"]
+    },
+    {
+      "id": "what-to-write",
+      "query": "how often should I be publishing and what should it be about",
+      "expect_docs": ["Content strategy for a small product with no audience"]
+    },
+    {
+      "id": "creative-brief",
+      "query": "how do I brief someone to make an ad video for me",
+      "expect_docs": ["Creative direction and briefs for paid campaigns"]
+    },
+    {
+      "id": "signup-dropoff",
+      "query": "people click my ad and then leave without signing up",
+      "expect_docs": [
+        "Landing pages and conversion for early-stage traffic",
+        "Positioning and ICP for a solo founder"
+      ],
+      "notes": "Genuinely ambiguous: the page may be at fault, or the promise may be. Either is a correct retrieval, which is why both are listed."
+    },
+    {
+      "id": "posting-strategy",
+      "query": "is it worth posting on social media myself or should I just run ads",
+      "expect_docs": ["Organic social for a founder-led product"]
+    },
+
+    {
+      "id": "neg-liquor-licence",
+      "query": "how do I get a restaurant liquor licence in Tbilisi",
+      "expect_docs": [],
+      "notes": "Regulated act in a jurisdiction with no pack. Must refuse, never approximate."
+    },
+    {
+      "id": "neg-car-licence",
+      "query": "how to get a car licence",
+      "expect_docs": [],
+      "notes": "Not marketing at all. Reported by a real user; the agent correctly refused."
+    },
+    {
+      "id": "neg-incorporation",
+      "query": "should I incorporate my company in Delaware or Texas",
+      "expect_docs": [],
+      "notes": "Business formation is a later vertical (roadmap Phase 5). Nothing grounds it today."
+    },
+    {
+      "id": "neg-payroll",
+      "query": "how do I run payroll and withhold taxes for my first employee",
+      "expect_docs": [],
+      "notes": "Adjacent to running a business but outside the marketing wedge entirely."
+    }
+  ]
+}

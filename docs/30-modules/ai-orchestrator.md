@@ -55,7 +55,10 @@ Every tool is a Zod-typed function with a **risk tier**. Tools have **no ambient
 `query -> embed -> [dense + sparse fused by RRF inside Postgres] -> cross-encoder rerank -> drop below threshold`
 
 - **Fusion happens in SQL, not Python.** `public.hybrid_search` runs both candidate lists and the RRF merge in one query, so the network carries the final top-N instead of two candidate lists. RRF is rank-based, which is the point: cosine distance and `ts_rank_cd` are not comparable quantities and would need normalising otherwise.
-- **The threshold is calibrated, not guessed.** Measured against the seed corpus: clearly relevant chunks score 0.063 to 0.667, a related-but-wrong document tops out near 0.068, and an off-topic query never exceeds 0.015. `0.05` separates them. **Re-calibrate as the corpus grows**; Cohere's scores are corpus-dependent.
+- **The threshold is calibrated, not guessed, and it is now measured rather than assumed.** Originally set from the four-document seed corpus. Re-measured against the ten-document corpus on bge-m3 via the golden set: true positives score **0.127 to 0.637** and out-of-scope queries do not clear `0.05` at all, so the separation survived the corpus tripling and the embedder changing. Cohere's scores are corpus-dependent, so this stays something to re-measure rather than trust; `python -m octopus_ai.evaluation` is how ([rag-knowledge.md](rag-knowledge.md)).
+
+  A caution learned here: an in-scope query dropping nothing is **correct**, not evidence the threshold stopped working. Reading "0 below threshold" on covered questions as a filtering failure led to a wrong conclusion that the eval then disproved. Judge the threshold on out-of-scope queries, which is exactly what the golden set's negative half is for.
+
 - **Weak chunks are dropped, never used as padding.** Handing a model six loosely related paragraphs is how confident, wrong, "grounded" answers get produced.
 
 - **The refusal message describes the domain, never the document list.** Enumerating covered topics drifts the moment the corpus grows, and it fails in one direction only: the agent advertises a narrower corpus than it has, so a user whose question _is_ covered is told it is not and does not retry. The domain is fixed by the first vertical rather than by how many documents happen to be ingested.

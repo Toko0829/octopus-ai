@@ -74,7 +74,13 @@ The AI/RAG layer lives in `services/ai` (Python), alongside the Node workspaces:
 - **Seam:** FastAPI auto-OpenAPI → a generated typed TS client for the Node side (consistent with [ADR-0004](../40-adr/0004-tsrest-over-trpc.md)).
 - **Doc registry:** `.docmeta.yml` maps `services/ai/**` to its owning docs.
 
-**Implemented (Phase 1):** `services/ai` exists with `pyproject.toml` + `uv.lock`, ruff, and pytest. CI runs it as a **parallel `ai` job** (`uv sync --frozen`, `ruff check`, `pytest`) alongside the Node job. The Ragas/DeepEval eval gate is deliberately absent until RAG lands, since there is no golden set to evaluate; it is added in the same change as the corpus. Locally: `uv run --directory services/ai uvicorn octopus_ai.main:app --reload --port 8000` (see [DEVELOPMENT.md](../../DEVELOPMENT.md)).
+**Implemented (Phase 1):** `services/ai` exists with `pyproject.toml` + `uv.lock`, ruff, and pytest. CI runs it as a **parallel `ai` job** (`uv sync --frozen`, `ruff check`, `pytest`) alongside the Node job. Locally: `uv run --directory services/ai uvicorn octopus_ai.main:app --reload --port 8000` (see [DEVELOPMENT.md](../../DEVELOPMENT.md)).
+
+A third **`eval` job** runs the retrieval golden set ([rag-knowledge.md](rag-knowledge.md)). It is **unarmed**: retrieval needs the Supabase corpus and a rerank key, and neither the `ai` job nor this one carries secrets today, so it emits a GitHub warning saying it measured nothing rather than reporting a green check that proves nothing. Arm it by adding `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `OPENAI_API_KEY` and `COHERE_API_KEY` as repository secrets.
+
+> **The Cohere key currently in use is a trial key, capped at 10 calls per minute.** One eval case is one rerank call, so the set exceeds the cap outright and the job paces itself via `EVAL_CASE_DELAY_S`. The same cap applies to **production** retrieval: more than ten user questions in a minute will start failing. Moving to a production key is a prerequisite for real traffic, not just for the eval.
+>
+> The Ragas/DeepEval **generation** gate (faithfulness, answer relevancy) is still absent, and deliberately so: it needs an LLM judge, which bills per run and returns a different number each time. It belongs in a credentialed pass rather than in a deterministic gate.
 
 ## Scaling escape hatches (with triggers)
 
