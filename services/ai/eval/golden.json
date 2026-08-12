@@ -79,6 +79,17 @@
     },
 
     {
+      "id": "broad-first-customers",
+      "query": "launch my app and get me to my first 100 customers",
+      "expect_docs": [
+        "Positioning and ICP for a solo founder",
+        "Controlling CPA on paid social for early-stage products",
+        "Landing pages and conversion for early-stage traffic"
+      ],
+      "notes": "The goal shape the product is actually built around, and the one that exposed the gap: a single broad query retrieves whichever stage matches best, so the plan came back covering three stages of six. Listing documents from three different stages is the point. This is the case decomposition exists to serve, and the case the rest of the set could not measure because every other query is narrow."
+    },
+
+    {
       "id": "neg-liquor-licence",
       "query": "how do I get a restaurant liquor licence in Tbilisi",
       "expect_docs": [],

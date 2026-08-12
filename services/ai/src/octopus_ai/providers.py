@@ -208,7 +208,7 @@ class Providers:
 
         return out
 
-    async def complete_json(self, *, system: str, user: str) -> str:
+    async def complete_json(self, *, system: str, user: str, model: str | None = None) -> str:
         """One generation call constrained to return a JSON object.
 
         `json_object` mode rather than a JSON schema: it is the broadly supported
@@ -223,7 +223,10 @@ class Providers:
             OPENAI_RESPONSES_URL,
             headers={"Authorization": f"Bearer {self._s.openai_api_key}"},
             json={
-                "model": self._s.generation_model,
+                # Model tiering (tech-stack.md): the caller picks the tier. Query
+                # decomposition is a classification-shaped task and does not need
+                # the planning model.
+                "model": model or self._s.generation_model,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
