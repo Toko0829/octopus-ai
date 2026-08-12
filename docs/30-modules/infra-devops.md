@@ -82,6 +82,8 @@ A third **`eval` job** runs the retrieval golden set ([rag-knowledge.md](rag-kno
 
 > **The Cohere key currently in use is a trial key, capped at 10 calls per minute.** One eval case is one rerank call, so the set exceeds the cap outright and the job paces itself via `EVAL_CASE_DELAY_S`. The same cap applies to **production** retrieval: more than ten user questions in a minute will start failing. Moving to a production key is a prerequisite for real traffic, not just for the eval.
 >
+> The first armed run proved this the hard way: 7s pacing (≈8.5 calls/min) sat close enough to the cap to trip partway through the set, so it is now 10s (6/min). Set it to `0` on a production key. That run also exposed a real defect, since fixed: `429` was being retried on the 5xx curve, and sub-second retries against a per-minute quota guarantee failure rather than recover from it.
+>
 > The Ragas/DeepEval **generation** gate (faithfulness, answer relevancy) is still absent, and deliberately so: it needs an LLM judge, which bills per run and returns a different number each time. It belongs in a credentialed pass rather than in a deterministic gate.
 
 ## Scaling escape hatches (with triggers)
