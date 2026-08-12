@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import deque
 from dataclasses import dataclass
 
 import httpx
@@ -44,6 +46,55 @@ _RATE_LIMIT_BACKOFF_S = 20.0
 
 class ProviderError(RuntimeError):
     """A provider call failed in a way the caller must handle, not ignore."""
+
+
+class _RateLimiter:
+    """At most `per_minute` acquisitions in any rolling 60-second window.
+
+    A sliding window rather than a token bucket, because that is the shape of the
+    quota being respected. Cohere says "10 API calls / minute" and enforces it
+    over a window; a bucket refilling steadily would let a burst straddle a
+    boundary and breach the very limit it was added to respect.
+
+    This is prevention, and `_post_with_retry`'s 429 backoff is recovery. Both
+    are needed: the limiter cannot know what other processes are spending against
+    the same key, and CI proved that matters. A pull-request run and a
+    merge-to-main run raced over one trial key, and the second one was rejected
+    on its first call, before it had spent anything at all.
+
+    Deliberately holds the lock across the wait. Waiters are serialised in
+    arrival order and wake one at a time, instead of every coroutine finding the
+    window clear at once and re-breaching it together.
+    """
+
+    _WINDOW_S = 60.0
+
+    def __init__(self, per_minute: int) -> None:
+        self._per_minute = per_minute
+        self._calls: deque[float] = deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        if self._per_minute <= 0:
+            return
+
+        async with self._lock:
+            while True:
+                now = time.monotonic()
+                while self._calls and now - self._calls[0] >= self._WINDOW_S:
+                    self._calls.popleft()
+
+                if len(self._calls) < self._per_minute:
+                    self._calls.append(now)
+                    return
+
+                wait = self._WINDOW_S - (now - self._calls[0])
+                logger.info(
+                    "rerank rate limit reached (%d/min); holding %.1fs",
+                    self._per_minute,
+                    wait,
+                )
+                await asyncio.sleep(wait)
 
 
 async def _post_with_retry(
@@ -114,6 +165,9 @@ class Providers:
         # Built on first use and reused for the process lifetime: loading bge-m3
         # costs seconds and a couple of GB, so it must not happen per request.
         self._local_embedder: object | None = None
+        # Per-process, which is the honest scope: it governs this service's own
+        # spend against the key and claims nothing about anyone else's.
+        self._rerank_limiter = _RateLimiter(settings.rerank_rpm)
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -280,9 +334,16 @@ class Providers:
         return content
 
     async def rerank(self, query: str, documents: list[str], top_n: int) -> list[RerankHit]:
-        """Cross-encoder rescoring. Returns (index into `documents`, score), best first."""
+        """Cross-encoder rescoring. Returns (index into `documents`, score), best first.
+
+        Rate-limited when `rerank_rpm` is set. This is the only metered call in
+        the service, and query decomposition made one goal cost up to seven of
+        them, so the ceiling belongs here rather than in any one caller.
+        """
         if not documents:
             return []
+
+        await self._rerank_limiter.acquire()
 
         payload = await _post_with_retry(
             self._client,

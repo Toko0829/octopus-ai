@@ -181,7 +181,9 @@ It exits non-zero on a regression, so it works as a gate. Two halves are scored 
 
 Run it after any change to chunking, the embedder, the rerank threshold, or the corpus. Add a case whenever you add a document, and add a negative whenever you find a question the agent should refuse.
 
-> **A Cohere trial key allows 10 calls a minute**, and one case is one rerank call, so the set exceeds it. The run paces itself at 7s between cases by default, taking ~90s. On a production key set `EVAL_CASE_DELAY_S=0` and it finishes in seconds.
+> **A Cohere trial key allows 10 calls a minute, and the golden set needs far more than that.** With query decomposition on, one positive case is one rerank for the goal plus one per sub-query, up to seven; at 15 cases (11 positive) a full run is up to ~81 rerank calls. Set `COHERE_RERANK_RPM=8` and the run holds itself under the limit, taking ~10 minutes. On a production key leave it unset and the whole set finishes in seconds.
+>
+> Do not reach for `EVAL_CASE_DELAY_S` to solve this. It pauses between **cases**, and a case is no longer one call, so it cannot express a per-call quota. That mistake is what broke CI: the harness paused politely between bursts of seven. It survives only as a coarse manual throttle and defaults to `0`.
 
 ## Notes
 

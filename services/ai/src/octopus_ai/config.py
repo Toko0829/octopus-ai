@@ -143,9 +143,16 @@ class Settings:
     # Retrieval shape, from rag.md: fuse to 40 candidates, rerank down to 6-8.
     # Query decomposition (rag.md retrieval step 1). Splits a goal into
     # per-stage sub-queries so one broad ask does not retrieve one stage's
-    # documents and leave the rest of the funnel unplanned. Costs one cheap
-    # model call plus local embeds and SQL; the rerank count is unchanged,
-    # which is what keeps it affordable under a rate-limited rerank key.
+    # documents and leave the rest of the funnel unplanned.
+    #
+    # It costs ONE RERANK PER SUB-QUERY, up to MAX_SUBQUERIES + 1 for a single
+    # goal. That is the whole point rather than an oversight: the cheap design
+    # (search every sub-query, rerank once against the original goal) was built,
+    # measured and found to change nothing, because candidate breadth was never
+    # the bottleneck. The rerank is. See retrieval.py's `retrieve`.
+    #
+    # So decomposition multiplies rerank traffic, and a rate-limited key feels it
+    # directly. `rerank_rpm` below is what keeps that survivable.
     query_decomposition: bool = True
 
     retrieval_candidates: int = 40
@@ -165,6 +172,19 @@ class Settings:
     # Cohere scores are corpus-dependent. RE-CALIBRATE when the corpus grows
     # substantially; the golden set is where that should be enforced.
     rerank_min_score: float = 0.05
+
+    # Client-side ceiling on rerank calls per minute. 0 means unlimited.
+    #
+    # Lives here, next to the call it governs, rather than in the eval harness
+    # where pacing used to be. The harness paced CASES on the belief that one
+    # case was one rerank call; decomposition made that one-to-many, the harness
+    # could not see the difference, and CI failed. A limiter cannot be wrong
+    # about a number it counts itself.
+    #
+    # Default 0 so production is never throttled by a development constraint. A
+    # Cohere TRIAL key allows 10/minute, which the golden set exceeds many times
+    # over, so CI sets this explicitly. The real fix is a production key.
+    rerank_rpm: int = 0
 
     # Batch size for embedding calls. The API accepts arrays; sending one request
     # per chunk would be both slower and more expensive in overhead.
@@ -217,6 +237,7 @@ def get_settings() -> Settings:
         query_decomposition=_bool("QUERY_DECOMPOSITION", True),
         retrieval_candidates=_int("RETRIEVAL_CANDIDATES", 40),
         rerank_top_n=_int("RERANK_TOP_N", 8),
+        rerank_rpm=_int("COHERE_RERANK_RPM", 0),
         embed_batch_size=_int("EMBED_BATCH_SIZE", 96),
         request_timeout_s=_int("AI_REQUEST_TIMEOUT_S", 60),
     )
