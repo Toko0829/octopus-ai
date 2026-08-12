@@ -78,6 +78,8 @@ The AI/RAG layer lives in `services/ai` (Python), alongside the Node workspaces:
 
 A third **`eval` job** runs the retrieval golden set ([rag-knowledge.md](rag-knowledge.md)). It is **unarmed**: retrieval needs the Supabase corpus and a rerank key, and neither the `ai` job nor this one carries secrets today, so it emits a GitHub warning saying it measured nothing rather than reporting a green check that proves nothing. Arm it by adding `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `OPENAI_API_KEY` and `COHERE_API_KEY` as repository secrets.
 
+> **The job must embed queries the same way the corpus was embedded.** It pins `EMBED_PROVIDER=local`, installs the `local-embed` extra, and caches the bge-m3 weights. Left at the `openai` default it would embed queries into a different vector space from the stored vectors and score near zero, which presents as a retrieval regression rather than as a misconfigured job. Any future embedder change has to be reflected here **and** followed by a re-ingest, or the gate measures a mismatch.
+
 > **The Cohere key currently in use is a trial key, capped at 10 calls per minute.** One eval case is one rerank call, so the set exceeds the cap outright and the job paces itself via `EVAL_CASE_DELAY_S`. The same cap applies to **production** retrieval: more than ten user questions in a minute will start failing. Moving to a production key is a prerequisite for real traffic, not just for the eval.
 >
 > The Ragas/DeepEval **generation** gate (faithfulness, answer relevancy) is still absent, and deliberately so: it needs an LLM judge, which bills per run and returns a different number each time. It belongs in a credentialed pass rather than in a deterministic gate.

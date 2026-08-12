@@ -97,6 +97,13 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
       EVAL_CASE_DELAY_S: '7'
+      # MUST match how the corpus was embedded. The corpus is on bge-m3
+      # (ADR-0008); leaving this at the `openai` default would embed queries in a
+      # different vector space from the stored vectors and score near-zero, which
+      # reads as a retrieval regression rather than as a misconfigured job.
+      EMBED_PROVIDER: local
+      EMBED_LOCAL_MODEL: BAAI/bge-m3
+      HF_HOME: ${{ github.workspace }}/.hf
     steps:
       - uses: actions/checkout@v4
 
@@ -105,8 +112,16 @@ jobs:
         with:
           enable-cache: true
 
+      # ~2.2GB of weights. Cached on the lockfile so it is fetched once rather
+      # than on every run.
+      - name: Cache bge-m3 weights
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf
+          key: hf-bge-m3-${{ hashFiles('services/ai/uv.lock') }}
+
       - name: Install
-        run: uv sync --extra dev --frozen
+        run: uv sync --extra dev --extra local-embed --frozen
 
       - name: Run retrieval eval
         run: |
