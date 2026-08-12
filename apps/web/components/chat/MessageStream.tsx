@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { UiMember, UiMessage } from '../../lib/types';
 import { RoleBadge } from './ui';
 import { OctopusMark } from './icons';
+import { PlanCard } from './PlanCard';
 
 interface Props {
   channelName: string | null;
@@ -107,6 +108,10 @@ export function MessageStream({ channelName, messages, membersById }: Props) {
                 {m.failed && <span className="msg-state mono failed">not sent</span>}
               </div>
               {m.body && <div className="msg-text">{m.body}</div>}
+              {/* The card is an enhancement of a readable message, never a
+                  replacement for one: the body above still carries the plan in
+                  plain text wherever this does not render. */}
+              {m.embed?.component === 'plan' && <PlanCard embed={m.embed} />}
             </div>
           </div>
         );

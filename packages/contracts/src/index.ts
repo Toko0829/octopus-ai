@@ -29,6 +29,83 @@ export type HealthResponse = z.infer<typeof HealthResponse>;
 export const AuthorKind = z.enum(['user', 'agent', 'node', 'system']);
 export type AuthorKind = z.infer<typeof AuthorKind>;
 
+/* ----------------------------------------------------------- plan embeds */
+
+/**
+ * The six funnel stages (marketing-growth-engine.md). Fixed and ordered: the
+ * plan card always renders all six, because a stage with no steps is meaningful
+ * output (the corpus had nothing in scope) and hiding it would read as "this
+ * plan has four parts" rather than "two stages are unsupported".
+ */
+export const FunnelStage = z.enum([
+  'strategy',
+  'content',
+  'creative',
+  'channels',
+  'conversion',
+  'measurement',
+]);
+export type FunnelStage = z.infer<typeof FunnelStage>;
+
+/** Who executes a step. Mirrors `owner_type` in the workflow schema. */
+export const StepOwner = z.enum(['AI', 'HUMAN', 'YOU']);
+export type StepOwner = z.infer<typeof StepOwner>;
+
+export const PlanCitation = z.object({
+  sourceId: z.string(),
+  label: z.string(),
+  url: z.string().nullable().optional(),
+  effectiveDate: z.string().nullable().optional(),
+});
+export type PlanCitation = z.infer<typeof PlanCitation>;
+
+export const PlanStep = z.object({
+  title: z.string(),
+  detail: z.string(),
+  owner: StepOwner,
+  /**
+   * 1-based indices into `PlanEmbedPayload.citations`. An empty array means the
+   * step rests on no retrieved source, and the UI must mark it unverified rather
+   * than render it identically to a grounded step (AGENTS.md rule 10).
+   */
+  citations: z.array(z.number().int().positive()),
+});
+export type PlanStep = z.infer<typeof PlanStep>;
+
+export const PlanStage = z.object({
+  stage: FunnelStage,
+  steps: z.array(PlanStep),
+});
+export type PlanStage = z.infer<typeof PlanStage>;
+
+/** The `payload` of an `action_embeds` row whose component is `plan`. */
+export const PlanEmbedPayload = z.object({
+  title: z.string(),
+  summary: z.string(),
+  stages: z.array(PlanStage),
+  citations: z.array(PlanCitation),
+});
+export type PlanEmbedPayload = z.infer<typeof PlanEmbedPayload>;
+
+export const EmbedState = z.enum(['pending', 'approved', 'rejected', 'expired']);
+export type EmbedState = z.infer<typeof EmbedState>;
+
+/**
+ * An interactive card attached to a message. `requiredRole` is echoed to the
+ * client so the UI can disable what the caller cannot do, but the server checks
+ * it again on the action route: a rule enforced only in React is not enforced.
+ */
+export const ActionEmbed = z.object({
+  id: z.string().uuid(),
+  messageId: z.string().uuid(),
+  component: z.literal('plan'),
+  payload: PlanEmbedPayload,
+  requiredRole: z.string(),
+  state: EmbedState,
+  createdAt: z.string(),
+});
+export type ActionEmbed = z.infer<typeof ActionEmbed>;
+
 /**
  * A chat message as returned by the API. `seq` is the monotonic ordering cursor
  * (Postgres identity column) that drives since-cursor catch-up after a reconnect
@@ -43,6 +120,12 @@ export const Message = z.object({
   body: z.string().nullable(),
   seq: z.coerce.number().int(),
   createdAt: z.string(),
+  /**
+   * The interactive card attached to this message, when there is one. Carried
+   * on the message rather than fetched separately so the stream and its cards
+   * arrive together and cannot render out of step with each other.
+   */
+  embed: ActionEmbed.nullable().default(null),
 });
 export type Message = z.infer<typeof Message>;
 

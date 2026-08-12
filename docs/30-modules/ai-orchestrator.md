@@ -10,8 +10,11 @@
 >
 > **RAG is live and the core now answers from it.** `/plan` retrieves before it reasons and picks a core from the result:
 >
-> - **`grounded-v1`** — retrieval found in-scope sources, so the reply is written from them and cites them by document title.
+> - **`grounded-plan-v1`** — retrieval found in-scope sources, so the core returns a **structured full-funnel plan**: six fixed stages, up to three steps each, every step carrying an owner (AI / HUMAN / YOU) and the source indices it rests on. Node persists it as an `action_embeds` row and the chat renders it as the plan card.
+> - **`grounded-v1`** — the sources were good but the model could not produce a valid plan, so the reply falls back to cited prose. This degrades **sideways, not down**: a cited paragraph is still worth posting. It never falls back to an ungrounded plan, which is why the fallback re-generates from the same sources rather than salvaging malformed JSON.
 > - **`refusing-v0`** — nothing cleared the relevance threshold, so it declines to plan and says why. Retrieval failing or generation failing both degrade to this, never to an ungrounded answer.
+>
+> **The plan is validated, not trusted.** `parse_plan` normalises the six stages into fixed order (the model omits and reorders them, and a card silently showing four stages reads as "the plan has four parts" rather than "two stages had no sources"), range-checks every citation index (a step citing `[7]` when six sources were supplied is a hallucinated reference the reader cannot follow), and rejects an all-empty plan outright, since six empty stages is a refusal wearing a card's clothing and the refusal path says it far more clearly. Ten tests cover those failures because each one renders as a plausible-looking card.
 >
 > Verified end to end: "my cost per acquisition on Meta ads is too high" returns a cited plan drawn from the corpus, while "get a restaurant liquor licence in Tbilisi" is refused rather than invented.
 >
@@ -78,7 +81,7 @@ Every tool is a Zod-typed function with a **risk tier**. Tools have **no ambient
 The split is structural, not a convention anyone has to remember:
 
 - `services/ai` holds **no database client and no Supabase key**. It cannot write, so a jailbroken prompt there cannot post as another member, move money, or touch a row. A test asserts the absence rather than trusting review to catch a future import.
-- Every response is a list of **proposals** with a `kind`. Node has an explicit `switch` over the kinds it will honour, so the core cannot widen its own powers by inventing a new one; an unknown kind is ignored, not attempted.
+- Every response is a list of **proposals** with a `kind`. Node parses them as a **discriminated union**, so an unknown kind fails the parse loudly rather than being silently dropped: the core inventing a proposal kind should break the run, not quietly do nothing. Two kinds exist, `post_message` and `propose_plan`, each handled explicitly in a `switch`. A plan proposal makes Node write both the message and its embed, and Node validates the payload against `packages/contracts` **before** storing it, so an invalid plan fails here where the row can be named rather than in the browser on every future read.
 - Node parses the response against a schema before acting. An unrecognised shape is a contract break and fails the run, rather than being half-interpreted.
 - The agent's message insert carries a **deterministic idempotency key** (`agent-run:{runId}:{index}`), so replaying a run cannot post twice.
 - A failed run posts a **system message into the room**. Silence would be indistinguishable from the agent choosing not to reply (rule 16).

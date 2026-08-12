@@ -35,6 +35,12 @@ Accent bar + Agent tag + **live token streaming** + a **bioluminescent working p
 
 Approve / Pay / Sign / Assign / Accept — **permission-gated by role**, carrying state and **tabular-numeric** money. `required_role` enforced server-side, not just in UI. A node cannot see or act on owner-only embeds.
 
+> **Live (Phase 1):** the `action_embeds` table (`20260812120000`) and its first component, `plan`. Rows are **client-readable, server-written**: membership is inherited from the message's room, and there is no client INSERT or UPDATE policy, because a client that could insert here could fabricate an approval card. `unique (message_id)` keeps it one card per message.
+>
+> **Not built yet:** the action route. Acting on an embed must re-check `required_role` server-side and move `state` off `pending`, so the card currently renders read-only. The `state` column exists precisely to make an embed single-use, which matters far more for Pay and Sign than for a plan: without it, approving twice is two approvals.
+>
+> **A card arrives on fetch, not on broadcast.** The Postgres trigger broadcasts the `messages` row and cannot see another table, so a plan card appears on the next load rather than instantly. Visible latency, never a wrong render.
+
 ## Threads & topics
 
 Threads per subtask; Zulip-style **named topics** for resumable subtasks. A node engagement lives in its own thread; node membership is **scoped + time-boxed** (`room_members.scope`, `expires_at`).

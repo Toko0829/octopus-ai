@@ -3,6 +3,7 @@ import type { PostgrestError } from '@supabase/supabase-js';
 import {
   ListMessagesQuery,
   Message,
+  PlanEmbedPayload,
   PostMessageBody,
   type ListMessagesResponse,
 } from '@octopus/contracts';
@@ -29,6 +30,25 @@ const PGRST_NO_ROWS = 'PGRST116';
 
 const RoomParams = z.object({ roomId: z.string().uuid() });
 
+/**
+ * The embed joined onto a message, when one exists.
+ *
+ * `payload` is parsed rather than cast. It was written by this server, but it is
+ * still JSONB the database will hand back as `unknown`, and a card rendered from
+ * an unvalidated shape fails in the UI rather than here, where the row can be
+ * named. A row that does not parse is dropped and the message renders plainly,
+ * which degrades to a normal message instead of breaking the whole stream.
+ */
+const EmbedRow = z.object({
+  id: z.string(),
+  message_id: z.string(),
+  component: z.literal('plan'),
+  payload: PlanEmbedPayload,
+  required_role: z.string(),
+  state: z.enum(['pending', 'approved', 'rejected', 'expired']),
+  created_at: z.string(),
+});
+
 /** Database row shape (snake_case) for the columns we select. */
 const MessageRow = z.object({
   id: z.string(),
@@ -39,10 +59,34 @@ const MessageRow = z.object({
   body: z.string().nullable(),
   seq: z.coerce.number().int(),
   created_at: z.string(),
+  // PostgREST returns an embedded one-to-one relation as an array or object
+  // depending on how it infers cardinality, so accept both rather than depend on
+  // the inference staying stable across schema changes.
+  action_embeds: z.union([z.array(z.unknown()), z.unknown()]).nullish(),
 });
 type MessageRow = z.infer<typeof MessageRow>;
 
-const SELECT_COLUMNS = 'id, room_id, channel_id, author_id, author_kind, body, seq, created_at';
+const SELECT_COLUMNS =
+  'id, room_id, channel_id, author_id, author_kind, body, seq, created_at, ' +
+  'action_embeds(id, message_id, component, payload, required_role, state, created_at)';
+
+function toEmbed(raw: unknown): Message['embed'] {
+  const candidate = Array.isArray(raw) ? raw[0] : raw;
+  if (!candidate) return null;
+
+  const parsed = EmbedRow.safeParse(candidate);
+  if (!parsed.success) return null;
+
+  return {
+    id: parsed.data.id,
+    messageId: parsed.data.message_id,
+    component: parsed.data.component,
+    payload: parsed.data.payload,
+    requiredRole: parsed.data.required_role,
+    state: parsed.data.state,
+    createdAt: parsed.data.created_at,
+  };
+}
 
 function toMessage(row: MessageRow): Message {
   return {
@@ -54,6 +98,7 @@ function toMessage(row: MessageRow): Message {
     body: row.body,
     seq: row.seq,
     createdAt: row.created_at,
+    embed: toEmbed(row.action_embeds),
   };
 }
 

@@ -95,6 +95,7 @@ export function toMessage(m: Message): UiMessage {
     body: m.body ?? '',
     seq: m.seq,
     ts: formatTime(m.createdAt),
+    embed: m.embed ?? null,
   };
 }
 

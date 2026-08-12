@@ -1,10 +1,17 @@
-import type { AuthorKind, Channel, Message, Room, RoomMember } from '@octopus/contracts';
+import type {
+  ActionEmbed,
+  AuthorKind,
+  Channel,
+  Message,
+  Room,
+  RoomMember,
+} from '@octopus/contracts';
 
 /**
  * UI types for the chat shell. Wire shapes come from @octopus/contracts; these are
  * the *presentation* shapes the components render, produced by lib/adapt.ts.
  *
- * Anything not backed by the API is deliberately absent. There is no plan, budget,
+ * Anything not backed by the API is deliberately absent. There is no budget
  * or unread count here yet, because nothing produces them (the planner and the
  * agent land in Phase 2 — see docs/10-architecture/roadmap.md).
  */
@@ -52,6 +59,15 @@ export interface UiMessage {
   pending?: boolean;
   /** Set when a send failed, so the UI can show it rather than dropping the text. */
   failed?: boolean;
+  /**
+   * The interactive card attached to this message, when there is one.
+   *
+   * Null for a message that arrived over Realtime: the broadcast carries the
+   * `messages` row only, and the embed lives in another table the trigger does
+   * not see. The card therefore appears on the next fetch rather than instantly,
+   * which is a visible delay but never a wrong render.
+   */
+  embed?: ActionEmbed | null;
 }
 
-export type { Channel, Message, Room, RoomMember };
+export type { ActionEmbed, Channel, Message, Room, RoomMember };
