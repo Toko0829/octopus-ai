@@ -18,6 +18,11 @@
 >
 > **The card is patched in place after an action, not re-fetched.** Re-loading the stream would scroll the reader away from the thing they just acted on.
 >
+> Two defects found by actually clicking through it, both of which type-checking could never have caught:
+>
+> - **Approval and rejection shared a banner style.** "Changes requested" rendered on the teal accent, which reads as success, so the colour contradicted the words beside it. Stating both states in words is necessary but not sufficient: the colour must not fight the text. Rejection now has its own neutral treatment.
+> - **Citations are per chunk, so one document appeared three times.** Three chunks from a single source rendered as three identical entries, which reads as three independent sources corroborating the plan when there is one. That overstates how well-supported the plan is on the exact surface built for checking it. The card now groups by document (`[1][2][3] Title`) and counts documents rather than chunks, keeping chunk-level numbers so a step citing `[2]` stays traceable. Per-step citation lists are deduplicated for the same reason.
+>
 > **Still deliberately not rendered** (no backend, and a trust surface must not show invented numbers): the budget figure in the top bar, and unread counts. The ⌘K palette lists only actions that work.
 >
 > **A plan card is fetched immediately after its message is broadcast.** Realtime carries the `messages` row only, and the embed lives in a table the trigger cannot see, so a broadcast-delivered agent message always arrives with `embed: null`. The ordinary catch-up does not repair this either: it fetches `seq > highest`, and the message that needs the card _is_ the highest. So an agent message triggers one targeted re-fetch from `seq - 1`, guarded by a ref so it happens once per message. Only for agent messages: re-fetching on every broadcast would turn live delivery back into polling.

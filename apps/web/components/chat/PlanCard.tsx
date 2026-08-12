@@ -54,7 +54,11 @@ function Step({ step, sources }: { step: PlanStep; sources: string[] }) {
   const owner = ownerMeta[step.owner];
   // Indices are 1-based and were range-checked server-side, but the lookup still
   // guards: a card is the wrong place to discover a bad index.
-  const cited = step.citations.map((n) => sources[n - 1]).filter(Boolean);
+  //
+  // Deduplicated, because two cited chunks from the same document would
+  // otherwise print that document's title twice and make one source look like
+  // corroboration by two.
+  const cited = [...new Set(step.citations.map((n) => sources[n - 1]).filter(Boolean))];
 
   return (
     <li className="plan-step">
@@ -83,6 +87,25 @@ export function PlanCard({ embed, canAct, onAct }: Props) {
   const plan = embed.payload;
   const sources = plan.citations.map((c) => c.label);
   const covered = plan.stages.filter((s) => s.steps.length > 0).length;
+
+  /**
+   * Citations are per *chunk*, so several can come from one document and the
+   * list then repeats the same title. Rendered raw that reads as several
+   * independent sources when it is one, which overstates how well corroborated
+   * the plan is on the very surface meant to let a reader check it.
+   *
+   * Grouped by document, keeping each chunk's reference number so a step citing
+   * [2] can still be traced. The numbers stay chunk-level; only the display is
+   * grouped.
+   */
+  const sourceDocuments = plan.citations.reduce<
+    { label: string; effectiveDate?: string | null; refs: number[] }[]
+  >((acc, citation, i) => {
+    const existing = acc.find((d) => d.label === citation.label);
+    if (existing) existing.refs.push(i + 1);
+    else acc.push({ label: citation.label, effectiveDate: citation.effectiveDate, refs: [i + 1] });
+    return acc;
+  }, []);
 
   const [busy, setBusy] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
@@ -140,24 +163,29 @@ export function PlanCard({ embed, canAct, onAct }: Props) {
       </div>
 
       <div className="plan-sources">
-        <div className="plan-sources-label">Grounded in</div>
+        <div className="plan-sources-label">
+          Grounded in{' '}
+          {sourceDocuments.length === 1 ? '1 document' : `${sourceDocuments.length} documents`}
+        </div>
         <div className="cites">
-          {plan.citations.map((c, i) => (
+          {sourceDocuments.map((doc) => (
             <span
               className="cite"
-              key={c.sourceId}
-              title={c.effectiveDate ? `effective ${c.effectiveDate}` : undefined}
+              key={doc.label}
+              title={doc.effectiveDate ? `effective ${doc.effectiveDate}` : undefined}
             >
               <span className="dot" aria-hidden />
-              <span className="mono">[{i + 1}]</span> {c.label}
+              <span className="mono">{doc.refs.map((n) => `[${n}]`).join('')}</span> {doc.label}
             </span>
           ))}
         </div>
       </div>
 
-      {/* State is text, never colour alone (design-system.md). */}
+      {/* State is text, never colour alone. And the two states get different
+          colours: the accent reads as success, so styling a rejection with it
+          made the colour contradict the words beside it. */}
       {!pending && (
-        <div className="plan-approved-banner">
+        <div className={approved ? 'plan-approved-banner' : 'plan-rejected-banner'}>
           {approved ? 'Plan approved.' : 'Changes requested.'}
         </div>
       )}
