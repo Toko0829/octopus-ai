@@ -93,6 +93,8 @@ Baseline on the ten-document corpus with bge-m3: **positive recall 1.00, MRR 1.0
 - **CI scope:** the job runs only when `services/ai/**` or the workflow changes. A docs-only pull request cannot regress retrieval, and running the gate anyway once spent ~81 rerank calls to prove nothing and then failed on the quota it had just consumed. A skipped run says so in the job summary.
 - **CI runs the production reranker**, which is the whole point of a gate. It is now minutes of real CPU on a small runner rather than minutes of waiting on a rate limiter. Its cache key names **both** models, so changing either invalidates it instead of silently scoring with the previous one.
 
+> **MRR is noisy and is not a gate threshold. Do not read a swing in it as a regression.** Decomposition calls an LLM, so the sub-queries differ between runs and the ordering of survivors moves with them. Observed across four runs of the identical commit: **0.83, 0.86, 0.91, 0.95.** The gate metrics were stable at recall 1.00, coverage 1.00, zero leaks in every one. Judge a change on those; treat MRR as a trend, and compare it only across several runs.
+
 **What the pipeline fixes were worth**, measured with the reranker held constant so the change is attributable to the pipeline alone:
 
 | Pipeline            | Rerank calls | Recall | Coverage |  MRR | Leaks |
