@@ -72,5 +72,61 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
-      # The Ragas/DeepEval eval gate (rag.md thresholds) is added with RAG, in the
-      # same PR as the golden set. There is nothing to evaluate before then.
+  # Retrieval eval against the golden set. Runs the real pipeline (embed, hybrid
+  # search, rerank) over services/ai/eval/golden.json and fails on a regression.
+  #
+  # It CANNOT gate until the repository has credentials: retrieval needs the
+  # Supabase corpus and a rerank key, and the `ai` job above deliberately runs
+  # without either. Until then this job reports that it is unarmed rather than
+  # passing silently, because a green check that measured nothing is worse than a
+  # visibly missing one.
+  #
+  # To arm it, add SUPABASE_URL, SUPABASE_SECRET_KEY, OPENAI_API_KEY and
+  # COHERE_API_KEY as repository secrets. Note a Cohere trial key allows 10 calls
+  # a minute, which the set exceeds; EVAL_CASE_DELAY_S paces it, and can drop to 0
+  # on a production key.
+  eval:
+    name: ai · retrieval eval (golden set)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/ai
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+      EVAL_CASE_DELAY_S: '7'
+      # MUST match how the corpus was embedded. The corpus is on bge-m3
+      # (ADR-0008); leaving this at the `openai` default would embed queries in a
+      # different vector space from the stored vectors and score near-zero, which
+      # reads as a retrieval regression rather than as a misconfigured job.
+      EMBED_PROVIDER: local
+      EMBED_LOCAL_MODEL: BAAI/bge-m3
+      HF_HOME: ${{ github.workspace }}/.hf
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # ~2.2GB of weights. Cached on the lockfile so it is fetched once rather
+      # than on every run.
+      - name: Cache bge-m3 weights
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf
+          key: hf-bge-m3-${{ hashFiles('services/ai/uv.lock') }}
+
+      - name: Install
+        run: uv sync --extra dev --extra local-embed --frozen
+
+      - name: Run retrieval eval
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$COHERE_API_KEY" ]; then
+            echo "::warning title=Eval gate unarmed::No credentials configured, so retrieval was NOT evaluated. This job is not gating anything. See .github/workflows/ci.yml."
+            exit 0
+          fi
+          uv run python -m octopus_ai.evaluation

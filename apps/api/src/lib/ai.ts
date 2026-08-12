@@ -51,11 +51,19 @@ export class AiServiceError extends Error {}
  *
  * Times out rather than hanging: this runs inside an agent step, and a step that
  * never returns is a run that never completes.
+ *
+ * The budget covers a full grounded turn on the slowest supported configuration:
+ * embed, hybrid search, cross-encoder rerank, then generation. With a local
+ * embedder (ADR-0008) the embed step runs on CPU rather than as an API call, so
+ * 30s was tight enough that a normal turn could trip it and surface as "the
+ * reasoning service did not respond" while the service was in fact healthy.
+ * The service warms its model at startup, so this covers steady-state work, not
+ * a cold load.
  */
 export async function requestPlan(
   baseUrl: string,
   input: PlanInput,
-  timeoutMs = 30_000,
+  timeoutMs = 90_000,
 ): Promise<PlanResponse> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

@@ -54,9 +54,23 @@ async def lifespan(_: FastAPI):
     state.db = Database(settings)
     state.providers = Providers(settings)
     state.retriever = Retriever(settings, state.db, state.providers)
+
+    # Load the local embedder now, while nothing is waiting on it. bge-m3 takes
+    # seconds and a couple of GB to come up, and paying that on the first request
+    # pushed the whole call past Node's per-step timeout, so a cold service
+    # looked like an unresponsive one. Warming here also means a missing or
+    # corrupt model fails at startup with a named error, which is how the rest of
+    # this service already treats configuration.
+    if settings.embed_provider == "local":
+        logger.info("warming local embedder", extra={"model": settings.active_embed_model})
+        await state.providers.embed(["warmup"])
+
     logger.info(
         "ai service ready",
-        extra={"embed_model": settings.embed_model, "generation_model": settings.generation_model},
+        extra={
+            "embed_model": settings.active_embed_model,
+            "generation_model": settings.generation_model,
+        },
     )
     try:
         yield

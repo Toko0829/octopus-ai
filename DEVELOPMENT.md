@@ -30,11 +30,20 @@ Run a single app: `pnpm --filter @octopus/web dev` or `pnpm --filter @octopus/ap
 
 ### The Python AI service
 
-`services/ai` is Python and sits outside the pnpm workspace ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). It needs [uv](https://docs.astral.sh/uv/) on your PATH. If `uv --version` fails after `pip install uv`, the executable is in the per-user scripts directory; add it once:
+`services/ai` is Python and sits outside the pnpm workspace ([ADR-0006](docs/40-adr/0006-python-ai-service-node-backend.md)). It needs [uv](https://docs.astral.sh/uv/) on your PATH, because `pnpm ai:dev` and the other `ai:*` scripts invoke `uv` by name. If `uv --version` fails after `pip install uv`, the executable is in a per-user scripts directory; add it once:
 
 ```powershell
-[Environment]::SetEnvironmentVariable('Path', $env:Path + ';' + (python -c "import site;print(site.USER_BASE)") + '\Scripts', 'User')
+$dir = python -c "import uv, os; print(os.path.dirname(uv.find_uv_bin()))"
+$user = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($user -notlike "*$dir*") { [Environment]::SetEnvironmentVariable('Path', ($user.TrimEnd(';') + ';' + $dir), 'User') }
 ```
+
+Two details this snippet is careful about, both of which bite silently:
+
+- **Ask the package where its binary is, rather than assuming the layout.** The directory varies by Python version and install mode: on Python 3.13 here it is `…\Roaming\Python\Python313\Scripts`, not the `…\Roaming\Python\Scripts` that `site.USER_BASE + '\Scripts'` predicts. Guessing yields a real directory that contains no `uv`, so PATH looks configured and the command still fails.
+- **Read the User path, not `$env:Path`.** `$env:Path` is the machine and user paths already merged, so writing it back into the `User` scope copies every system entry into your personal PATH permanently. The variable then grows on each run and the duplication outlives the shell.
+
+Open a new terminal afterwards; the current one keeps the old PATH. To fix only the current session instead, `$env:Path += ";$dir"`.
 
 Then, from the repo root:
 
@@ -159,6 +168,20 @@ EMBED_LOCAL_PATH=<the snapshot path printed above>
 The extra pulls torch and transformers, roughly 2.5 GB of wheels, which is why it is not a base dependency: CI and OpenAI-backed deployments never install it.
 
 **Switching provider re-embeds the whole corpus, by design.** The ingestion content hash covers the active embedding model, so the next seed run supersedes every document rather than skipping it as unchanged. That is what stops one corpus holding two incompatible vector spaces. Re-seed with the same command as above; at four documents it takes seconds.
+
+## Evaluating retrieval
+
+The golden set lives in `services/ai/eval/golden.json` and is run against the live corpus with:
+
+```bash
+uv run --directory services/ai python -m octopus_ai.evaluation
+```
+
+It exits non-zero on a regression, so it works as a gate. Two halves are scored differently on purpose: positives must surface the expected document (recall ≥ 0.80), and negatives must return **nothing at all** (zero tolerance). A miss is unhelpful; a leak lets the agent ground an answer in text that does not support it.
+
+Run it after any change to chunking, the embedder, the rerank threshold, or the corpus. Add a case whenever you add a document, and add a negative whenever you find a question the agent should refuse.
+
+> **A Cohere trial key allows 10 calls a minute**, and one case is one rerank call, so the set exceeds it. The run paces itself at 7s between cases by default, taking ~90s. On a production key set `EVAL_CASE_DELAY_S=0` and it finishes in seconds.
 
 ## Notes
 
