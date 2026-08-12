@@ -109,7 +109,15 @@ export function toMessage(m: Message): UiMessage {
  */
 export function mergeMessages(current: UiMessage[], incoming: UiMessage[]): UiMessage[] {
   const byId = new Map(current.map((m) => [m.id, m] as const));
-  for (const m of incoming) byId.set(m.id, m);
+  for (const m of incoming) {
+    // A Realtime broadcast carries the `messages` row only, so its copy of a
+    // message always has `embed: null` even when a card exists. Letting it
+    // overwrite a version that already has one would make a rendered plan card
+    // vanish on the next broadcast. Absence of an embed here means "not
+    // included", never "there is none".
+    const existing = byId.get(m.id);
+    byId.set(m.id, existing?.embed && !m.embed ? { ...m, embed: existing.embed } : m);
+  }
   return [...byId.values()].sort((a, b) => {
     // Unconfirmed sends have no seq and belong at the end, in arrival order.
     if (a.seq === null && b.seq === null) return 0;
