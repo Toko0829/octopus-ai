@@ -55,7 +55,11 @@ Every tool is a Zod-typed function with a **risk tier**. Tools have **no ambient
 
 ## The retrieval pipeline (`services/ai`)
 
-`query -> embed -> [dense + sparse fused by RRF inside Postgres] -> cross-encoder rerank -> drop below threshold`
+`goal -> decompose -> per-sub-query [embed -> RRF in Postgres -> rerank -> drop below threshold] -> merge survivors`
+
+- **Decomposition is additive to grounding, never a source of it.** The goal is searched first, and if it retrieves nothing the sub-queries are abandoned. Without that gate the golden set caught a live leak: "how to get a car licence" decomposed into plausible marketing sub-queries, each of which legitimately retrieved marketing content and cleared the threshold, leaving the agent with cited sources for a question the corpus cannot answer. That is the exact failure the groundedness gate exists to prevent.
+
+- **One rerank per sub-query, and the cheaper design was measured before being rejected.** Searching every sub-query but reranking once against the original goal changed nothing at all: candidate breadth was never the bottleneck (40 candidates against a ~43-chunk corpus). The bottleneck is the rerank, where a vague goal scores 0.066 against chunks a focused query scores 0.474 on. Coverage of a broad goal went 0.33 to 1.00 once each sub-query was scored on its own terms. The cost is real: N rerank calls per plan, which makes a production rerank key a prerequisite, and MRR fell 0.95 to 0.76 because merging survivors pushes the single best chunk down the list.
 
 - **Fusion happens in SQL, not Python.** `public.hybrid_search` runs both candidate lists and the RRF merge in one query, so the network carries the final top-N instead of two candidate lists. RRF is rank-based, which is the point: cosine distance and `ts_rank_cd` are not comparable quantities and would need normalising otherwise.
 - **The threshold is calibrated, not guessed, and it is now measured rather than assumed.** Originally set from the four-document seed corpus. Re-measured against the ten-document corpus on bge-m3 via the golden set: true positives score **0.127 to 0.637** and out-of-scope queries do not clear `0.05` at all, so the separation survived the corpus tripling and the embedder changing. Cohere's scores are corpus-dependent, so this stays something to re-measure rather than trust; `python -m octopus_ai.evaluation` is how ([rag-knowledge.md](rag-knowledge.md)).

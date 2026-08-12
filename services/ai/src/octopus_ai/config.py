@@ -141,6 +141,13 @@ class Settings:
     generation_max_tokens: int = 900
 
     # Retrieval shape, from rag.md: fuse to 40 candidates, rerank down to 6-8.
+    # Query decomposition (rag.md retrieval step 1). Splits a goal into
+    # per-stage sub-queries so one broad ask does not retrieve one stage's
+    # documents and leave the rest of the funnel unplanned. Costs one cheap
+    # model call plus local embeds and SQL; the rerank count is unchanged,
+    # which is what keeps it affordable under a rate-limited rerank key.
+    query_decomposition: bool = True
+
     retrieval_candidates: int = 40
     rerank_top_n: int = 8
     # Below this the cross-encoder is telling us the chunk is not relevant.
@@ -207,6 +214,7 @@ def get_settings() -> Settings:
         generation_model_fast=os.environ.get("GENERATION_MODEL_FAST", "gpt-5.4-mini"),
         generation_model_cheap=os.environ.get("GENERATION_MODEL_CHEAP", "gpt-5.4-nano"),
         generation_max_tokens=_int("GENERATION_MAX_TOKENS", 900),
+        query_decomposition=_bool("QUERY_DECOMPOSITION", True),
         retrieval_candidates=_int("RETRIEVAL_CANDIDATES", 40),
         rerank_top_n=_int("RERANK_TOP_N", 8),
         embed_batch_size=_int("EMBED_BATCH_SIZE", 96),

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -80,6 +81,21 @@ class CaseResult:
                 return i
         return None
 
+    @property
+    def coverage(self) -> float:
+        """Share of the expected documents that surfaced.
+
+        `hit` only asks whether *one* expected document appeared, which is the
+        right question for a narrow query and far too lenient for a broad one: a
+        goal spanning three funnel stages would score a pass on retrieving one of
+        them, which is exactly the failure decomposition exists to fix. Coverage
+        is the number that moves when retrieval genuinely widens.
+        """
+        if not self.case.expect_docs:
+            return 1.0
+        found = {t for t in self.retrieved_titles if t in self.case.expect_docs}
+        return len(found) / len(self.case.expect_docs)
+
 
 @dataclass
 class EvalReport:
@@ -116,6 +132,18 @@ class EvalReport:
         return total / len(self.positives)
 
     @property
+    def mean_coverage(self) -> float:
+        """Average share of expected documents found, over positives.
+
+        Distinct from recall: recall asks how many cases found *something*,
+        coverage asks how much of what was expected actually surfaced. A broad
+        goal spanning several funnel stages moves this number and not the other.
+        """
+        if not self.positives:
+            return 0.0
+        return sum(r.coverage for r in self.positives) / len(self.positives)
+
+    @property
     def passed(self) -> bool:
         return self.positive_recall >= MIN_POSITIVE_RECALL and len(self.leaks) <= MAX_NEGATIVE_LEAKS
 
@@ -126,7 +154,12 @@ class EvalReport:
             mark = "PASS" if r.hit else "MISS"
             rank = f"rank {r.rank_of_first_hit}" if r.rank_of_first_hit else "not retrieved"
             score = f"{r.top_score:.3f}" if r.top_score is not None else "-"
-            lines.append(f"  [{mark}] {r.case.id:22} {rank:16} top={score}")
+            cover = (
+                f" cover={r.coverage:.2f} ({len(r.case.expect_docs)} expected)"
+                if len(r.case.expect_docs) > 1
+                else ""
+            )
+            lines.append(f"  [{mark}] {r.case.id:22} {rank:16} top={score}{cover}")
 
         lines.append("")
         lines.append("NEGATIVES (must retrieve nothing)")
@@ -142,6 +175,7 @@ class EvalReport:
         # look corrupted.
         lines.append(
             f"positive recall {self.positive_recall:.2f} (min {MIN_POSITIVE_RECALL:.2f}) | "
+            f"coverage {self.mean_coverage:.2f} | "
             f"MRR {self.mrr:.2f} | negative leaks {len(self.leaks)} (max {MAX_NEGATIVE_LEAKS})"
         )
         lines.append("PASS" if self.passed else "FAIL")
@@ -179,6 +213,7 @@ async def run_eval(
     cases: list[GoldenCase] | None = None,
     *,
     delay_s: float = 0.0,
+    decomposer: Callable[[str], Awaitable[list[str]]] | None = None,
 ) -> EvalReport:
     """Score every case. `delay_s` paces the run against provider rate limits.
 
@@ -198,7 +233,11 @@ async def run_eval(
     for i, case in enumerate(selected):
         if delay_s and i:
             await asyncio.sleep(delay_s)
-        retrieval = await retriever.retrieve(case.query)
+        # Mirror the production path exactly. An eval that skips decomposition
+        # measures a pipeline nobody runs, and would then pass while the real one
+        # regressed.
+        subqueries = await decomposer(case.query) if decomposer else None
+        retrieval = await retriever.retrieve(case.query, subqueries=subqueries)
         report.results.append(score_case(case, retrieval))
     return report
 
@@ -219,11 +258,24 @@ async def _run() -> int:
     # production key, where the whole set runs in seconds.
     delay_s = float(os.environ.get("EVAL_CASE_DELAY_S", "7"))
 
+    # The eval must exercise the production path. One that skipped decomposition
+    # would measure a pipeline nobody runs, and would keep passing while the real
+    # one regressed.
+    decomposer = None
+    if settings.query_decomposition:
+        from .decompose import decompose
+
+        async def run_decompose(q: str) -> list[str]:
+            return await decompose(q, providers, settings.generation_model_cheap)
+
+        decomposer = run_decompose
+
     try:
         print(f"corpus embedded by: {settings.active_embed_model}")
         print(f"rerank_min_score:   {settings.rerank_min_score}")
+        print(f"decomposition:      {'on' if settings.query_decomposition else 'off'}")
         print(f"pacing:             {delay_s}s between cases\n")
-        report = await run_eval(retriever, delay_s=delay_s)
+        report = await run_eval(retriever, delay_s=delay_s, decomposer=decomposer)
         print(report.render())
         return 0 if report.passed else 1
     finally:

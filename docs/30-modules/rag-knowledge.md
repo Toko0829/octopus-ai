@@ -43,7 +43,15 @@ Vectors live in the same Postgres as everything else — relational, RLS-permiss
 
 ## Retrieval
 
-Query transformation (self-query filters, multi-query/HyDE, decomposition, routing) → dense (OpenAI `text-embedding-3-large` or local BAAI `bge-m3`, 1024 dims either way — [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)) + sparse (`tsvector`/BM25) → **RRF (k=60)** → **Cohere Rerank v3.5** over top-40 → top 6–8, with a relevance threshold that **drops** weak chunks.
+**Query decomposition (live)** → dense (OpenAI `text-embedding-3-large` or local BAAI `bge-m3`, 1024 dims either way — [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)) + sparse (`tsvector`/BM25) → **RRF (k=60)** → **Cohere Rerank v3.5** over top-40 → top 6–8, with a relevance threshold that **drops** weak chunks.
+
+> **Decomposition splits a goal into per-stage sub-queries, each reranked on its own.** A broad goal ("get me my first 100 customers") otherwise retrieves whichever funnel stage matches best, and the planner correctly leaves the rest empty rather than inventing steps. Measured on the golden set: coverage of a broad goal went **0.33 → 1.00**.
+>
+> The cheaper design was tried first and **measured as worthless**: searching every sub-query but running one rerank against the original goal changed nothing, because candidate breadth was never the bottleneck (40 candidates against a ~43-chunk corpus). The bottleneck is the rerank, where a vague goal scores uniformly low (0.066, against 0.474 for a focused query). So it costs one rerank per sub-query, which makes a production Cohere key a prerequisite rather than a nicety.
+>
+> **It is additive to grounding, never a source of it.** The goal is searched first and the sub-queries are abandoned if it retrieves nothing. Without that gate the golden set caught a real leak: "how to get a car licence" decomposed into plausible marketing sub-queries, each legitimately retrieved marketing content and cleared the threshold, and the agent ended up holding cited sources for a question the corpus cannot answer. That is the exact failure the groundedness gate exists to prevent, and it is why the negative half of the golden set exists.
+>
+> **Cost recorded honestly:** MRR fell 0.95 → 0.76. Merging survivors from several sub-queries pushes the single best chunk further down the list, and the planner reads all of them, so this is an acceptable trade for coverage rather than a free win.
 
 > **Switching embedder re-embeds the corpus, and the code enforces it.** The ingestion content hash covers the active embedding model, so a provider change supersedes every document instead of skipping it as unchanged. Without that, one corpus would hold two incompatible vector spaces and retrieval would degrade silently. Note also that `rerank_min_score` was calibrated against Cohere scores over OpenAI-embedded chunks, so it must be re-calibrated after a switch rather than assumed to carry over.
 

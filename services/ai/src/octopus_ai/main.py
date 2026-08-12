@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from .config import ConfigError, Settings, get_settings
 from .db import Database
+from .decompose import decompose
 from .planner import plan_grounded, refuse
 from .providers import Providers
 from .retrieval import Retriever
@@ -127,7 +128,16 @@ async def plan(request: PlanRequest) -> PlanResponse:
     assert state.retriever and state.providers and state.settings  # set in lifespan
 
     try:
-        retrieval = await state.retriever.retrieve(request.goal)
+        # Decomposition runs before retrieval and degrades to the bare goal on
+        # any failure, so a broken optimisation cannot break the request.
+        subqueries = (
+            await decompose(
+                request.goal, state.providers, state.settings.generation_model_cheap
+            )
+            if state.settings.query_decomposition
+            else None
+        )
+        retrieval = await state.retriever.retrieve(request.goal, subqueries=subqueries)
     except Exception:
         # A retrieval failure must not become an ungrounded answer. Refusing is
         # the correct degradation: the alternative is inventing a plan.
