@@ -93,7 +93,16 @@ Baseline on the ten-document corpus with bge-m3: **positive recall 1.00, MRR 1.0
 - **CI scope:** the job runs only when `services/ai/**` or the workflow changes. A docs-only pull request cannot regress retrieval, and running the gate anyway once spent ~81 rerank calls to prove nothing and then failed on the quota it had just consumed. A skipped run says so in the job summary.
 - **CI runs the production reranker**, which is the whole point of a gate. It is now minutes of real CPU on a small runner rather than minutes of waiting on a rate limiter. Its cache key names **both** models, so changing either invalidates it instead of silently scoring with the previous one.
 
-> **MRR is noisy and is not a gate threshold. Do not read a swing in it as a regression.** Decomposition calls an LLM, so the sub-queries differ between runs and the ordering of survivors moves with them. Observed across four runs of the identical commit: **0.83, 0.86, 0.91, 0.95.** The gate metrics were stable at recall 1.00, coverage 1.00, zero leaks in every one. Judge a change on those; treat MRR as a trend, and compare it only across several runs.
+> **The eval is not deterministic, and two of its four numbers move between identical runs.** Decomposition calls an LLM, so the sub-queries differ each time and both the survivor ordering and which of several expected documents surface move with them. Observed across five runs of the same commit:
+>
+> | Metric   | Range           | Stable? |
+> | -------- | --------------- | ------- |
+> | recall   | 1.00            | yes     |
+> | leaks    | 0               | yes     |
+> | coverage | **0.97 – 1.00** | **no**  |
+> | MRR      | **0.83 – 0.95** | **no**  |
+>
+> Only **recall** and **leaks** are gate thresholds, and both held in every run. A coverage dip of 0.03 is one expected document out of roughly fifteen and is within this noise, not a regression: judge it across several runs or against a deliberately changed variable, never on a single run. The honest reading is that the golden set is small enough at 15 cases that its two derived metrics are indicative rather than precise, which is an argument for growing the set.
 
 **What the pipeline fixes were worth**, measured with the reranker held constant so the change is attributable to the pipeline alone:
 
