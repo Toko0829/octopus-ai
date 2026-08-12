@@ -167,6 +167,35 @@ EMBED_LOCAL_PATH=<the snapshot path printed above>
 
 The extra pulls torch and transformers, roughly 2.5 GB of wheels, which is why it is not a base dependency: CI and OpenAI-backed deployments never install it.
 
+## Reranking, which also runs locally ([ADR-0009](docs/40-adr/0009-local-reranker.md))
+
+**The reranker is in-process by default**, on `BAAI/bge-reranker-v2-m3`. There is no rerank API key and no quota. It needs the same `local-embed` extra as the embedder, plus its weights:
+
+```bash
+uv run --directory services/ai python -c "from huggingface_hub import snapshot_download; print(snapshot_download('BAAI/bge-reranker-v2-m3', ignore_patterns=['onnx/*','*.onnx']))"
+```
+
+Then in `services/ai/.env`, following the same identity/location split as the embedder:
+
+```
+RERANK_LOCAL_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_LOCAL_PATH=<the snapshot path printed above>
+```
+
+> **It is CPU work, and the cost scales with cores.** Measured on the current pipeline: ~21s per rerank of 25 candidates on 12 threads, so a goal costs about **71s on a 16-core machine and ~230s on a single vCPU**. A smaller container is slower than your laptop, not faster. Agent runs are asynchronous (`202 + runId`), so this decides how long a plan takes rather than whether it works, but size the instance deliberately.
+>
+> If a local turn trips Node's 90s step budget, raise it in `apps/api/.env` rather than lowering quality:
+>
+> ```
+> AI_REQUEST_TIMEOUT_MS=300000
+> ```
+>
+> **The threshold is per provider and they are not interchangeable.** `RERANK_MIN_SCORE` (0.05) belongs to Cohere, where relevant chunks score 0.127–0.637. bge's separation sits at `RERANK_LOCAL_MIN_SCORE` (0.0013). Applying one to the other is not a tuning nit: Cohere's threshold against bge's scores measured **recall 0.45** before the two were separated.
+>
+> **That 0.0013 has a 1.76x margin** between the broadest legitimate goal and the strongest negative, against roughly 9x on Cohere. It is the tightest safety property in retrieval, and the golden set's **negative half is what defends it**. When you add a document, add a negative too, not just a positive.
+
+To compare against the hosted reranker, set `RERANK_PROVIDER=cohere` and supply `COHERE_API_KEY`. It is kept working as the reference the local path is measured against; the key is required only when it is selected.
+
 **Switching provider re-embeds the whole corpus, by design.** The ingestion content hash covers the active embedding model, so the next seed run supersedes every document rather than skipping it as unchanged. That is what stops one corpus holding two incompatible vector spaces. Re-seed with the same command as above; at four documents it takes seconds.
 
 ## Evaluating retrieval

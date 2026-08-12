@@ -22,6 +22,12 @@ const EnvSchema = z.object({
 
   // Python AI service (ADR-0006). Node calls it over an OpenAPI-typed seam.
   AI_SERVICE_URL: z.string().url().default('http://localhost:8000'),
+  // Budget for one grounded planning turn. Reranking is in-process CPU work
+  // (ADR-0009), so the real cost scales with the cores the AI service has:
+  // ~71s per goal on 12 threads, ~230s on one. Raise this on a small instance.
+  // The default is not raised to cover the slowest case, because agent runs are
+  // async (202 + runId) and a long default only delays reporting a hung service.
+  AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
 
   // Services.
   API_PORT: z.coerce.number().int().positive().default(3001),

@@ -35,9 +35,7 @@ def _chunk(title: str, score: float) -> RetrievedChunk:
 
 
 def _result(*chunks: RetrievedChunk) -> RetrievalResult:
-    return RetrievalResult(
-        chunks=list(chunks), candidates_considered=40, dropped_below_threshold=0
-    )
+    return RetrievalResult(chunks=list(chunks), candidates_considered=40, dropped_below_threshold=0)
 
 
 def _positive(**kw) -> CaseResult:

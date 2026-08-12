@@ -112,9 +112,7 @@ async def test_a_recovered_call_returns_its_payload(captured_sleeps):
         return httpx.Response(200, json={"ok": True})
 
     async with _client(handler) as client:
-        payload = await _post_with_retry(
-            client, "https://x/y", headers={}, json={}, what="probe"
-        )
+        payload = await _post_with_retry(client, "https://x/y", headers={}, json={}, what="probe")
 
     assert payload == {"ok": True}
     assert calls["n"] == 2

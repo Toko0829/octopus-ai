@@ -87,13 +87,36 @@ Baseline on the ten-document corpus with bge-m3: **positive recall 1.00, MRR 1.0
 
 **Not built (generation).** Ragas/DeepEval faithfulness and answer relevancy (≥ 0.75 and ≥ 0.8, with context precision ≥ 0.7 and context recall ≥ 0.8) need an LLM judge, which costs money per run and returns a different number each time. Those belong in a separate credentialed pass, not in the deterministic gate above.
 
-**Rate limit worth knowing, and it is bigger than it looks.** An eval run is the densest provider burst this service produces, and decomposition multiplied it: a positive case is one rerank for the goal plus one per sub-query, up to seven, so 15 cases (11 positive) reach **~81 rerank calls**. A Cohere trial key allows 10 a minute. `COHERE_RERANK_RPM=8` holds a run under that ceiling at roughly 10 minutes; a production key removes the ceiling and the set finishes in seconds.
+**There is no rerank quota any more.** Reranking is in-process ([ADR-0009](../40-adr/0009-local-reranker.md)), so an eval run costs CPU rather than provider calls. What was previously the dominant constraint — a trial key's 10 calls a minute against ~81 calls per run — is gone. OpenAI is still needed for decomposition and generation.
 
-`EVAL_CASE_DELAY_S` is **not** the control and must not be used as one. It paces cases, and one case stopped being one call the day decomposition landed, which is precisely how CI came to fail: the harness paused 10s between bursts of seven.
+- **CI:** wired as its own job, but **it cannot gate until repository secrets exist**, since retrieval needs the Supabase corpus. Until then it emits a warning saying it measured nothing, rather than reporting a green check that proves nothing.
+- **CI scope:** the job runs only when `services/ai/**` or the workflow changes. A docs-only pull request cannot regress retrieval, and running the gate anyway once spent ~81 rerank calls to prove nothing and then failed on the quota it had just consumed. A skipped run says so in the job summary.
+- **CI runs the production reranker**, which is the whole point of a gate. It is now minutes of real CPU on a small runner rather than minutes of waiting on a rate limiter. Its cache key names **both** models, so changing either invalidates it instead of silently scoring with the previous one.
 
-- **CI:** wired as its own job, but **it cannot gate until repository secrets exist**, since retrieval needs the Supabase corpus and a rerank key. Until then it emits a warning saying it measured nothing, rather than reporting a green check that proves nothing.
-- **CI scope:** the job runs only when `services/ai/**` or the workflow changes. That is a deliberate limit on a **metered** gate rather than a weakening of it: a docs-only pull request cannot regress retrieval, and running it anyway spent ~81 rerank calls to prove nothing and then failed on the quota it had just consumed. A skipped run says so in the job summary.
-- **CI serialisation:** the job holds a repository-wide concurrency group, because the quota belongs to the key rather than to the branch. Two runs racing over one trial key is how the second one got rejected on its very first call.
+**What the pipeline fixes were worth**, measured with the reranker held constant so the change is attributable to the pipeline alone:
+
+| Pipeline            | Rerank calls | Recall | Coverage |  MRR | Leaks |
+| ------------------- | -----------: | -----: | -------: | ---: | ----: |
+| Before              |       **87** |   1.00 |     1.00 | 0.86 |     0 |
+| Decomposition fixed |       **49** |   1.00 |     1.00 | 0.86 |     0 |
+| + 25 candidates     |       **49** |   1.00 |     0.97 | 0.95 |     0 |
+
+**Reranker candidates, measured on this golden set.** "Recall @ zero leaks" is the best recall any threshold can reach while still refusing every negative, which is what the gate actually requires. The first two rows are on the **fixed** pipeline; the rest were measured on the old one and are kept so they are not re-litigated:
+
+| Model                                | Params | Recall @ zero leaks | Note                                         |
+| ------------------------------------ | -----: | ------------------: | -------------------------------------------- |
+| **`BAAI/bge-reranker-v2-m3`** (live) |   568M |            **1.00** | coverage 1.00, MRR 0.91, ~71s/goal @12 cores |
+| Cohere `rerank-v3.5` (fallback)      |      — |            **1.00** | coverage 0.97, MRR 0.95                      |
+| `cross-encoder/ms-marco-MiniLM-L6`   |    23M |                1.00 | 22x faster, but **English-only**             |
+| `cross-encoder/mmarco-mMiniLMv2-L12` |   118M |                0.73 | below the 0.80 floor                         |
+| `jina-reranker-v2-base-multilingual` |   278M |             not run | **CC-BY-NC**, non-commercial                 |
+
+Three findings worth keeping, because each contradicts an intuitive reading:
+
+- **Parameter count did not predict quality.** The 23M English model separated the bands perfectly while the 118M multilingual one could not reach the floor at all.
+- **A smoke test on hand-written queries inverted the ranking.** Ten author-phrased queries gave every model 6/6 top-1 and made the 118M model look like the winner, until the golden set, whose queries are phrased as a founder would ask, put it at 0.73. Calibrate on the set, never on phrasings it does not contain.
+- **The model was blamed before the pipeline was checked.** bge measured 0.82 recall and 265s per goal and was written off as undeployable. The same model on the fixed pipeline reaches 1.00 at 71s. Four defects, all ours: decomposition always emitting the maximum, 20-30 word sub-queries against a cross-encoder trained on six, a sub-query generated every time for a stage with no documents, and 40 candidates reranked against a 43-chunk corpus where **RRF already places the answer at rank 1-3**.
+
 - **Production:** Langfuse tracing + online scoring + citation-coverage checks + thumbs-up/down from chat.
 
 ## Multilingual handling

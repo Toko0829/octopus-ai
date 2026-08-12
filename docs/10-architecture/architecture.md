@@ -122,7 +122,11 @@ The verdict is then written to `feedback_events` (flywheel v0) and posted into t
 
 ## Timeouts across the Node/Python seam
 
-`requestPlan` in `apps/api/src/lib/ai.ts` bounds a full grounded turn: embed, hybrid search, cross-encoder rerank, then generation. It is **90s**, raised from 30s when [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md) moved embedding in-process, because a CPU embed is work rather than an API call and a normal turn could exceed the old budget.
+`requestPlan` in `apps/api/src/lib/ai.ts` bounds a full grounded turn: embed, hybrid search, cross-encoder rerank, then generation. It defaults to **90s**, raised from 30s when [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md) moved embedding in-process, because a CPU embed is work rather than an API call and a normal turn could exceed the old budget.
+
+It is now configurable via `AI_REQUEST_TIMEOUT_MS`, because reranking moved in-process ([ADR-0009](../40-adr/0009-local-reranker.md)) and the cost now scales with the cores the AI service has: roughly **71s per goal on 12 threads, 230s on one**. 90s fits a well-provisioned instance and not a small one.
+
+**The default was deliberately not raised to cover the slowest case.** Agent runs are asynchronous (`202 + runId`), so a slower instance produces a longer wait rather than a failure, while a default long enough for a single vCPU would mean a genuinely hung service takes four minutes to report instead of ninety seconds. Size the instance, or raise the budget per environment.
 
 Two properties this depends on, both easy to regress:
 

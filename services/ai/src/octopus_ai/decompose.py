@@ -41,39 +41,89 @@ logger = logging.getLogger("octopus.ai.decompose")
 
 MAX_SUBQUERIES = 6
 
-DECOMPOSE_PROMPT = """You split a marketing goal into retrieval queries.
+# Stages the corpus actually has documents for. Asking for a sub-query about a
+# stage nothing covers spends a rerank call to look for something already known
+# to be absent, and measurement is exactly that case (rag-knowledge.md carries
+# the stage-by-stage map). Kept as data rather than prose in the prompt so it is
+# enforced in code the model cannot talk its way past.
+COVERED_STAGES = ("strategy", "content", "creative", "channels", "conversion")
 
-Return JSON: {"queries": [str, ...]}
+# A cross-encoder concatenates (query, passage) into one sequence, and it is
+# trained on short queries: MS MARCO's average is around six words. A 25-word
+# sub-query eats the token budget and dilutes the signal, which is how a
+# genuinely relevant chunk ends up scoring near zero. Measured on this corpus:
+# the model was emitting sub-queries of 20-30 words.
+MAX_SUBQUERY_CHARS = 120
 
-The corpus is organised by funnel stage: strategy (positioning, offer, pricing),
-content, creative, channels (paid ads, SEO, email, organic social), conversion
-(landing pages, forms), and measurement (attribution, metrics).
+DECOMPOSE_PROMPT = """You split a marketing goal into short retrieval queries.
 
-Write one short query per stage that is genuinely relevant to the goal. Each
-query should read like a question someone would ask about that stage, using the
-words a practitioner would use rather than repeating the goal.
+Return JSON: {"stages": [{"stage": str, "relevant": bool, "query": str}, ...]}
 
-Rules:
-- At most 5 queries. Fewer is fine when the goal is narrow.
-- Do not include a stage the goal gives you no reason to cover.
-- Do not repeat the goal itself; it is searched separately.
-- No commentary, only the JSON object."""
+Include one object for EVERY stage in this list, in this order:
+strategy (positioning, offer, pricing), content, creative,
+channels (paid ads, SEO, email, organic social), conversion (landing pages, forms).
+
+For each stage, decide `relevant`: would someone pursuing this goal genuinely
+need advice from that stage? Judge that by how the goal is written.
+
+- A goal that names a SPECIFIC problem (a metric, a channel, an asset, a broken
+  step) needs only the stages that problem lives in, usually one or two.
+  "my CPA on paid social is too high" -> channels, maybe creative. Not conversion,
+  not strategy, because the goal gives you no reason to go there.
+- A goal that names only an OUTCOME, with no method ("get my first 100
+  customers", "launch and grow my app"), is a whole-funnel request. Mark every
+  stage relevant that could plausibly contribute to it, because the person is
+  asking for the plan, not for one fix.
+
+`query` rules, for the stages you marked relevant:
+- SHORT. Six to ten words. A search query, not a sentence.
+- Use a practitioner's words, do not repeat the goal.
+- No stage prefix, no punctuation beyond a question mark.
+
+Set `query` to "" for stages you marked not relevant.
+No commentary, only the JSON object."""
 
 
 def parse_subqueries(raw: str) -> list[str]:
-    """Pull the query list out of the model's JSON, tolerating the usual noise."""
+    """Pull the relevant stages' queries out of the model's JSON.
+
+    Asking for a per-stage `relevant` decision rather than "return fewer when the
+    goal is narrow" is not a style preference. The previous prompt said exactly
+    that, and the model ignored it on **every one of the 15 golden cases**,
+    returning the maximum every time, including for out-of-scope negatives. A
+    per-item boolean is a decision the model actually makes; an instruction to be
+    brief is one it agrees with and then disregards.
+    """
     data = json.loads(raw)
+
+    stages = data.get("stages")
+    if isinstance(stages, list):
+        cleaned: list[str] = []
+        for item in stages:
+            if not isinstance(item, dict) or not item.get("relevant"):
+                continue
+            # Only stages the corpus can answer. Enforced here rather than in the
+            # prompt because the corpus changes and prompts drift.
+            if str(item.get("stage", "")).strip().lower() not in COVERED_STAGES:
+                continue
+            text = " ".join(str(item.get("query") or "").split())
+            if 8 <= len(text) <= MAX_SUBQUERY_CHARS:
+                cleaned.append(text)
+        return cleaned
+
+    # Older/looser shape: a bare list of queries. Kept so a model that ignores the
+    # schema degrades to the previous behaviour rather than to no decomposition.
     queries = data.get("queries")
     if not isinstance(queries, list):
-        raise ValueError("decomposition returned no 'queries' list")
+        raise ValueError("decomposition returned neither 'stages' nor 'queries'")
 
-    cleaned: list[str] = []
+    cleaned = []
     for q in queries:
         if not isinstance(q, str):
             continue
         text = " ".join(q.split())
         # A one-word "query" retrieves noise, and an essay is just the goal again.
-        if 8 <= len(text) <= 300:
+        if 8 <= len(text) <= MAX_SUBQUERY_CHARS:
             cleaned.append(text)
     return cleaned
 

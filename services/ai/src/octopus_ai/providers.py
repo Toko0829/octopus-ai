@@ -165,6 +165,7 @@ class Providers:
         # Built on first use and reused for the process lifetime: loading bge-m3
         # costs seconds and a couple of GB, so it must not happen per request.
         self._local_embedder: object | None = None
+        self._local_reranker: object | None = None
         # Per-process, which is the honest scope: it governs this service's own
         # spend against the key and claims nothing about anyone else's.
         self._rerank_limiter = _RateLimiter(settings.rerank_rpm)
@@ -343,6 +344,9 @@ class Providers:
         if not documents:
             return []
 
+        if self._s.rerank_provider == "local":
+            return await self._rerank_local(query, documents, top_n)
+
         await self._rerank_limiter.acquire()
 
         payload = await _post_with_retry(
@@ -362,3 +366,33 @@ class Providers:
             RerankHit(index=int(r["index"]), score=float(r["relevance_score"]))
             for r in payload.get("results", [])
         ]
+
+    async def _rerank_local(self, query: str, documents: list[str], top_n: int) -> list[RerankHit]:
+        """In-process cross-encoder.
+
+        Not rate-limited: there is no quota, which is the entire point of the
+        option. Run in a worker thread because scoring is blocking CPU work that
+        would otherwise stall the event loop for the whole service.
+
+        Returns the same shape as the Cohere path — index into `documents`, score,
+        best first — so callers cannot tell which provider ran. The SCORES are not
+        comparable across providers though, which is why the threshold applied to
+        them is selected per provider (`active_rerank_min_score`).
+        """
+        from .local_reranker import LocalReranker
+
+        if self._local_reranker is None:
+            self._local_reranker = LocalReranker(
+                self._s.rerank_local_source,
+                use_fp16=self._s.rerank_local_fp16,
+            )
+
+        reranker = self._local_reranker
+        scores = await asyncio.to_thread(reranker.score, query, documents)
+
+        ranked = sorted(
+            (RerankHit(index=i, score=s) for i, s in enumerate(scores)),
+            key=lambda h: h.score,
+            reverse=True,
+        )
+        return ranked[: min(top_n, len(documents))]
