@@ -21,6 +21,13 @@ def make_settings(**overrides) -> Settings:
         "supabase_secret_key": "sb_secret_test",
         "openai_api_key": "sk-test",
         "cohere_api_key": "co-test",
+        # Pin the provider so these tests keep testing THRESHOLD BEHAVIOUR rather
+        # than whichever reranker happens to be the default. They failed when the
+        # default moved from cohere to local, not because the logic changed but
+        # because "weak" is defined by the active provider's scale, and a test
+        # asserting that a 0.01 chunk is dropped silently became a test that it is
+        # kept. A fixture inheriting a tuning default measures the default.
+        "rerank_provider": "cohere",
     }
     base.update(overrides)
     return Settings(**base)
@@ -71,9 +78,7 @@ async def test_weak_chunks_are_dropped_not_padded():
     """The threshold exists so loose matches never become 'grounding'."""
     settings = make_settings(rerank_min_score=0.05)
     rows = [row("a", "Relevant"), row("b", "Loose"), row("c", "Irrelevant")]
-    providers = StubProviders(
-        [RerankHit(0, 0.42), RerankHit(1, 0.049), RerankHit(2, 0.001)]
-    )
+    providers = StubProviders([RerankHit(0, 0.42), RerankHit(1, 0.049), RerankHit(2, 0.001)])
 
     result = await Retriever(settings, StubDb(rows), providers).retrieve("q")
 
@@ -129,9 +134,18 @@ class TestPlannerSafety:
 
     def _chunk(self, text: str, label: str = "Playbook") -> RetrievedChunk:
         return RetrievedChunk(
-            chunk_id="c1", document_id="d1", text=text, title=label, market="US",
-            doc_type="playbook", effective_date="2026-01-01", source_url=None,
-            source_label=label, authority="internal", rrf_score=0.03, rerank_score=0.4,
+            chunk_id="c1",
+            document_id="d1",
+            text=text,
+            title=label,
+            market="US",
+            doc_type="playbook",
+            effective_date="2026-01-01",
+            source_url=None,
+            source_label=label,
+            authority="internal",
+            rrf_score=0.03,
+            rerank_score=0.4,
         )
 
     def test_sources_are_fenced_as_untrusted(self):

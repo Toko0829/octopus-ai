@@ -92,11 +92,24 @@ export class AiServiceError extends Error {}
  * reasoning service did not respond" while the service was in fact healthy.
  * The service warms its model at startup, so this covers steady-state work, not
  * a cold load.
+ *
+ * Reranking now runs in-process on a CPU cross-encoder (ADR-0009), so this
+ * budget scales with the cores given to the AI service: roughly 71s per goal on
+ * 12 threads and 230s on one. 90s therefore fits a well-provisioned instance and
+ * not a small one, which is why AI_REQUEST_TIMEOUT_MS exists.
+ *
+ * The default is deliberately NOT raised to cover the slowest case. Agent runs
+ * are asynchronous (202 + runId), so a longer plan is a longer wait rather than
+ * a failure, whereas a default long enough for a single vCPU would mean a
+ * genuinely hung service takes four minutes to report instead of ninety seconds.
+ * Size the instance, or raise this per environment.
  */
+export const DEFAULT_PLAN_TIMEOUT_MS = 90_000;
+
 export async function requestPlan(
   baseUrl: string,
   input: PlanInput,
-  timeoutMs = 90_000,
+  timeoutMs = DEFAULT_PLAN_TIMEOUT_MS,
 ): Promise<PlanResponse> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

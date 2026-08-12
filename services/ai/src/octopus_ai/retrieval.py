@@ -197,7 +197,7 @@ class Retriever:
         chunks: list[RetrievedChunk] = []
         dropped = 0
         for hit in hits:
-            if hit.score < self._s.rerank_min_score:
+            if hit.score < self._s.active_rerank_min_score:
                 dropped += 1
                 continue
             row = rows[hit.index]

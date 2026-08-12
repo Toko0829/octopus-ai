@@ -40,7 +40,12 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   await app.register(roomRoutes, { verify, supabase });
   await app.register(messageRoutes, { verify, supabase });
-  await app.register(agentRunRoutes, { verify, supabase, aiServiceUrl: env.AI_SERVICE_URL });
+  await app.register(agentRunRoutes, {
+    verify,
+    supabase,
+    aiServiceUrl: env.AI_SERVICE_URL,
+    aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+  });
   await app.register(embedRoutes, { verify, supabase });
 
   return app;

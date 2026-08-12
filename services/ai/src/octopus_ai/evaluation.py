@@ -279,7 +279,11 @@ async def _run() -> int:
 
     try:
         print(f"corpus embedded by: {settings.active_embed_model}")
-        print(f"rerank_min_score:   {settings.rerank_min_score}")
+        # The ACTIVE threshold, not the Cohere one. Printing the wrong number
+        # here already cost one misread run: the banner said 0.05 while the local
+        # model's scores live on a different scale entirely.
+        print(f"reranker:           {settings.rerank_provider} ({settings.active_rerank_model})")
+        print(f"rerank_min_score:   {settings.active_rerank_min_score}")
         print(f"decomposition:      {'on' if settings.query_decomposition else 'off'}")
         rpm = settings.rerank_rpm
         print(f"rerank limit:       {f'{rpm}/min' if rpm else 'unlimited'}")

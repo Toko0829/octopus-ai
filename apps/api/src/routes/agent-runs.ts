@@ -36,6 +36,8 @@ export interface AgentRunRoutesOptions {
   verify: AuthVerifier;
   supabase: SupabaseConfig;
   aiServiceUrl: string;
+  /** Budget for one planning turn. Defaults to the production value. */
+  aiTimeoutMs?: number;
 }
 
 export async function agentRunRoutes(
@@ -152,7 +154,11 @@ export async function agentRunRoutes(
 
   async function startRun(roomId: string, goal: string, runId: string) {
     try {
-      const plan = await requestPlan(opts.aiServiceUrl, { roomId, goal, agentRunId: runId });
+      const plan = await requestPlan(
+        opts.aiServiceUrl,
+        { roomId, goal, agentRunId: runId },
+        opts.aiTimeoutMs,
+      );
 
       app.log.info(
         {

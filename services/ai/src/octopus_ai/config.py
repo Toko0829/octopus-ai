@@ -92,6 +92,16 @@ def _int(name: str, default: int) -> int:
         raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from exc
+
+
 @dataclass(frozen=True)
 class Settings:
     supabase_url: str
@@ -128,6 +138,22 @@ class Settings:
     embed_local_fp16: bool = True
     rerank_model: str = "rerank-v3.5"
 
+    # Rerank provider: `local` (default) for in-process BAAI/bge-reranker-v2-m3,
+    # or `cohere` to go back to the hosted cross-encoder. ADR-0009 amends
+    # ADR-0007's rerank pin; Cohere is kept as a working fallback rather than
+    # deleted, since the adapter costs nothing to retain.
+    #
+    # Same identity/location split as the embedder: the MODEL is what gets
+    # recorded and reasoned about, the PATH is where this host keeps the weights.
+    #
+    # Unlike the embedder, switching this does NOT require re-ingesting: reranking
+    # happens at query time over rows the embedder already placed. What it DOES
+    # require is a different threshold, which is why that is per-provider below.
+    rerank_provider: str = "local"
+    rerank_local_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_local_path: str = ""
+    rerank_local_fp16: bool = True
+
     # Model tiering (tech-stack.md): strong for planning and critique, fast for
     # executor steps, cheap for classification and routing. Only the strong tier
     # is used today; the others exist so the split is configured rather than
@@ -155,7 +181,21 @@ class Settings:
     # directly. `rerank_rpm` below is what keeps that survivable.
     query_decomposition: bool = True
 
-    retrieval_candidates: int = 40
+    # How many RRF survivors reach the reranker. This is a MEASURED setting tied
+    # to corpus size, not a constant.
+    #
+    # rag.md specifies "top-40 -> top 6-8", written for a corpus of meaningful
+    # size. The corpus is currently **43 in-force chunks**, so 40 candidates sent
+    # 93% of everything to the cross-encoder on every query: the reranker was
+    # doing retrieval's job rather than refining it. Measured on the golden set,
+    # RRF already places the expected document at **rank 1-3** before any
+    # reranking, so the depth was buying nothing and costing a linear amount of
+    # cross-encoder time.
+    #
+    # 25 keeps ~8x headroom over the worst observed RRF rank. RAISE THIS AS THE
+    # CORPUS GROWS: RRF precision falls as the corpus does, and the golden set is
+    # where that should be caught.
+    retrieval_candidates: int = 25
     rerank_top_n: int = 8
     # Below this the cross-encoder is telling us the chunk is not relevant.
     # rag.md is explicit that weak chunks are DROPPED, not used to pad context.
@@ -172,6 +212,31 @@ class Settings:
     # Cohere scores are corpus-dependent. RE-CALIBRATE when the corpus grows
     # substantially; the golden set is where that should be enforced.
     rerank_min_score: float = 0.05
+
+    # The same threshold for the LOCAL cross-encoder, and it is a separate number
+    # rather than a shared one on purpose.
+    #
+    # Cohere and bge-reranker do not share a scale. bge returns raw logits, which
+    # this codebase sigmoid-squashes into 0-1 so a threshold is expressible at
+    # all, but a squashed logit near 0 lands at ~0.5 where a Cohere score for the
+    # same irrelevant chunk is ~0.01. Reusing 0.05 here would admit essentially
+    # every candidate, and admitting irrelevant chunks is not a quality
+    # regression, it is the groundedness gate failing open: the agent would cite
+    # sources that do not support what it says.
+    #
+    # CALIBRATED FROM MEASURED BANDS, like its Cohere counterpart, not guessed.
+    # On the golden set: the broadest legitimate goal ("launch my app and get me
+    # to my first 100 customers") tops out at 0.001772, and the strongest
+    # negative ("run payroll and withhold taxes") reaches 0.001007. 0.0013 sits
+    # between them and yields recall 1.00, coverage 1.00, zero leaks.
+    #
+    # **That is a 1.76x margin, against roughly 9x on Cohere.** It is the
+    # narrowest safety margin in the retrieval path, and a leak is the failure
+    # this system least tolerates (rule 10: uncited or unsupported claims must
+    # never gate action). Treat any corpus change as a reason to re-measure, and
+    # grow the golden set's NEGATIVE half rather than only its positive half,
+    # because the negatives are what defend this margin.
+    rerank_local_min_score: float = 0.0013
 
     # Client-side ceiling on rerank calls per minute. 0 means unlimited.
     #
@@ -205,6 +270,30 @@ class Settings:
         return self.embed_local_model if self.embed_provider == "local" else self.embed_model
 
     @property
+    def active_rerank_model(self) -> str:
+        """The reranker actually in use, whichever provider is selected."""
+        return self.rerank_local_model if self.rerank_provider == "local" else self.rerank_model
+
+    @property
+    def active_rerank_min_score(self) -> float:
+        """The threshold matching the active reranker's score distribution.
+
+        Selecting this by provider rather than sharing one number is what stops a
+        provider switch from silently changing what counts as "relevant enough to
+        cite".
+        """
+        return (
+            self.rerank_local_min_score
+            if self.rerank_provider == "local"
+            else self.rerank_min_score
+        )
+
+    @property
+    def rerank_local_source(self) -> str:
+        """Where to load the local reranker from: an explicit path, else the repo id."""
+        return self.rerank_local_path or self.rerank_local_model
+
+    @property
     def embed_local_source(self) -> str:
         """Where to load the local weights from: an explicit path, else the repo id.
 
@@ -218,11 +307,23 @@ class Settings:
 def get_settings() -> Settings:
     """Load and cache settings. Raises ConfigError if anything required is missing."""
     load_local_env()
+
+    # Required only when the hosted reranker is actually selected. A deployment
+    # that has gone fully local (ADR-0009) must not be unable to boot for want of
+    # a credential it will never use, and demanding one would quietly push people
+    # into keeping a live key around with nothing checking that it still works.
+    rerank_provider = _choice("RERANK_PROVIDER", "local", {"cohere", "local"})
+    cohere_api_key = (
+        _require("COHERE_API_KEY")
+        if rerank_provider == "cohere"
+        else os.environ.get("COHERE_API_KEY", "")
+    )
+
     return Settings(
         supabase_url=_require("SUPABASE_URL"),
         supabase_secret_key=_require("SUPABASE_SECRET_KEY"),
         openai_api_key=_require("OPENAI_API_KEY"),
-        cohere_api_key=_require("COHERE_API_KEY"),
+        cohere_api_key=cohere_api_key,
         embed_provider=_choice("EMBED_PROVIDER", "openai", {"openai", "local"}),
         embed_model=os.environ.get("EMBED_MODEL", "text-embedding-3-large"),
         embed_local_model=os.environ.get("EMBED_LOCAL_MODEL", "BAAI/bge-m3"),
@@ -230,12 +331,17 @@ def get_settings() -> Settings:
         embed_dimensions=_int("EMBED_DIMENSIONS", 1024),
         embed_local_fp16=_bool("EMBED_LOCAL_FP16", True),
         rerank_model=os.environ.get("RERANK_MODEL", "rerank-v3.5"),
+        rerank_provider=rerank_provider,
+        rerank_local_model=os.environ.get("RERANK_LOCAL_MODEL", "BAAI/bge-reranker-v2-m3"),
+        rerank_local_path=os.environ.get("RERANK_LOCAL_PATH", ""),
+        rerank_local_fp16=_bool("RERANK_LOCAL_FP16", True),
+        rerank_local_min_score=_float("RERANK_LOCAL_MIN_SCORE", 0.0013),
         generation_model=os.environ.get("GENERATION_MODEL", "gpt-5.4"),
         generation_model_fast=os.environ.get("GENERATION_MODEL_FAST", "gpt-5.4-mini"),
         generation_model_cheap=os.environ.get("GENERATION_MODEL_CHEAP", "gpt-5.4-nano"),
         generation_max_tokens=_int("GENERATION_MAX_TOKENS", 900),
         query_decomposition=_bool("QUERY_DECOMPOSITION", True),
-        retrieval_candidates=_int("RETRIEVAL_CANDIDATES", 40),
+        retrieval_candidates=_int("RETRIEVAL_CANDIDATES", 25),
         rerank_top_n=_int("RERANK_TOP_N", 8),
         rerank_rpm=_int("COHERE_RERANK_RPM", 0),
         embed_batch_size=_int("EMBED_BATCH_SIZE", 96),

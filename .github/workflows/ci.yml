@@ -119,61 +119,44 @@ jobs:
   # search, rerank) over services/ai/eval/golden.json and fails on a regression.
   #
   # It CANNOT gate until the repository has credentials: retrieval needs the
-  # Supabase corpus and a rerank key, and the `ai` job above deliberately runs
-  # without either. Until then this job reports that it is unarmed rather than
-  # passing silently, because a green check that measured nothing is worse than a
-  # visibly missing one.
+  # Supabase corpus, and the `ai` job above deliberately runs without any. Until
+  # then this job reports that it is unarmed rather than passing silently,
+  # because a green check that measured nothing is worse than a visibly missing
+  # one.
   #
-  # To arm it, add SUPABASE_URL, SUPABASE_SECRET_KEY, OPENAI_API_KEY and
-  # COHERE_API_KEY as repository secrets. Note a Cohere trial key allows 10 calls
-  # a minute, which the golden set exceeds many times over; COHERE_RERANK_RPM
-  # holds the run under that ceiling, and should be removed on a production key.
+  # To arm it, add SUPABASE_URL, SUPABASE_SECRET_KEY and OPENAI_API_KEY as
+  # repository secrets. OpenAI is still needed for query decomposition and
+  # generation; a rerank key is NOT, since reranking now runs in-process
+  # (ADR-0009).
   eval:
     name: ai · retrieval eval (golden set)
     runs-on: ubuntu-latest
-    # ~10 minutes of that is the rate limiter holding, so the default 6h timeout
-    # would let a limiter bug idle for hours before anyone noticed.
-    timeout-minutes: 30
+    # The reranker is a CPU cross-encoder on a small runner, so this is minutes
+    # of real compute rather than a rate limiter holding. Bounded so a pathology
+    # (an unbatched loop, a model that failed to cache) surfaces as a timeout
+    # instead of burning an hour of runner time.
+    timeout-minutes: 60
     needs: eval-scope
     if: needs.eval-scope.outputs.retrieval == 'true'
-    # The rerank quota belongs to the KEY, not to the branch, so the concurrency
-    # group must not be scoped by ref the way the workflow-level one is. Two runs
-    # racing is exactly how this broke: a pull-request run started while its own
-    # merge-to-main run was still going, and was rejected on its first call
-    # against a quota the other run had already spent.
-    #
-    # cancel-in-progress is false on purpose. Queueing costs wall-clock;
-    # cancelling would throw away a half-finished measurement to start another
-    # that competes for the same quota.
-    concurrency:
-      group: cohere-rerank-quota
-      cancel-in-progress: false
     defaults:
       run:
         working-directory: services/ai
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      # Decomposition and generation only. There is no rerank credential any more.
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-      # A Cohere trial key allows 10 calls/minute. 8 leaves headroom for the
-      # retry path and for anything else touching the key while CI runs.
-      #
-      # This replaces the old EVAL_CASE_DELAY_S pacing, which was calibrated when
-      # one case meant one rerank call. Query decomposition made a positive case
-      # cost one call for the goal plus one per sub-query, up to seven, so
-      # per-case pauses could not express the quota and the run failed on it.
-      #
-      # Budget honestly: 15 cases, 11 of them positive, is up to ~81 rerank calls,
-      # so this job takes ~10 minutes and is CAPPED BY THE TRIAL KEY, not by the
-      # work. Remove this line on a production key and it finishes in seconds.
-      COHERE_RERANK_RPM: '8'
       # MUST match how the corpus was embedded. The corpus is on bge-m3
       # (ADR-0008); leaving this at the `openai` default would embed queries in a
       # different vector space from the stored vectors and score near-zero, which
       # reads as a retrieval regression rather than as a misconfigured job.
       EMBED_PROVIDER: local
       EMBED_LOCAL_MODEL: BAAI/bge-m3
+      # The gate must run the production reranker (ADR-0009). Pointing this at
+      # Cohere while production runs bge would measure a pipeline nobody runs,
+      # which is the mistake this eval has already had to correct once.
+      RERANK_PROVIDER: local
+      RERANK_LOCAL_MODEL: BAAI/bge-reranker-v2-m3
       HF_HOME: ${{ github.workspace }}/.hf
     steps:
       - uses: actions/checkout@v4
@@ -183,20 +166,32 @@ jobs:
         with:
           enable-cache: true
 
-      # ~2.2GB of weights. Cached on the lockfile so it is fetched once rather
-      # than on every run.
-      - name: Cache bge-m3 weights
+      # ~4.6GB of weights across the embedder and the reranker. Cached together
+      # so they are fetched once rather than on every run. The key names both
+      # models: changing either must invalidate the cache, or the job silently
+      # keeps scoring with the previous one.
+      - name: Cache model weights (bge-m3 + bge-reranker-v2-m3)
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.hf
-          key: hf-bge-m3-${{ hashFiles('services/ai/uv.lock') }}
+          key: hf-${{ env.EMBED_LOCAL_MODEL }}-${{ env.RERANK_LOCAL_MODEL }}-${{ hashFiles('services/ai/uv.lock') }}
 
       - name: Install
         run: uv sync --extra dev --extra local-embed --frozen
 
+      - name: Fetch model weights if not cached
+        run: |
+          uv run python - <<'PY'
+          from huggingface_hub import snapshot_download
+          for repo in ("BAAI/bge-m3", "BAAI/bge-reranker-v2-m3"):
+              # The repos ship a full ONNX duplicate of the weights that nothing
+              # here loads; excluding it roughly halves each download.
+              print(repo, snapshot_download(repo, ignore_patterns=["onnx/*", "*.onnx"]))
+          PY
+
       - name: Run retrieval eval
         run: |
-          if [ -z "$SUPABASE_URL" ] || [ -z "$COHERE_API_KEY" ]; then
+          if [ -z "$SUPABASE_URL" ] || [ -z "$OPENAI_API_KEY" ]; then
             echo "::warning title=Eval gate unarmed::No credentials configured, so retrieval was NOT evaluated. This job is not gating anything. See .github/workflows/ci.yml."
             exit 0
           fi
