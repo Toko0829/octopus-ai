@@ -18,9 +18,14 @@
  * and rendering invented figures on a surface whose whole purpose is to be
  * checkable would undo the grounding it advertises.
  *
- * Approve / request-changes are deliberately absent until the action route
- * exists. A button that does nothing is worse than a missing one.
+ * Approve / request-changes appear only for the owner, and only while the card
+ * is pending. The server re-checks both; hiding them is presentation, not the
+ * control, and a viewer who cannot act should not be shown a button that will
+ * refuse them.
  */
+'use client';
+
+import { useState } from 'react';
 import type { ActionEmbed, FunnelStage, PlanStep, StepOwner } from '@octopus/contracts';
 
 const ownerMeta: Record<StepOwner, { cls: string; label: string }> = {
@@ -40,13 +45,20 @@ const stageLabels: Record<FunnelStage, string> = {
 
 interface Props {
   embed: ActionEmbed;
+  /** True when the viewer owns the workspace, which is what `requiredRole` means today. */
+  canAct: boolean;
+  onAct: (embedId: string, action: 'approve' | 'request_changes', note?: string) => Promise<void>;
 }
 
 function Step({ step, sources }: { step: PlanStep; sources: string[] }) {
   const owner = ownerMeta[step.owner];
   // Indices are 1-based and were range-checked server-side, but the lookup still
   // guards: a card is the wrong place to discover a bad index.
-  const cited = step.citations.map((n) => sources[n - 1]).filter(Boolean);
+  //
+  // Deduplicated, because two cited chunks from the same document would
+  // otherwise print that document's title twice and make one source look like
+  // corroboration by two.
+  const cited = [...new Set(step.citations.map((n) => sources[n - 1]).filter(Boolean))];
 
   return (
     <li className="plan-step">
@@ -71,13 +83,54 @@ function Step({ step, sources }: { step: PlanStep; sources: string[] }) {
   );
 }
 
-export function PlanCard({ embed }: Props) {
+export function PlanCard({ embed, canAct, onAct }: Props) {
   const plan = embed.payload;
   const sources = plan.citations.map((c) => c.label);
   const covered = plan.stages.filter((s) => s.steps.length > 0).length;
 
+  /**
+   * Citations are per *chunk*, so several can come from one document and the
+   * list then repeats the same title. Rendered raw that reads as several
+   * independent sources when it is one, which overstates how well corroborated
+   * the plan is on the very surface meant to let a reader check it.
+   *
+   * Grouped by document, keeping each chunk's reference number so a step citing
+   * [2] can still be traced. The numbers stay chunk-level; only the display is
+   * grouped.
+   */
+  const sourceDocuments = plan.citations.reduce<
+    { label: string; effectiveDate?: string | null; refs: number[] }[]
+  >((acc, citation, i) => {
+    const existing = acc.find((d) => d.label === citation.label);
+    if (existing) existing.refs.push(i + 1);
+    else acc.push({ label: citation.label, effectiveDate: citation.effectiveDate, refs: [i + 1] });
+    return acc;
+  }, []);
+
+  const [busy, setBusy] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const pending = embed.state === 'pending';
+  const approved = embed.state === 'approved';
+
+  async function act(action: 'approve' | 'request_changes') {
+    setBusy(true);
+    setError(null);
+    try {
+      await onAct(embed.id, action, action === 'request_changes' ? note.trim() : undefined);
+    } catch (err) {
+      // Keep the note on screen: it is the person's writing, and discarding it
+      // on a failed submit is the fastest way to lose their trust in the button.
+      setError(err instanceof Error ? err.message : 'Could not record that. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <div className="plan">
+    <div className={`plan${approved ? ' approved' : ''}`}>
       <div className="plan-top">
         <div className="plan-eyebrow">
           <span className="pulse" aria-hidden />
@@ -110,20 +163,83 @@ export function PlanCard({ embed }: Props) {
       </div>
 
       <div className="plan-sources">
-        <div className="plan-sources-label">Grounded in</div>
+        <div className="plan-sources-label">
+          Grounded in{' '}
+          {sourceDocuments.length === 1 ? '1 document' : `${sourceDocuments.length} documents`}
+        </div>
         <div className="cites">
-          {plan.citations.map((c, i) => (
+          {sourceDocuments.map((doc) => (
             <span
               className="cite"
-              key={c.sourceId}
-              title={c.effectiveDate ? `effective ${c.effectiveDate}` : undefined}
+              key={doc.label}
+              title={doc.effectiveDate ? `effective ${doc.effectiveDate}` : undefined}
             >
               <span className="dot" aria-hidden />
-              <span className="mono">[{i + 1}]</span> {c.label}
+              <span className="mono">{doc.refs.map((n) => `[${n}]`).join('')}</span> {doc.label}
             </span>
           ))}
         </div>
       </div>
+
+      {/* State is text, never colour alone. And the two states get different
+          colours: the accent reads as success, so styling a rejection with it
+          made the colour contradict the words beside it. */}
+      {!pending && (
+        <div className={approved ? 'plan-approved-banner' : 'plan-rejected-banner'}>
+          {approved ? 'Plan approved.' : 'Changes requested.'}
+        </div>
+      )}
+
+      {pending && canAct && (
+        <div className="plan-foot">
+          {noteOpen ? (
+            <div className="plan-note">
+              <label className="auth-label" htmlFor={`note-${embed.id}`}>
+                What should change?
+              </label>
+              <textarea
+                id={`note-${embed.id}`}
+                className="auth-input"
+                rows={3}
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="The part that is wrong, and why."
+              />
+              <div className="plan-actions">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => setNoteOpen(false)}
+                  disabled={busy}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => act('request_changes')}
+                  disabled={busy}
+                >
+                  {busy ? 'Sending...' : 'Send'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="plan-actions">
+              <button className="btn btn-ghost" onClick={() => setNoteOpen(true)} disabled={busy}>
+                Request changes
+              </button>
+              <button className="btn btn-primary" onClick={() => act('approve')} disabled={busy}>
+                {busy ? 'Saving...' : 'Approve plan'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="auth-msg" data-tone="error" role="status">
+          Problem: {error}
+        </div>
+      )}
 
       <div className="plan-verified">
         {covered} of 6 stages covered · informational, not financial advice

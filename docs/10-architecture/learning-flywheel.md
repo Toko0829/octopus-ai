@@ -38,9 +38,11 @@ We are **not** building the everything-product on day one. We ship one vertical 
 
 ## Feedback capture (where the data comes from)
 
+> **v0 is live (Phase 1).** `feedback_events` (`20260812130000`) records every approve / request-changes on a plan card: who decided, which verdict, the note explaining a rejection, and the judged payload captured at decision time. That last part is denormalised deliberately, since the embed's state changes after the verdict and a label has to describe what was actually judged. The table is **append-only by grant**, because a training signal that can be rewritten after the fact is not evidence. This is the first labelled data the system collects and the basis of the correction-rate metric below. Not yet built: node corrections (mechanism 2 proper), outcome ingestion, and any use of these labels in retrieval or eval.
+
 | Source             | Signal                                        | Captured in                                 |
 | ------------------ | --------------------------------------------- | ------------------------------------------- |
-| User in chat       | approve / reject / edit, thumbs, comments     | `feedback_events`                           |
+| User in chat       | approve / reject / edit, thumbs, comments     | `feedback_events` **(live)**                |
 | Human node         | corrections, approvals, deliverable diffs     | `node_feedback`, `engagements`              |
 | Channels/analytics | impressions, clicks, conversions, ROAS, spend | `campaign_outcomes`, `creative_performance` |
 | Agent itself       | plan diffs, tool results, confidence          | event-sourced `events`                      |

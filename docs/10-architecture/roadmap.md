@@ -28,15 +28,22 @@
 **Goal:** a creator gets a real, grounded, full-funnel growth plan in chat — no execution yet.
 
 - ✅ Discord-style chat shell (5 regions, roles/badges, presence, inline messages) on Supabase Realtime.
-- 🟡 `rag-knowledge` for **marketing**: pgvector schema, hybrid retrieval + RRF + rerank **done**; ingestion works but from a hand-authored seed corpus rather than crawled sources; **eval golden set + CI thresholds not started**.
-- 🟡 Orchestrator **planning pass**: a creator goal returns a grounded, cited reply, and refuses when nothing clears the relevance threshold. **Not yet a task DAG and not yet a plan card** — the reply is prose, so the plan card stays unrendered.
+- 🟡 `rag-knowledge` for **marketing**: pgvector schema, hybrid retrieval + RRF + rerank **done**; ten-document corpus covering all six funnel stages; **retrieval eval gate live** (golden set, positives + negatives, wired into CI). Ingestion is still from a hand-authored corpus rather than crawled sources, and the **generation** eval (Ragas/DeepEval faithfulness) is deliberately absent.
+- ✅ Orchestrator **planning pass**: a creator goal returns a **structured full-funnel plan** on a plan card, cited per step, and refuses when nothing clears the relevance threshold.
 - ✅ AI participates **inline**; **no side effects** (no publishing, no spend).
 - ✅ `design-system-frontend` tokens + core components (editorial house style, no slop).
-- ❌ **Flywheel v0:** capture user approve/reject/edit signals on plans as the first labeled data.
+- ✅ **Flywheel v0:** approve / request-changes on a plan is captured in `feedback_events` as the first labelled data.
 
 **Exit gate:** a creator gets a correct, tailored full-funnel plan; eval gates pass; design review passes the anti-slop checklist.
 
-> **Gate status: not met.** Retrieval and grounded generation are live and the refusal path works, but the output is a cited prose reply rather than a structured full-funnel DAG on a plan card, and **there is no eval gate at all**, which the gate names explicitly. Remaining: golden set + Ragas/DeepEval thresholds, the DAG-shaped planner output, and flywheel v0 signal capture.
+> **Gate status: substantially met, with two named remainders.** A creator goal now produces a structured six-stage plan with per-step citations and owners, rendered as a card the owner can approve or send back; the retrieval eval gate runs in CI at recall 1.00 with zero negative leaks; the flywheel records its first labels.
+>
+> Outstanding, and deliberately not claimed as done:
+>
+> - **The generation eval** (faithfulness, answer relevancy) needs an LLM judge, which bills per run and is non-deterministic, so it belongs in a credentialed pass rather than a deterministic gate. Retrieval is gated; generation is not.
+> - **A formal anti-slop design review** has not been run against the checklist in [design-system.md](../20-design/design-system.md).
+>
+> Also worth carrying into Phase 2 rather than pretending it is finished: the corpus is internally authored, so nothing is externally cited yet, and **no pgTAP RLS tests exist** despite rule 18 naming dynamic group-chat membership the hardest security surface. That debt gets sharply more expensive the moment human nodes join rooms.
 
 ## Phase 2 — Execution + Channels + Creative + Marketplace + Escrow
 

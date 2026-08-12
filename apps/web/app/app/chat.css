@@ -548,6 +548,10 @@
 .plan.approved {
   border-color: color-mix(in oklab, var(--teal-500) 45%, var(--border));
 }
+/* Approval and rejection must not share a style. The accent reads as success,
+   so using it for "Changes requested" made a rejection look like a sign-off:
+   colour carrying the opposite of the text next to it. Both states are stated in
+   words as well, per design-system.md, but the colour must not fight them. */
 .plan-approved-banner {
   display: flex;
   align-items: center;
@@ -555,6 +559,18 @@
   padding: var(--sp-3) var(--sp-5);
   background: var(--accent-quiet);
   color: var(--accent-text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.plan-rejected-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: var(--sp-3) var(--sp-5);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
   font-size: var(--text-sm);
   font-weight: 500;
 }
@@ -1153,4 +1169,19 @@
 .stage-empty {
   font-size: 13px;
   color: var(--color-text-muted);
+}
+
+/* Request-changes note. The person's writing is kept on screen if the submit
+   fails: discarding it is the fastest way to lose trust in the button. */
+.plan-note {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.plan-note .auth-input {
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
 }

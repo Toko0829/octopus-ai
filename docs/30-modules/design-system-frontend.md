@@ -14,7 +14,14 @@
 > - **A step with no citation is labelled, not merely styled the same.** Uncited claims cannot gate action (rule 10), so the card must not let one pass as grounded. The label is text, never colour alone.
 > - **Nothing renders that the planner did not produce.** The earlier draft showed an estimated cost and timeline; both came from mock data. Displaying invented figures on the one surface whose purpose is to be checkable would undo the grounding it advertises, so they are gone rather than filled in.
 >
-> **Approve / request-changes are absent until the action route exists.** A button that does nothing is worse than a missing one. `plan-types.ts` is deleted: the shapes moved to `@octopus/contracts`, as its own comment said they should once something produced a plan.
+> **Approve / request-changes are live**, shown only to the workspace owner and only while the card is `pending`. Hiding them is presentation, not the control: the server re-checks membership, `required_role` and state on every action, so a forged call is simply refused. A failed submit **keeps the note on screen**, because it is the person's writing and discarding it is the fastest way to lose their trust in the button. Card state renders as text, never colour alone. `plan-types.ts` is deleted: the shapes moved to `@octopus/contracts`, as its own comment said they should once something produced a plan.
+>
+> **The card is patched in place after an action, not re-fetched.** Re-loading the stream would scroll the reader away from the thing they just acted on.
+>
+> Two defects found by actually clicking through it, both of which type-checking could never have caught:
+>
+> - **Approval and rejection shared a banner style.** "Changes requested" rendered on the teal accent, which reads as success, so the colour contradicted the words beside it. Stating both states in words is necessary but not sufficient: the colour must not fight the text. Rejection now has its own neutral treatment.
+> - **Citations are per chunk, so one document appeared three times.** Three chunks from a single source rendered as three identical entries, which reads as three independent sources corroborating the plan when there is one. That overstates how well-supported the plan is on the exact surface built for checking it. The card now groups by document (`[1][2][3] Title`) and counts documents rather than chunks, keeping chunk-level numbers so a step citing `[2]` stays traceable. Per-step citation lists are deduplicated for the same reason.
 >
 > **Still deliberately not rendered** (no backend, and a trust surface must not show invented numbers): the budget figure in the top bar, and unread counts. The ⌘K palette lists only actions that work.
 >

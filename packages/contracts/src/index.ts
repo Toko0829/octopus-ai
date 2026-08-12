@@ -91,6 +91,23 @@ export const EmbedState = z.enum(['pending', 'approved', 'rejected', 'expired'])
 export type EmbedState = z.infer<typeof EmbedState>;
 
 /**
+ * A verdict on an embed. `request_changes` carries a note, because the most
+ * useful part of a rejection is why, and that note is the labelled signal the
+ * flywheel is built from (learning-flywheel.md, mechanism 2).
+ */
+export const EmbedActionBody = z.object({
+  action: z.enum(['approve', 'request_changes']),
+  note: z.string().trim().max(2000).optional(),
+});
+export type EmbedActionBody = z.infer<typeof EmbedActionBody>;
+
+export const EmbedActionResponse = z.object({
+  id: z.string().uuid(),
+  state: EmbedState,
+});
+export type EmbedActionResponse = z.infer<typeof EmbedActionResponse>;
+
+/**
  * An interactive card attached to a message. `requiredRole` is echoed to the
  * client so the UI can disable what the caller cannot do, but the server checks
  * it again on the action route: a rule enforced only in React is not enforced.
@@ -163,6 +180,12 @@ export const Room = z.object({
   id: z.string().uuid(),
   name: z.string(),
   projectId: z.string().uuid().nullable(),
+  /**
+   * Who owns the workspace. Exposed so the UI can hide actions the caller
+   * cannot take; the server re-checks it on every action, because hiding a
+   * button is presentation and not a permission.
+   */
+  ownerId: z.string().uuid().nullable(),
 });
 export type Room = z.infer<typeof Room>;
 
