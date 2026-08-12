@@ -3,7 +3,13 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
 import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
-import { AiServiceError, requestPlan } from '../lib/ai';
+import {
+  AiServiceError,
+  requestPlan,
+  type PlanResponse,
+  type ProposePlanProposal,
+} from '../lib/ai';
+import { PlanEmbedPayload } from '@octopus/contracts';
 
 /**
  * Agent runs: the Node half of ADR-0006's "Python proposes, Node executes".
@@ -55,6 +61,80 @@ export async function agentRunRoutes(
     if (error && error.code !== '23505') throw error;
   }
 
+  /**
+   * Post a plan: one message, plus the embed carrying its structure.
+   *
+   * The message body is the plain-text fallback, so the plan is still legible
+   * anywhere the card does not render (a notification, a client that does not
+   * know this embed type, the audit trail). The card is an enhancement of a
+   * readable message rather than the only way to read it.
+   *
+   * `required_role: 'owner'` is written here and re-checked when the action is
+   * taken. The UI is told about it so it can disable what the caller cannot do,
+   * but that is a courtesy, not the control.
+   */
+  async function postPlan(
+    roomId: string,
+    plan: ProposePlanProposal,
+    citations: PlanResponse['citations'],
+    runId: string,
+    index: number,
+  ) {
+    const admin = createServiceClient(opts.supabase);
+    const idempotencyKey = `agent-run:${runId}:${index}`;
+
+    const { data: message, error: messageError } = await admin
+      .from('messages')
+      .insert({
+        room_id: roomId,
+        author_id: null,
+        author_kind: 'agent',
+        body: `${plan.title}\n\n${plan.summary}`,
+        idempotency_key: idempotencyKey,
+      })
+      .select('id')
+      .maybeSingle();
+
+    if (messageError) {
+      // A replayed run hits the idempotency constraint, which means the plan was
+      // already posted. Nothing more to do, and certainly not a second embed.
+      if (messageError.code === '23505') return;
+      throw messageError;
+    }
+    if (!message) return;
+
+    const payload = {
+      title: plan.title,
+      summary: plan.summary,
+      stages: plan.stages,
+      citations: citations.map((citation) => ({
+        sourceId: citation.source_id,
+        label: citation.label,
+        url: citation.url ?? null,
+        effectiveDate: citation.effective_date ?? null,
+      })),
+    };
+
+    // Validated before it is stored, not on the way out. A payload that cannot
+    // satisfy the contract is a bug here; writing it anyway would move the
+    // failure to every future read and to the browser, where it is far harder to
+    // attribute.
+    const parsed = PlanEmbedPayload.safeParse(payload);
+    if (!parsed.success) {
+      throw new Error(`refusing to store an invalid plan payload: ${parsed.error.message}`);
+    }
+
+    const { error: embedError } = await admin.from('action_embeds').insert({
+      message_id: message.id,
+      room_id: roomId,
+      component: 'plan',
+      payload: parsed.data,
+      required_role: 'owner',
+      state: 'pending',
+    });
+    if (embedError && embedError.code !== '23505') throw embedError;
+  }
+
   async function postSystemNotice(roomId: string, body: string, runId: string) {
     try {
       const admin = createServiceClient(opts.supabase);
@@ -87,11 +167,16 @@ export async function agentRunRoutes(
       );
 
       for (const [index, proposal] of plan.proposals.entries()) {
-        // The only proposal kind that exists today. New kinds must be added
-        // here explicitly, so the core cannot widen its own powers by
-        // inventing one.
-        if (proposal.kind === 'post_message') {
-          await postAsAgent(roomId, proposal.body, runId, index);
+        // Every kind is handled explicitly. The core cannot widen its own powers
+        // by inventing one: an unknown kind fails the schema parse above, before
+        // reaching this switch.
+        switch (proposal.kind) {
+          case 'post_message':
+            await postAsAgent(roomId, proposal.body, runId, index);
+            break;
+          case 'propose_plan':
+            await postPlan(roomId, proposal, plan.citations, runId, index);
+            break;
         }
       }
     } catch (err) {

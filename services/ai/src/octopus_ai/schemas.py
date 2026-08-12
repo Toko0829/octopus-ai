@@ -50,7 +50,67 @@ class PostMessageProposal(BaseModel):
     body: str = Field(min_length=1, max_length=4000)
 
 
-Proposal = PostMessageProposal
+FUNNEL_STAGES = (
+    "strategy",
+    "content",
+    "creative",
+    "channels",
+    "conversion",
+    "measurement",
+)
+
+StageKey = Literal["strategy", "content", "creative", "channels", "conversion", "measurement"]
+
+
+class PlanStep(BaseModel):
+    """One concrete action inside a funnel stage."""
+
+    title: str = Field(min_length=1, max_length=120)
+    detail: str = Field(min_length=1, max_length=600)
+    owner: Literal["AI", "HUMAN", "YOU"] = Field(
+        description=(
+            "Who executes this. AI runs autonomously; HUMAN needs an expert node; "
+            "YOU needs the person (a decision, an authorisation, or a fact only they have)."
+        )
+    )
+    citations: list[int] = Field(
+        default_factory=list,
+        description=(
+            "1-based indices into PlanResponse.citations. A step with no citation is a "
+            "step the corpus does not support, which the UI must show as unverified "
+            "rather than render identically to a grounded one (AGENTS.md rule 10)."
+        ),
+    )
+
+
+class PlanStage(BaseModel):
+    """One of the six funnel stages, which may legitimately be empty.
+
+    An empty `steps` list is meaningful output, not missing output: it says the
+    corpus had nothing in scope for this stage. Padding it from parametric
+    knowledge is the exact failure RAG exists to prevent, and a plan that looks
+    complete while resting on nothing is worse than one with a visible gap.
+    """
+
+    stage: StageKey
+    steps: list[PlanStep] = Field(default_factory=list, max_length=3)
+
+
+class ProposePlanProposal(BaseModel):
+    """Propose that Node persist a structured plan and render it as a card.
+
+    Separate from `post_message` because Node must treat it differently: it writes
+    an embed row as well as a message, and the embed carries `required_role`, so
+    the approve action is authorised server-side rather than by the UI.
+    """
+
+    kind: Literal["propose_plan"] = "propose_plan"
+    title: str = Field(min_length=1, max_length=140)
+    summary: str = Field(min_length=1, max_length=800)
+    stages: list[PlanStage] = Field(min_length=1, max_length=6)
+
+
+Proposal = PostMessageProposal | ProposePlanProposal
 
 
 class PlanRequest(BaseModel):

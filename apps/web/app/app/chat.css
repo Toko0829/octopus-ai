@@ -1103,3 +1103,54 @@
     display: none;
   }
 }
+
+/* Plan card: stage bodies and per-step citations (Stage 1 of the plan card).
+   The empty-stage state is a first-class render, not an edge case: a stage with
+   no steps means the corpus does not cover it, and that is what the reader needs
+   in order to judge the plan rather than something to hide. */
+.stage-body {
+  min-width: 0;
+}
+
+.stage-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+}
+
+.plan-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plan-step + .plan-step {
+  border-top: 1px solid var(--color-border-hairline);
+  padding-top: 10px;
+}
+
+.step-cites {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* Uncited steps are marked in text, never by colour alone (design-system.md). */
+.step-uncited {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.stage-empty {
+  font-size: 13px;
+  color: var(--color-text-muted);
+}

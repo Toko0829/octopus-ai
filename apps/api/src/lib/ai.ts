@@ -21,6 +21,39 @@ export const PostMessageProposal = z.object({
 });
 export type PostMessageProposal = z.infer<typeof PostMessageProposal>;
 
+const PlanStep = z.object({
+  title: z.string().min(1).max(120),
+  detail: z.string().min(1).max(600),
+  owner: z.enum(['AI', 'HUMAN', 'YOU']),
+  citations: z.array(z.number().int().positive()),
+});
+
+const PlanStage = z.object({
+  stage: z.enum(['strategy', 'content', 'creative', 'channels', 'conversion', 'measurement']),
+  steps: z.array(PlanStep).max(3),
+});
+
+/**
+ * A structured full-funnel plan. Parsed here with the same rigour as any other
+ * untrusted input: the core may propose a plan, but the bounds on it are this
+ * side's to enforce, not the prompt's to honour.
+ */
+export const ProposePlanProposal = z.object({
+  kind: z.literal('propose_plan'),
+  title: z.string().min(1).max(140),
+  summary: z.string().min(1).max(800),
+  stages: z.array(PlanStage).min(1).max(6),
+});
+export type ProposePlanProposal = z.infer<typeof ProposePlanProposal>;
+
+/**
+ * Discriminated so an unknown `kind` fails the parse loudly rather than being
+ * silently dropped. The core widening its own powers by inventing a proposal
+ * kind should break the run, not quietly do nothing.
+ */
+export const Proposal = z.discriminatedUnion('kind', [PostMessageProposal, ProposePlanProposal]);
+export type Proposal = z.infer<typeof Proposal>;
+
 export const Citation = z.object({
   source_id: z.string(),
   label: z.string(),
@@ -29,7 +62,7 @@ export const Citation = z.object({
 });
 
 export const PlanResponse = z.object({
-  proposals: z.array(PostMessageProposal),
+  proposals: z.array(Proposal),
   grounded: z.boolean(),
   citations: z.array(Citation),
   reasoning_summary: z.string(),

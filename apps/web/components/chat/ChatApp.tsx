@@ -62,6 +62,14 @@ export function ChatApp({
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
 
+  /**
+   * Agent messages whose embed has already been fetched after a broadcast.
+   * A ref rather than state: it must not trigger a render, and it must survive
+   * the re-render that merging the fetched message causes, or the fetch would
+   * repeat forever.
+   */
+  const embedFetchedRef = useRef<Set<string>>(new Set());
+
   const businesses = useMemo(() => rooms.map(toBusiness), [rooms]);
   const uiChannels = useMemo(() => channels.map(toChannel), [channels]);
   const uiMembers = useMemo<UiMember[]>(
@@ -128,7 +136,37 @@ export function ChatApp({
       channel.on('broadcast', { event: 'INSERT' }, (payload) => {
         const record = (payload as { payload?: { record?: unknown } }).payload?.record;
         const msg = fromBroadcastRecord(record);
-        if (msg) setMessages((cur) => mergeMessages(cur, [msg]));
+        if (!msg) return;
+        setMessages((cur) => mergeMessages(cur, [msg]));
+
+        // The broadcast is a `messages` row; the trigger cannot see another
+        // table, so an agent message that has a plan card arrives without it.
+        // The ordinary catch-up will not repair this either, since it fetches
+        // `seq > highest` and this message is already the highest. Re-fetch from
+        // just below its own seq to pick up the embed.
+        //
+        // Only for agent messages, and only once each: a user message never has
+        // a card, and re-fetching on every broadcast would turn live delivery
+        // back into polling.
+        if (
+          msg.authorKind === 'agent' &&
+          msg.seq !== null &&
+          !embedFetchedRef.current.has(msg.id)
+        ) {
+          embedFetchedRef.current.add(msg.id);
+          void (async () => {
+            try {
+              const res = await getMessages(roomId, msg.seq! - 1);
+              if (res.messages.length > 0) {
+                setMessages((cur) => mergeMessages(cur, res.messages.map(toMessage)));
+              }
+            } catch (err) {
+              // Not fatal: the message itself already rendered, and the card
+              // appears on the next load. Worth a log, not a banner.
+              console.error('[chat] could not fetch plan card', err);
+            }
+          })();
+        }
       });
 
       channel.on('presence', { event: 'sync' }, () => {

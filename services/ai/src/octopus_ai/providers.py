@@ -208,6 +208,40 @@ class Providers:
 
         return out
 
+    async def complete_json(self, *, system: str, user: str) -> str:
+        """One generation call constrained to return a JSON object.
+
+        `json_object` mode rather than a JSON schema: it is the broadly supported
+        form, and the caller validates against Pydantic anyway, so a schema here
+        would duplicate the contract without removing the need to check it. The
+        model can still return well-formed JSON of the wrong shape, which is why
+        the caller must treat validation failure as a real outcome rather than an
+        impossibility.
+        """
+        payload = await _post_with_retry(
+            self._client,
+            OPENAI_RESPONSES_URL,
+            headers={"Authorization": f"Bearer {self._s.openai_api_key}"},
+            json={
+                "model": self._s.generation_model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "response_format": {"type": "json_object"},
+                "max_completion_tokens": self._s.generation_max_tokens,
+            },
+            what="openai chat completion (json)",
+        )
+
+        choices = payload.get("choices") or []
+        if not choices:
+            raise ProviderError("openai returned no choices")
+        content = (choices[0].get("message") or {}).get("content")
+        if not content or not content.strip():
+            raise ProviderError("openai returned an empty completion")
+        return content
+
     async def complete(self, *, system: str, user: str) -> str:
         """One generation call. Returns the message text.
 
