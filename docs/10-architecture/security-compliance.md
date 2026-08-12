@@ -23,6 +23,11 @@
 - RLS is **membership-based** (`room_members`, project ownership/assignment), not bare `user_id`.
 - Fastify sets `request.jwt.claims` via `set_config()` (or uses the caller's token through supabase-js) so `auth.uid()`/`auth.jwt()` work inside policies.
 - **`service_role` containment:** server-only, used by `matcher`/payments/agent system-writes; never shipped to the client; never in browser-reachable env.
+
+  > **Accepted risk, with a trigger (Phase 1).** CI's retrieval-eval job holds `SUPABASE_SECRET_KEY` as a repository secret so it can read the corpus. GitHub exposes repository secrets to **any** workflow in the repo, so anyone able to push a workflow file can exfiltrate it. That is acceptable only while the repository has a single author, which is the case today and is a deliberate decision rather than an oversight.
+  >
+  > **Trigger to fix: the first additional collaborator.** The eval needs `select` on `documents` / `doc_chunks` and `execute` on `hybrid_search`, nothing more, so the fix is a dedicated least-privilege Postgres role rather than the key that bypasses RLS entirely. Do this before granting anyone else push access, not after.
+
 - **Dynamic group-chat RLS** is tested exhaustively with **pgTAP**: user sees their rooms; a node sees only the task thread it's engaged on, only while `expires_at` is in the future; the AI writes as a member; ops access is audited.
 
 ## Agent guardrails (layered defense)
