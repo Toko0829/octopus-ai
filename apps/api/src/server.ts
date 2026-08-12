@@ -5,6 +5,7 @@ import { healthRoutes } from './routes/health';
 import { messageRoutes } from './routes/messages';
 import { roomRoutes } from './routes/rooms';
 import { agentRunRoutes } from './routes/agent-runs';
+import { embedRoutes } from './routes/embeds';
 import { createAuthVerifier } from './plugins/auth';
 import { requireSupabaseConfig } from './lib/supabase';
 
@@ -40,6 +41,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(roomRoutes, { verify, supabase });
   await app.register(messageRoutes, { verify, supabase });
   await app.register(agentRunRoutes, { verify, supabase, aiServiceUrl: env.AI_SERVICE_URL });
+  await app.register(embedRoutes, { verify, supabase });
 
   return app;
 }

@@ -1154,3 +1154,18 @@
   font-size: 13px;
   color: var(--color-text-muted);
 }
+
+/* Request-changes note. The person's writing is kept on screen if the submit
+   fails: discarding it is the fastest way to lose trust in the button. */
+.plan-note {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.plan-note .auth-input {
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
+}

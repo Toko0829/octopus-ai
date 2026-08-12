@@ -18,9 +18,14 @@
  * and rendering invented figures on a surface whose whole purpose is to be
  * checkable would undo the grounding it advertises.
  *
- * Approve / request-changes are deliberately absent until the action route
- * exists. A button that does nothing is worse than a missing one.
+ * Approve / request-changes appear only for the owner, and only while the card
+ * is pending. The server re-checks both; hiding them is presentation, not the
+ * control, and a viewer who cannot act should not be shown a button that will
+ * refuse them.
  */
+'use client';
+
+import { useState } from 'react';
 import type { ActionEmbed, FunnelStage, PlanStep, StepOwner } from '@octopus/contracts';
 
 const ownerMeta: Record<StepOwner, { cls: string; label: string }> = {
@@ -40,6 +45,9 @@ const stageLabels: Record<FunnelStage, string> = {
 
 interface Props {
   embed: ActionEmbed;
+  /** True when the viewer owns the workspace, which is what `requiredRole` means today. */
+  canAct: boolean;
+  onAct: (embedId: string, action: 'approve' | 'request_changes', note?: string) => Promise<void>;
 }
 
 function Step({ step, sources }: { step: PlanStep; sources: string[] }) {
@@ -71,13 +79,35 @@ function Step({ step, sources }: { step: PlanStep; sources: string[] }) {
   );
 }
 
-export function PlanCard({ embed }: Props) {
+export function PlanCard({ embed, canAct, onAct }: Props) {
   const plan = embed.payload;
   const sources = plan.citations.map((c) => c.label);
   const covered = plan.stages.filter((s) => s.steps.length > 0).length;
 
+  const [busy, setBusy] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const pending = embed.state === 'pending';
+  const approved = embed.state === 'approved';
+
+  async function act(action: 'approve' | 'request_changes') {
+    setBusy(true);
+    setError(null);
+    try {
+      await onAct(embed.id, action, action === 'request_changes' ? note.trim() : undefined);
+    } catch (err) {
+      // Keep the note on screen: it is the person's writing, and discarding it
+      // on a failed submit is the fastest way to lose their trust in the button.
+      setError(err instanceof Error ? err.message : 'Could not record that. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <div className="plan">
+    <div className={`plan${approved ? ' approved' : ''}`}>
       <div className="plan-top">
         <div className="plan-eyebrow">
           <span className="pulse" aria-hidden />
@@ -124,6 +154,64 @@ export function PlanCard({ embed }: Props) {
           ))}
         </div>
       </div>
+
+      {/* State is text, never colour alone (design-system.md). */}
+      {!pending && (
+        <div className="plan-approved-banner">
+          {approved ? 'Plan approved.' : 'Changes requested.'}
+        </div>
+      )}
+
+      {pending && canAct && (
+        <div className="plan-foot">
+          {noteOpen ? (
+            <div className="plan-note">
+              <label className="auth-label" htmlFor={`note-${embed.id}`}>
+                What should change?
+              </label>
+              <textarea
+                id={`note-${embed.id}`}
+                className="auth-input"
+                rows={3}
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="The part that is wrong, and why."
+              />
+              <div className="plan-actions">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => setNoteOpen(false)}
+                  disabled={busy}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => act('request_changes')}
+                  disabled={busy}
+                >
+                  {busy ? 'Sending...' : 'Send'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="plan-actions">
+              <button className="btn btn-ghost" onClick={() => setNoteOpen(true)} disabled={busy}>
+                Request changes
+              </button>
+              <button className="btn btn-primary" onClick={() => act('approve')} disabled={busy}>
+                {busy ? 'Saving...' : 'Approve plan'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="auth-msg" data-tone="error" role="status">
+          Problem: {error}
+        </div>
+      )}
 
       <div className="plan-verified">
         {covered} of 6 stages covered · informational, not financial advice

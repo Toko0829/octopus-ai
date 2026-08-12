@@ -15,7 +15,12 @@ import { createServiceClient, createUserClient, type SupabaseConfig } from '../l
 
 const RoomParams = z.object({ roomId: z.string().uuid() });
 
-const RoomRow = z.object({ id: z.string(), name: z.string(), project_id: z.string().nullable() });
+const RoomRow = z.object({
+  id: z.string(),
+  name: z.string(),
+  project_id: z.string().nullable(),
+  owner_id: z.string().nullable(),
+});
 const ChannelRow = z.object({
   id: z.string(),
   room_id: z.string(),
@@ -52,13 +57,13 @@ export async function roomRoutes(app: FastifyInstance, opts: RoomRoutesOptions):
       try {
         const { data, error } = await db
           .from('rooms')
-          .select('id, name, project_id')
+          .select('id, name, project_id, owner_id')
           .order('created_at', { ascending: true });
         if (error) throw error;
         return {
           rooms: (data ?? []).map((row) => {
             const r = RoomRow.parse(row);
-            return { id: r.id, name: r.name, projectId: r.project_id };
+            return { id: r.id, name: r.name, projectId: r.project_id, ownerId: r.owner_id };
           }),
         };
       } catch (err) {
@@ -95,8 +100,8 @@ export async function roomRoutes(app: FastifyInstance, opts: RoomRoutesOptions):
       try {
         const { data: room, error } = await admin
           .from('rooms')
-          .insert({ name: parsed.data.name })
-          .select('id, name, project_id')
+          .insert({ name: parsed.data.name, owner_id: userId })
+          .select('id, name, project_id, owner_id')
           .single();
         if (error) throw error;
 
@@ -112,9 +117,12 @@ export async function roomRoutes(app: FastifyInstance, opts: RoomRoutesOptions):
         if (channelErr) throw channelErr;
 
         request.log.info({ roomId: created.id, userId }, 'room created');
-        return reply
-          .code(201)
-          .send({ id: created.id, name: created.name, projectId: created.project_id });
+        return reply.code(201).send({
+          id: created.id,
+          name: created.name,
+          projectId: created.project_id,
+          ownerId: created.owner_id,
+        });
       } catch (err) {
         request.log.error({ err, userId }, 'createRoom failed');
         return fail(reply, 500, 'internal_error', 'Could not create the room.');

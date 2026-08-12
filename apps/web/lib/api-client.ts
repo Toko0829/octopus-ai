@@ -1,6 +1,12 @@
 'use client';
 
-import type { Channel, ListMessagesResponse, Message, RoomMember } from '@octopus/contracts';
+import type {
+  Channel,
+  EmbedActionResponse,
+  ListMessagesResponse,
+  Message,
+  RoomMember,
+} from '@octopus/contracts';
 
 /**
  * Browser-side calls, always through the BFF at /api/bff/*.
@@ -66,6 +72,24 @@ export function postMessage(
   input: { body: string; channelId?: string; idempotencyKey: string },
 ) {
   return bff<Message>(`/rooms/${roomId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * Record a verdict on an interactive card.
+ *
+ * The server re-checks `requiredRole`, the pending state, and membership. The UI
+ * disables what the caller cannot do, but that is presentation: this call can be
+ * made by anyone and is expected to be refused when it should be.
+ */
+export function actOnEmbed(
+  roomId: string,
+  embedId: string,
+  input: { action: 'approve' | 'request_changes'; note?: string },
+) {
+  return bff<EmbedActionResponse>(`/rooms/${roomId}/embeds/${embedId}/actions`, {
     method: 'POST',
     body: JSON.stringify(input),
   });

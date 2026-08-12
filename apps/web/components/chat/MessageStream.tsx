@@ -10,6 +10,13 @@ interface Props {
   channelName: string | null;
   messages: UiMessage[];
   membersById: Record<string, UiMember>;
+  /** Whether the viewer owns this workspace, which is what an embed's requiredRole means today. */
+  canAct: boolean;
+  onEmbedAction: (
+    embedId: string,
+    action: 'approve' | 'request_changes',
+    note?: string,
+  ) => Promise<void>;
 }
 
 /** Author identity for a message whose sender is not in the member list. */
@@ -40,7 +47,13 @@ function authorOf(m: UiMessage, membersById: Record<string, UiMember>): UiMember
 /** Treat the reader as "following" if they are within this many px of the end. */
 const PINNED_THRESHOLD_PX = 80;
 
-export function MessageStream({ channelName, messages, membersById }: Props) {
+export function MessageStream({
+  channelName,
+  messages,
+  membersById,
+  canAct,
+  onEmbedAction,
+}: Props) {
   const streamRef = useRef<HTMLDivElement>(null);
   // Start pinned: a freshly opened room should show the newest message.
   const pinnedRef = useRef(true);
@@ -111,7 +124,9 @@ export function MessageStream({ channelName, messages, membersById }: Props) {
               {/* The card is an enhancement of a readable message, never a
                   replacement for one: the body above still carries the plan in
                   plain text wherever this does not render. */}
-              {m.embed?.component === 'plan' && <PlanCard embed={m.embed} />}
+              {m.embed?.component === 'plan' && (
+                <PlanCard embed={m.embed} canAct={canAct} onAct={onEmbedAction} />
+              )}
             </div>
           </div>
         );

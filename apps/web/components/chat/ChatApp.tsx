@@ -18,6 +18,7 @@ import {
   getMessages,
   postMessage,
   startAgentRun,
+  actOnEmbed,
 } from '../../lib/api-client';
 import { createClient } from '../../lib/supabase/client';
 import { GuildRail } from './GuildRail';
@@ -79,6 +80,32 @@ export function ChatApp({
   const membersById = useMemo(
     () => Object.fromEntries(uiMembers.map((m) => [m.id, m] as const)),
     [uiMembers],
+  );
+
+  /**
+   * Ownership decides whether the plan card offers its actions. Presentation
+   * only: the server re-checks on every action, so a viewer who forged this
+   * would simply be refused.
+   */
+  const canAct = useMemo(
+    () => rooms.find((r) => r.id === roomId)?.ownerId === viewerId,
+    [rooms, roomId, viewerId],
+  );
+
+  /**
+   * Record a verdict, then patch the card in place. Re-fetching the whole
+   * stream would scroll the reader away from what they just acted on.
+   */
+  const handleEmbedAction = useCallback(
+    async (embedId: string, action: 'approve' | 'request_changes', note?: string) => {
+      const res = await actOnEmbed(roomId, embedId, { action, note });
+      setMessages((cur) =>
+        cur.map((m) =>
+          m.embed?.id === embedId ? { ...m, embed: { ...m.embed, state: res.state } } : m,
+        ),
+      );
+    },
+    [roomId],
   );
 
   const flash = useCallback((text: string) => {
@@ -302,6 +329,8 @@ export function ChatApp({
           channelName={activeChannel?.name ?? null}
           messages={messages}
           membersById={membersById}
+          canAct={canAct}
+          onEmbedAction={handleEmbedAction}
         />
         <Composer channelName={activeChannel?.name ?? null} onSend={handleSend} />
       </div>

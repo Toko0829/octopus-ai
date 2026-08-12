@@ -109,6 +109,17 @@ Three properties this path depends on:
 
 `GET /api/rooms/:roomId/messages` returns each message with its embed joined, so the stream and its cards arrive together and cannot render out of step. Realtime is the exception: the trigger broadcasts the `messages` row and cannot see `action_embeds`, so a card materialises on the next fetch.
 
+## Acting on an embed
+
+`POST /api/rooms/:roomId/embeds/:embedId/actions` records a verdict on a card. Four checks, in order, none of which the client can answer for itself:
+
+1. **Membership**, evaluated by RLS as the caller. A non-member gets `404`, not `403`: the room is invisible to them and the API does not confirm it exists.
+2. **`required_role`**, re-checked server-side. An unknown role **denies** rather than defaulting to permitted, so adding a role later cannot accidentally open an action before its check is written.
+3. **State**, so an embed is single-use. Approving twice is two approvals, which matters little for a plan and a great deal for Pay and Sign, so the guard is here now rather than added when money arrives.
+4. **A conditional update** (`eq('state','pending')` in the same statement). Reading the state and then writing it is a race; doing both at once is not.
+
+The verdict is then written to `feedback_events` (flywheel v0) and posted into the room as a system message, because the chat is the audit trail and a state change nobody can see is not one anyone can dispute. If the flywheel write fails the decision still stands and the failure is logged loudly: losing a label must not un-approve a plan.
+
 ## Timeouts across the Node/Python seam
 
 `requestPlan` in `apps/api/src/lib/ai.ts` bounds a full grounded turn: embed, hybrid search, cross-encoder rerank, then generation. It is **90s**, raised from 30s when [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md) moved embedding in-process, because a CPU embed is work rather than an API call and a normal turn could exceed the old budget.
