@@ -182,6 +182,97 @@ class EvalReport:
         return "\n".join(lines)
 
 
+def split_cases(cases: list[GoldenCase], shard: int, shards: int) -> list[GoldenCase]:
+    """Select shard `shard` of `shards`, 1-indexed.
+
+    Round-robin rather than contiguous slicing, so every shard gets a mix of
+    positives and negatives. A contiguous split would hand one shard only
+    negatives, and a shard that measures no positives cannot fail for the reason
+    the gate exists.
+
+    This is a **partition**: every case appears in exactly one shard, and a test
+    asserts that for every shard count the golden set is likely to use. If it
+    ever stopped being one, the merge step's completeness check would fail loudly
+    rather than the gate quietly measuring fewer cases.
+    """
+    if shards < 1 or not (1 <= shard <= shards):
+        raise ValueError(f"shard {shard}/{shards} is out of range")
+    return [c for i, c in enumerate(cases) if i % shards == shard - 1]
+
+
+def result_to_dict(r: CaseResult) -> dict:
+    return {
+        "id": r.case.id,
+        "query": r.case.query,
+        "expect_docs": list(r.case.expect_docs),
+        "notes": r.case.notes,
+        "retrieved_titles": list(r.retrieved_titles),
+        "top_score": r.top_score,
+        "candidates": r.candidates,
+        "dropped": r.dropped,
+    }
+
+
+def result_from_dict(d: dict) -> CaseResult:
+    return CaseResult(
+        case=GoldenCase(
+            id=d["id"], query=d["query"], expect_docs=list(d["expect_docs"]), notes=d.get("notes")
+        ),
+        retrieved_titles=list(d["retrieved_titles"]),
+        top_score=d["top_score"],
+        candidates=d["candidates"],
+        dropped=d["dropped"],
+    )
+
+
+class IncompleteShardsError(RuntimeError):
+    """Merged shard results do not cover the golden set exactly."""
+
+
+def merge_shards(paths: list[Path], cases: list[GoldenCase] | None = None) -> EvalReport:
+    """Rebuild one report from shard files, refusing anything but full coverage.
+
+    **This check is the whole reason sharding is safe.** Thresholds are applied
+    once, here, over the complete set: computing recall inside a shard would be a
+    different statistic on a handful of cases, and 0.80 over five is not 0.80
+    over fifteen.
+
+    The dangerous failure is not a shard that errors, it is a shard that never
+    reports. Without this check a crashed or skipped shard would simply shrink
+    the denominator and the gate would pass, green, having measured less than it
+    claimed. So a missing case, a duplicate, or an unexpected id all raise.
+    """
+    expected = {c.id for c in (cases if cases is not None else load_golden())}
+
+    results: list[CaseResult] = []
+    seen: set[str] = set()
+    for p in paths:
+        payload = json.loads(Path(p).read_text(encoding="utf-8"))
+        for item in payload["results"]:
+            r = result_from_dict(item)
+            if r.case.id in seen:
+                raise IncompleteShardsError(
+                    f"case {r.case.id!r} appears in more than one shard; "
+                    "the split is not a partition"
+                )
+            seen.add(r.case.id)
+            results.append(r)
+
+    missing = expected - seen
+    unexpected = seen - expected
+    if missing or unexpected:
+        raise IncompleteShardsError(
+            f"shard results do not cover the golden set. "
+            f"missing={sorted(missing)} unexpected={sorted(unexpected)}. "
+            "Refusing to report a gate result over a partial set."
+        )
+
+    # Restore golden-set order so the rendered report is stable across runs.
+    order = {c.id: i for i, c in enumerate(cases if cases is not None else load_golden())}
+    results.sort(key=lambda r: order[r.case.id])
+    return EvalReport(results=results)
+
+
 def load_golden(path: Path | None = None) -> list[GoldenCase]:
     raw = json.loads((path or GOLDEN_PATH).read_text(encoding="utf-8"))
     return [
@@ -248,7 +339,7 @@ async def run_eval(
     return report
 
 
-async def _run() -> int:
+async def _run(shard: int = 1, shards: int = 1, out: Path | None = None) -> int:
     # Imported here so the module stays importable (and unit-testable) without a
     # database or provider credentials present.
     from .config import get_settings
@@ -287,8 +378,28 @@ async def _run() -> int:
         print(f"decomposition:      {'on' if settings.query_decomposition else 'off'}")
         rpm = settings.rerank_rpm
         print(f"rerank limit:       {f'{rpm}/min' if rpm else 'unlimited'}")
-        print(f"pacing:             {delay_s}s between cases\n")
-        report = await run_eval(retriever, delay_s=delay_s, decomposer=decomposer)
+        print(f"pacing:             {delay_s}s between cases")
+
+        all_cases = load_golden()
+        cases = split_cases(all_cases, shard, shards)
+        if shards > 1:
+            print(f"shard:              {shard}/{shards} ({len(cases)} of {len(all_cases)} cases)")
+        print()
+
+        report = await run_eval(retriever, cases=cases, delay_s=delay_s, decomposer=decomposer)
+
+        if out is not None:
+            # A shard reports raw per-case results and NEVER a verdict. Recall
+            # over a handful of cases is a different statistic from recall over
+            # the set, so the thresholds belong to the merge step alone.
+            out.write_text(
+                json.dumps({"results": [result_to_dict(r) for r in report.results]}, indent=2),
+                encoding="utf-8",
+            )
+            print(f"wrote {len(report.results)} case results to {out}")
+            print("no verdict from a shard; the merge step applies the thresholds")
+            return 0
+
         print(report.render())
         return 0 if report.passed else 1
     finally:
@@ -297,9 +408,45 @@ async def _run() -> int:
 
 
 def main() -> None:
+    import argparse
     import asyncio
 
-    raise SystemExit(asyncio.run(_run()))
+    parser = argparse.ArgumentParser(prog="octopus_ai.evaluation")
+    parser.add_argument(
+        "--shard",
+        default="1/1",
+        help="run only part of the golden set, as i/n. Requires --out, because a "
+        "shard reports results rather than a verdict.",
+    )
+    parser.add_argument("--out", type=Path, help="write this shard's per-case results here")
+    parser.add_argument(
+        "--merge",
+        nargs="+",
+        type=Path,
+        metavar="FILE",
+        help="combine shard result files, apply the thresholds once over the whole "
+        "set, and exit non-zero on failure",
+    )
+    args = parser.parse_args()
+
+    if args.merge:
+        report = merge_shards(args.merge)
+        print(report.render())
+        raise SystemExit(0 if report.passed else 1)
+
+    try:
+        shard_s, shards_s = args.shard.split("/", 1)
+        shard, shards = int(shard_s), int(shards_s)
+    except ValueError:
+        parser.error(f"--shard must look like i/n, got {args.shard!r}")
+
+    # Refusing this combination is deliberate. A sharded run that printed a
+    # verdict would be reporting a gate result over part of the set, which is
+    # exactly the silent weakening sharding has to avoid.
+    if shards > 1 and args.out is None:
+        parser.error("--shard with n > 1 requires --out; a shard must not report a verdict")
+
+    raise SystemExit(asyncio.run(_run(shard=shard, shards=shards, out=args.out)))
 
 
 if __name__ == "__main__":
