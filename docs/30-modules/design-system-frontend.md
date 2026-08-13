@@ -87,6 +87,14 @@ Framer Motion with the motion tokens; **spring** for tactile surfaces (chat/onbo
 
 Role via **badge + icon**, never color alone; WCAG AA contrast in both skins; keyboard-first + ⌘K; visible focus rings.
 
+> **AA applies to de-emphasised text too, and the first ramp did not honour that.** Measured in-browser against the shell backgrounds, three text tokens failed: light `--text-muted` at **4.42** and `--text-faint` at **2.64**, and dark `--text-faint` at **4.21**. Two of the three failures were on the **light** skin, which the design system calls the primary aesthetic.
+>
+> Fixed by adding `--ink-450` and `--ink-550`. A single ramp step could not serve as "faint" in both skins, because `--ink-500` sits just under the line from both directions (4.42 on light, 4.21 on dark). Every tier now clears AA on its own skin: light **10.54 / 7.02 / 4.82**, dark **11.11 / 7.06 / 6.08**. The practical consequence is that **quiet text has less room than it appears to**: a three-tier hierarchy has to compress into the range above 4.5 rather than fading toward the background.
+>
+> **`--on-accent` was white, and that failed on every primary button** — 3.74 on light, **2.07** on dark, including the sign-in CTA. It is now `--ink-950`, measuring 5.16 and 9.30, which also keeps the button identical across skins where flipping to white in one of them would not. The token is the single control point: `.btn-primary`, `.send` and `.auth-submit` all read it.
+>
+> Verified by computing contrast for every rendered text node on `/` and `/sign-in` in both skins: **zero failures**. `/app` was **not** covered, because it requires an authenticated session; the token fixes propagate to it but element-level contrast there is unverified.
+
 ## Icon system
 
 One customized icon set (consistent stroke); no color-only meaning.
@@ -98,6 +106,12 @@ RSC for reads; streaming; **ts-rest** typed client from `packages/contracts`; op
 ## Anti-pattern lint / guardrails
 
 Automated checks (lint rules / CI) reject: violet / 2-stop purple gradient, sparkle/"magic"/AI badges, default un-customized shadcn + Inter + zinc, glassmorphism-everywhere, conic/neon glows, pure-`#000` dark, and any corner chatbot bubble. See [ADR-0005](../40-adr/0005-house-style-not-purple-gradient.md).
+
+> **These checks are not automated yet, and the first manual pass found two things.** A **`✦` sparkle glyph** decorated the landing page's eyebrow label, which the avoid-list bans twice over (sparkle-as-decoration and emoji-as-UI). And `--role-pro: #7a5cff` was the **only violet value in the repository** — declared in all three skin blocks, referenced **zero** times, with a comment claiming it was "used only as a role marker" while `.badge-pro` actually reads `--human`. Both removed; the source now contains no violet or indigo at all.
+>
+> Everything else on the list passed on inspection: fonts are Fraunces / Hanken Grotesk / JetBrains Mono rather than Inter; dark is `#0d0e11` rather than `#000`; the one `backdrop-filter` is a 2px blur on the ⌘K scrim rather than glassmorphism as a crutch; glow appears only on the agent working pulse; the two `position: fixed` elements are that scrim and a centred toast, not a corner chatbot bubble; gradients are two-stop avatar fills within one hue, and no `background-clip: text` exists.
+>
+> **Until a lint rule exists, this is a manual pass that will drift.** The cheap version is a CI grep for the banned hex families and for decorative glyphs in `.tsx`, plus the contrast sweep above run headlessly against `/` and `/sign-in`.
 
 ## Copy conventions
 

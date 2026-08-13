@@ -50,7 +50,7 @@
 ## RAG stack
 
 - **pgvector** in-Postgres (`halfvec(1024)`, HNSW cosine, iterative scans) — [ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md).
-- **OpenAI `text-embedding-3-large`** embeddings at `dimensions: 1024` (Matryoshka-trained), **Cohere Rerank v3.5**, Postgres FTS (`tsvector`/GIN) for sparse, RRF fusion. See [ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md).
+- **BAAI `bge-m3`** embeddings at 1024 dims (or OpenAI `text-embedding-3-large` at the same width), in-process **`bge-reranker-v2-m3`** rerank, Postgres FTS (`tsvector`/GIN) for sparse, RRF fusion. Both model steps run locally, so retrieval depends on no paid provider. See [ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md) as amended by [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md) and [ADR-0009](../40-adr/0009-local-reranker.md).
 - **Optional local embedder: BAAI `bge-m3`** in-process via FlagEmbedding, selected with `EMBED_PROVIDER=local` ([ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)). Natively 1024-dim, so `halfvec(1024)` and the HNSW index are unchanged. torch ships as the optional `local-embed` extra, never as a base dependency. The two vector spaces are **not** interchangeable: switching re-embeds the whole corpus, which the ingestion content hash enforces.
 - **LlamaIndex** for ingestion + query transformation; **LlamaParse / Unstructured / Docling** for layout-aware parsing/OCR.
 - Full spec: [rag.md](rag.md).

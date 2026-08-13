@@ -287,6 +287,19 @@ class Providers:
                     {"role": "user", "content": user},
                 ],
                 "response_format": {"type": "json_object"},
+                # Sent explicitly, because omitting it means the API default of
+                # 1.0. Every caller of this method is doing classification or
+                # routing (query decomposition today), where sampling variety is
+                # not a feature: the same goal should decompose the same way
+                # twice. It was measurably not doing so. Across five runs of one
+                # unchanged commit the golden set returned coverage 0.97-1.00 and
+                # MRR 0.83-0.95, entirely because the sub-queries differed each
+                # time, which makes a real regression hard to distinguish from
+                # resampling.
+                #
+                # Not a determinism guarantee: providers stay free to vary at
+                # temperature 0. It removes the deliberate variance, not all of it.
+                "temperature": 0,
                 "max_completion_tokens": self._s.generation_max_tokens,
             },
             what="openai chat completion (json)",

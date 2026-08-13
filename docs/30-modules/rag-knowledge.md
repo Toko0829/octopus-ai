@@ -43,11 +43,11 @@ Vectors live in the same Postgres as everything else — relational, RLS-permiss
 
 ## Retrieval
 
-**Query decomposition (live)** → dense (OpenAI `text-embedding-3-large` or local BAAI `bge-m3`, 1024 dims either way — [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)) + sparse (`tsvector`/BM25) → **RRF (k=60)** → **Cohere Rerank v3.5** over top-40 → top 6–8, with a relevance threshold that **drops** weak chunks.
+**Query decomposition (live)** → dense (local BAAI `bge-m3`, or OpenAI `text-embedding-3-large`, 1024 dims either way — [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)) + sparse (`tsvector`/BM25) → **RRF (k=60)** → in-process **`bge-reranker-v2-m3`** cross-encoder ([ADR-0009](../40-adr/0009-local-reranker.md)) over **top-25** → top 6–8, with a relevance threshold that **drops** weak chunks. Candidate depth is measured against corpus size rather than fixed; see ADR-0009.
 
 > **Decomposition splits a goal into per-stage sub-queries, each reranked on its own.** A broad goal ("get me my first 100 customers") otherwise retrieves whichever funnel stage matches best, and the planner correctly leaves the rest empty rather than inventing steps. Measured on the golden set: coverage of a broad goal went **0.33 → 1.00**.
 >
-> The cheaper design was tried first and **measured as worthless**: searching every sub-query but running one rerank against the original goal changed nothing, because candidate breadth was never the bottleneck (40 candidates against a ~43-chunk corpus). The bottleneck is the rerank, where a vague goal scores uniformly low (0.066, against 0.474 for a focused query). So it costs one rerank per sub-query, which makes a production Cohere key a prerequisite rather than a nicety.
+> The cheaper design was tried first and **measured as worthless**: searching every sub-query but running one rerank against the original goal changed nothing, because candidate breadth was never the bottleneck (40 candidates against a ~43-chunk corpus). The bottleneck is the rerank, where a vague goal scores uniformly low (0.066, against 0.474 for a focused query). So it costs one rerank per sub-query. That was a hard constraint while rerank was a metered API call; since [ADR-0009](../40-adr/0009-local-reranker.md) moved it in-process the cost is CPU rather than quota, and the count is bounded by judging breadth from the goal's wording (87 calls per eval run became 49).
 >
 > **It is additive to grounding, never a source of it.** The goal is searched first and the sub-queries are abandoned if it retrieves nothing. Without that gate the golden set caught a real leak: "how to get a car licence" decomposed into plausible marketing sub-queries, each legitimately retrieved marketing content and cleared the threshold, and the agent ended up holding cited sources for a question the corpus cannot answer. That is the exact failure the groundedness gate exists to prevent, and it is why the negative half of the golden set exists.
 >
@@ -84,6 +84,20 @@ The asymmetry is deliberate. A miss makes the agent refuse something it could ha
 The golden set is a **file, not `eval_golden_set` rows**, because document UUIDs are generated per ingest and differ between environments, so a set keyed on them cannot travel between a laptop, CI and production. It is keyed on document title, and its queries are phrased as a founder would ask rather than in the corpus's wording, since a set that echoes the corpus measures string matching and flatters every retriever. The table remains for online/production scoring, which does have stable ids.
 
 Baseline on the ten-document corpus with bge-m3: **positive recall 1.00, MRR 1.00, zero leaks.** True-positive rerank scores land between 0.127 and 0.637 while out-of-scope queries clear the 0.05 threshold not at all, so the threshold has real margin and did **not** need recalibrating after the corpus tripled.
+
+> **Known defect: the score threshold is not a scope gate, and cannot become one.** Measured, not suspected. A rerank score answers "which chunk ranks best for this query", which always has an answer when the query is marketing and the whole corpus is marketing. It does not answer "does the corpus cover this". So an **in-vocabulary but uncovered** question retrieves loosely-related chunks and clears the threshold, and the agent returns a confident cited plan for something no source supports, which is exactly what rule 10 forbids.
+>
+> | Query                                    |  local bge |    Cohere |
+> | ---------------------------------------- | ---------: | --------: |
+> | NEG "webinar funnel that converts"       |     0.0067 | **0.318** |
+> | NEG "conversion tracking in GA4"         | **0.0211** |     0.281 |
+> | NEG "rank higher in the app store"       |     0.0053 |     0.082 |
+> | POS "launch my app, first 100 customers" |     0.0018 |     0.066 |
+> | _threshold_                              |   _0.0013_ |    _0.05_ |
+>
+> **The bands overlap on both providers**, so no threshold separates them: the strongest uncovered question outscores the weakest legitimate goal by 12x locally and 4.8x on Cohere. Raising the threshold kills the README's own north-star example first. This is **not** a regression from [ADR-0009](../40-adr/0009-local-reranker.md); Cohere behaves the same way and is worse in relative terms. It went unnoticed because all four golden negatives are business-formation topics, far from the corpus in vocabulary as well as subject (the liquor-licence case scores exactly 0.000000 on Cohere).
+>
+> The fix is a real groundedness check between retrieval and generation, asking whether the retrieved sources actually answer the question, rather than how well they rank. One cheap-tier call per goal, the tier decomposition already uses. **Not built.** Deferred deliberately while Phase 1 is read-only with no users and no side effects; it must land before the agent can act on a plan.
 
 **Not built (generation).** Ragas/DeepEval faithfulness and answer relevancy (≥ 0.75 and ≥ 0.8, with context precision ≥ 0.7 and context recall ≥ 0.8) need an LLM judge, which costs money per run and returns a different number each time. Those belong in a separate credentialed pass, not in the deterministic gate above.
 

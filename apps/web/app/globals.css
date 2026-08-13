@@ -15,7 +15,13 @@
   --ink-200: #dcdbd1;
   --ink-300: #c6c5b9;
   --ink-400: #9e9d90;
+  /* 450 and 550 exist because WCAG AA applies to de-emphasised text too, and the
+     two skins need different steps to clear it. Measured on the shell
+     backgrounds: ink-500 is 4.21 on dark and 4.42 on light, so it fails 4.5 in
+     BOTH directions and no single step could serve as "faint". */
+  --ink-450: #929185; /* faint text on dark: 6.08 */
   --ink-500: #77766a;
+  --ink-550: #717065; /* faint text on light: 4.82 */
   --ink-600: #575751;
   --ink-700: #3d3d38;
   --ink-800: #262622;
@@ -48,21 +54,29 @@
   --border: var(--ink-200);
   --border-strong: var(--ink-300);
   --text: var(--ink-900);
-  --text-secondary: var(--ink-600);
-  --text-muted: var(--ink-500);
-  --text-faint: var(--ink-400);
+  /* Every level clears WCAG AA (4.5) on --bg, including "faint". Measured:
+     10.54 / 7.02 / 4.82. The previous ramp put muted at 4.42 and faint at 2.64,
+     so two of the three tiers failed on the skin the design system calls
+     primary. Quiet text has less room than it looks like it should. */
+  --text-secondary: var(--ink-700);
+  --text-muted: var(--ink-600);
+  --text-faint: var(--ink-550);
   --accent: var(--teal-600);
   --accent-quiet: color-mix(in oklab, var(--teal-500) 12%, transparent);
   --accent-text: var(--teal-700);
   --human: var(--coral-600);
   --human-quiet: color-mix(in oklab, var(--coral-500) 12%, transparent);
-  --on-accent: #ffffff;
+  /* Ink, not white. White on the teal accent measures 3.74 in the light skin and
+     2.07 in dark, both under AA, and this token colours every primary button
+     including the sign-in CTA. Ink measures 5.16 and 9.30. It also keeps the
+     button identical across skins, where switching to white in one of them
+     would not. */
+  --on-accent: var(--ink-950);
 
   /* ---- Role tokens (always paired with a badge/icon, never color alone) ---- */
   --role-you: var(--ink-700);
   --role-agent: var(--teal-600);
   --role-node: var(--coral-600);
-  --role-pro: #7a5cff; /* verified pro — a restrained indigo, used only as a role marker */
   --role-admin: var(--ink-500);
 
   /* ---- Typography (families injected by next/font in layout.tsx) ---- */
@@ -128,9 +142,10 @@
   --border: #24272e;
   --border-strong: #313640;
   --text: var(--ink-50);
+  /* Measured on --bg: 11.11 / 7.06 / 6.08. Faint was ink-500 at 4.21, below AA. */
   --text-secondary: var(--ink-300);
   --text-muted: var(--ink-400);
-  --text-faint: var(--ink-500);
+  --text-faint: var(--ink-450);
   --accent: var(--teal-400);
   --accent-quiet: color-mix(in oklab, var(--teal-400) 16%, transparent);
   --accent-text: var(--teal-300);
@@ -139,7 +154,6 @@
   --role-you: var(--ink-300);
   --role-agent: var(--teal-400);
   --role-node: var(--coral-400);
-  --role-pro: #a48bff;
   --role-admin: var(--ink-400);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), 0 12px 32px rgba(0, 0, 0, 0.4);
@@ -158,7 +172,7 @@
     --text: var(--ink-50);
     --text-secondary: var(--ink-300);
     --text-muted: var(--ink-400);
-    --text-faint: var(--ink-500);
+    --text-faint: var(--ink-450);
     --accent: var(--teal-400);
     --accent-quiet: color-mix(in oklab, var(--teal-400) 16%, transparent);
     --accent-text: var(--teal-300);
@@ -167,7 +181,6 @@
     --role-you: var(--ink-300);
     --role-agent: var(--teal-400);
     --role-node: var(--coral-400);
-    --role-pro: #a48bff;
     --role-admin: var(--ink-400);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), 0 12px 32px rgba(0, 0, 0, 0.4);
