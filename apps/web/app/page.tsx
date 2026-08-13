@@ -27,7 +27,7 @@ export default function Home() {
           marginBottom: 28,
         }}
       >
-        ✦ Octopus
+        Octopus
       </div>
 
       <h1

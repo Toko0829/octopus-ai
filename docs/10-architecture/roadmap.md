@@ -28,7 +28,7 @@
 **Goal:** a creator gets a real, grounded, full-funnel growth plan in chat — no execution yet.
 
 - ✅ Discord-style chat shell (5 regions, roles/badges, presence, inline messages) on Supabase Realtime.
-- 🟡 `rag-knowledge` for **marketing**: pgvector schema, hybrid retrieval + RRF + rerank **done**; ten-document corpus covering all six funnel stages; **retrieval eval gate live** (golden set, positives + negatives, wired into CI). Ingestion is still from a hand-authored corpus rather than crawled sources, and the **generation** eval (Ragas/DeepEval faithfulness) is deliberately absent.
+- 🟡 `rag-knowledge` for **marketing**: pgvector schema, hybrid retrieval + RRF + rerank **done**, with embedding and rerank both running **in-process** so retrieval depends on no paid provider ([ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md), [ADR-0009](../40-adr/0009-local-reranker.md)); ten-document corpus covering all six funnel stages; **retrieval eval gate live** (golden set, positives + negatives, wired into CI, running the production reranker). Ingestion is still from a hand-authored corpus rather than crawled sources, and the **generation** eval (Ragas/DeepEval faithfulness) is deliberately absent.
 - ✅ Orchestrator **planning pass**: a creator goal returns a **structured full-funnel plan** on a plan card, cited per step, and refuses when nothing clears the relevance threshold.
 - ✅ AI participates **inline**; **no side effects** (no publishing, no spend).
 - ✅ `design-system-frontend` tokens + core components (editorial house style, no slop).
@@ -41,9 +41,15 @@
 > Outstanding, and deliberately not claimed as done:
 >
 > - **The generation eval** (faithfulness, answer relevancy) needs an LLM judge, which bills per run and is non-deterministic, so it belongs in a credentialed pass rather than a deterministic gate. Retrieval is gated; generation is not.
-> - **A formal anti-slop design review** has not been run against the checklist in [design-system.md](../20-design/design-system.md).
+> - ~~A formal anti-slop design review~~ — **run.** Two anti-pattern violations found and fixed (a `✦` sparkle glyph decorating the landing eyebrow, and `--role-pro`, the only violet in the repository, declared three times and used nowhere), plus four accessibility failures the checklist implies but nobody had measured: three text tokens under AA, two of them on the light skin, and `--on-accent` white failing on every primary button at 2.07 in dark. Contrast now verified for every rendered text node on `/` and `/sign-in` in both skins, zero failures. **Scope limit stated rather than glossed:** `/app` needs an authenticated session and was not covered, so the chat shell, plan card and ⌘K palette are unreviewed at element level. See [design-system-frontend.md](../30-modules/design-system-frontend.md).
 >
-> Also worth carrying into Phase 2 rather than pretending it is finished: the corpus is internally authored, so nothing is externally cited yet, and **no pgTAP RLS tests exist** despite rule 18 naming dynamic group-chat membership the hardest security surface. That debt gets sharply more expensive the moment human nodes join rooms.
+> Also worth carrying into Phase 2 rather than pretending it is finished:
+>
+> - The corpus is internally authored, so **nothing is externally cited yet**.
+> - The golden set is **15 cases**, which is small enough that its derived metrics (coverage, MRR) are indicative rather than precise, and whose four negatives are all business-formation topics far from the corpus in vocabulary. The retrieval threshold's safety margin is defended by those negatives, so growing them is a security task rather than a coverage one ([rag-knowledge.md](../30-modules/rag-knowledge.md), [ADR-0009](../40-adr/0009-local-reranker.md)).
+> - Plan latency now scales with the cores the AI service is given, since reranking runs in-process. Sizing that instance is a Phase 2 deployment decision, not an open question about whether it works.
+>
+> **Closed since this was written:** pgTAP RLS coverage now exists (`supabase/tests/rls_membership.sql`, 22 assertions, including that an expired node sees nothing at all), so rule 18's zero-coverage debt is paid for room-scoped membership. Thread-scoped membership and ops/admin paths remain uncovered, and threads do not exist yet.
 
 ## Phase 2 — Execution + Channels + Creative + Marketplace + Escrow
 

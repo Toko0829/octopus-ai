@@ -65,7 +65,11 @@ Heavy ingestion runs as background jobs (pg-boss / Trigger.dev), **never in the 
 2. **Dense** — `halfvec` HNSW cosine over pre-filtered chunks (OpenAI embeddings, 1024 dims).
 3. **Sparse** — Postgres FTS (`websearch_to_tsquery`, GIN), per-language configs. Catches exact tokens (statute numbers, license codes, form IDs) that dense blurs. Upgrade path: ParadeDB `pg_search` for true BM25.
 4. **Fusion** — **RRF (k=60)** merging dense + sparse in one SQL query (two CTEs + fused rank). Rank-based → no score normalization.
-5. **Rerank** — **Cohere Rerank v3.5** cross-encoder over the fused **top-40** → return **top 6–8**. Apply a relevance-score **threshold to DROP** weak chunks rather than pad context. Optional MMR dedup before rerank when sources are redundant.
+5. **Rerank** — in-process **`bge-reranker-v2-m3`** cross-encoder over the fused **top-25** → return **top 6–8** ([ADR-0009](../40-adr/0009-local-reranker.md), which amends ADR-0007's rerank pin; Cohere `rerank-v3.5` is retained as a fallback). Apply a relevance-score **threshold to DROP** weak chunks rather than pad context. Optional MMR dedup before rerank when sources are redundant.
+
+   Two properties of this step are measured rather than assumed, and both are easy to get wrong. **Candidate depth is tied to corpus size**, not fixed at 40: against the current 43-chunk corpus RRF already places the expected document at rank 1-3, so depth beyond ~25 bought nothing and cost linear cross-encoder time. Raise it as the corpus grows. And **the threshold is per provider**, because the two score distributions are not comparable: 0.05 for Cohere, 0.0013 for bge. Applying one to the other measured recall 0.45.
+
+   **The threshold is not a scope gate**, and cannot be made into one. It ranks chunks within the corpus; it does not decide whether the corpus covers the question. An in-vocabulary but uncovered question ("how do I run a webinar funnel") therefore clears it on **both** providers. See the measured bands in [rag-knowledge.md](../30-modules/rag-knowledge.md); a real groundedness check is still outstanding.
 
 ## Two corpora: reference knowledge + real outcomes
 
