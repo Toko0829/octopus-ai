@@ -88,6 +88,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       retrieval: ${{ steps.check.outputs.retrieval }}
+      armed: ${{ steps.check.outputs.armed }}
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,6 +101,18 @@ jobs:
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
+          # Credentials are checked HERE rather than inside the eval, because the
+          # eval is now several jobs. An unarmed shard that exits 0 without
+          # writing results would make the merge step fail on missing cases,
+          # turning "not configured" into a red gate.
+          if [ -z "$SUPABASE_URL" ] || [ -z "$OPENAI_API_KEY" ]; then
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+            echo "retrieval=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Eval gate unarmed::No credentials configured, so retrieval was NOT evaluated. This job is not gating anything. See .github/workflows/ci.yml."
+            exit 0
+          fi
+          echo "armed=true" >> "$GITHUB_OUTPUT"
+
           # A first push to a branch reports an all-zero "before" SHA, and a
           # force-push can leave one unreachable. Either way the safe answer is
           # to run the eval: skipping on an unknown diff would silently drop the
@@ -108,11 +124,24 @@ jobs:
           fi
           CHANGED=$(git diff --name-only "$BASE_SHA" "${{ github.sha }}")
           echo "$CHANGED"
-          if echo "$CHANGED" | grep -qE '^(services/ai/|\.github/workflows/ci\.yml$)'; then
+
+          # Only the files that can actually move a retrieval number. The
+          # previous filter was all of `services/ai/**`, which meant a change to
+          # `main.py`, `schemas.py` or `plan.py` spent tens of minutes of CPU
+          # proving something it could not have affected.
+          #
+          # Erring toward running, deliberately, and wider than the obvious list:
+          #   providers.py     holds the rerank adapter
+          #   config.py        holds the threshold and candidate depth
+          #   db.py            issues hybrid_search
+          #   pyproject/uv.lock a torch or transformers bump moves model scores
+          #   supabase/migrations  hybrid_search and the RAG schema ARE retrieval
+          # When in doubt add the path rather than leave the gate blind to it.
+          if echo "$CHANGED" | grep -qE '^(services/ai/(corpus/|eval/|pyproject\.toml$|uv\.lock$|src/octopus_ai/(retrieval|decompose|providers|config|db|ingestion|local_embedder|local_reranker|evaluation)\.py)|supabase/migrations/|\.github/workflows/ci\.yml$)'; then
             echo "retrieval=true" >> "$GITHUB_OUTPUT"
           else
             echo "retrieval=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Retrieval eval skipped::No changes under services/ai/, so retrieval cannot have regressed. The gate is scope-limited, not disabled."
+            echo "::notice title=Retrieval eval skipped::No retrieval-affecting files changed, so retrieval cannot have regressed. The gate is scope-limited, not disabled. See the path list in .github/workflows/ci.yml."
           fi
 
   # Retrieval eval against the golden set. Runs the real pipeline (embed, hybrid
@@ -128,16 +157,35 @@ jobs:
   # repository secrets. OpenAI is still needed for query decomposition and
   # generation; a rerank key is NOT, since reranking now runs in-process
   # (ADR-0009).
+  #
+  # **Sharded across runners, and that is the only reason it is safe to be.** The
+  # work is CPU-bound on a 4-core runner, so three shards buy roughly three times
+  # the cores and cut ~22 minutes to ~8. A shard therefore writes RAW PER-CASE
+  # RESULTS and never a verdict: recall over five cases is a different statistic
+  # from recall over fifteen, and 0.80 of five is not 0.80 of the set. The
+  # `eval-report` job below applies the thresholds exactly once, over the merged
+  # whole, and refuses to report at all unless every golden case is present.
+  #
+  # That refusal is the point. The dangerous failure is not a shard that errors,
+  # it is a shard that never reports: the denominator would shrink and a green
+  # check would be returned over a set nobody measured in full.
   eval:
-    name: ai · retrieval eval (golden set)
+    name: ai · eval shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
     # The reranker is a CPU cross-encoder on a small runner, so this is minutes
     # of real compute rather than a rate limiter holding. Bounded so a pathology
     # (an unbatched loop, a model that failed to cache) surfaces as a timeout
     # instead of burning an hour of runner time.
-    timeout-minutes: 60
+    timeout-minutes: 45
     needs: eval-scope
     if: needs.eval-scope.outputs.retrieval == 'true'
+    strategy:
+      # One failing shard must not cancel the others. The merge step needs every
+      # shard's results to say anything at all, and a partial set is refused
+      # rather than scored, so losing the survivors buys nothing but confusion.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     defaults:
       run:
         working-directory: services/ai
@@ -189,10 +237,56 @@ jobs:
               print(repo, snapshot_download(repo, ignore_patterns=["onnx/*", "*.onnx"]))
           PY
 
-      - name: Run retrieval eval
+      # No credential guard here: `eval-scope` already refused to arm the gate
+      # without secrets, so reaching this step means they exist. Guarding again
+      # would let a shard exit 0 having written nothing, which the merge step
+      # would then report as a missing case rather than as "not configured".
+      - name: Run eval shard
+        run: uv run python -m octopus_ai.evaluation --shard ${{ matrix.shard }}/3 --out shard-${{ matrix.shard }}.json
+
+      - name: Upload shard results
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-shard-${{ matrix.shard }}
+          path: services/ai/shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # Applies the thresholds, once, over the whole set. This is the job whose
+  # red/green actually means something; the shards only gather evidence.
+  eval-report:
+    name: ai · retrieval eval (golden set)
+    runs-on: ubuntu-latest
+    needs: [eval-scope, eval]
+    # `always()` so a failed or cancelled shard still reaches the merge, which
+    # then refuses on missing cases and says exactly which ones. Without it the
+    # gate would simply be skipped when a shard died, which reads as "fine".
+    if: always() && needs.eval-scope.outputs.retrieval == 'true'
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/ai
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # No models and no credentials: merging is arithmetic over JSON. Skipping
+      # the local-embed extra keeps this job at seconds rather than minutes.
+      - name: Install
+        run: uv sync --extra dev --frozen
+
+      - name: Download shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: eval-shard-*
+          path: services/ai/shards
+          merge-multiple: true
+
+      - name: Merge shards and apply the gate
         run: |
-          if [ -z "$SUPABASE_URL" ] || [ -z "$OPENAI_API_KEY" ]; then
-            echo "::warning title=Eval gate unarmed::No credentials configured, so retrieval was NOT evaluated. This job is not gating anything. See .github/workflows/ci.yml."
-            exit 0
-          fi
-          uv run python -m octopus_ai.evaluation
+          ls -l shards/ || true
+          uv run python -m octopus_ai.evaluation --merge shards/*.json
