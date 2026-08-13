@@ -159,24 +159,38 @@ jobs:
   # (ADR-0009).
   #
   # **Sharded across runners, and that is the only reason it is safe to be.** The
-  # work is CPU-bound on a 4-core runner, so three shards buy roughly three times
-  # the cores and cut ~22 minutes to ~8. A shard therefore writes RAW PER-CASE
-  # RESULTS and never a verdict: recall over five cases is a different statistic
-  # from recall over fifteen, and 0.80 of five is not 0.80 of the set. The
-  # `eval-report` job below applies the thresholds exactly once, over the merged
-  # whole, and refuses to report at all unless every golden case is present.
+  # work is CPU-bound, so more runners buy more cores. A shard therefore writes
+  # RAW PER-CASE RESULTS and never a verdict: recall over three cases is a
+  # different statistic from recall over fifteen, and 0.80 of three is not 0.80
+  # of the set. The `eval-report` job below applies the thresholds exactly once,
+  # over the merged whole, and refuses to report at all unless every golden case
+  # is present.
   #
   # That refusal is the point. The dangerous failure is not a shard that errors,
   # it is a shard that never reports: the denominator would shrink and a green
   # check would be returned over a set nobody measured in full.
+  #
+  # **Five, and the number was measured rather than picked.** At three, wall
+  # clock was 10.8 minutes and the shards finished at 5.2 / 10.0 / 10.4. The
+  # obvious reading was an uneven split, and it was wrong: the per-shard call
+  # counts were 16 / 15 / 13, near enough even, while per-call time differed
+  # two-fold (31.7s against 15.7s). That is runner-hardware variance, which
+  # redistributing cases cannot fix and more shards can, by making any one slow
+  # runner own less of the set.
+  #
+  # Diminishing after that: setup is ~90s per shard and fixed, so it becomes the
+  # floor. Five puts the expected worst shard near 5 minutes of eval on top of
+  # that. Going much higher spends runners to shave seconds.
   eval:
-    name: ai · eval shard ${{ matrix.shard }}/3
+    name: ai · eval shard ${{ matrix.shard }}/5
     runs-on: ubuntu-latest
     # The reranker is a CPU cross-encoder on a small runner, so this is minutes
     # of real compute rather than a rate limiter holding. Bounded so a pathology
     # (an unbatched loop, a model that failed to cache) surfaces as a timeout
     # instead of burning an hour of runner time.
-    timeout-minutes: 45
+    # A shard is ~5 minutes of eval plus ~90s of setup. 20 leaves room for a
+    # slow runner without letting a hang burn three quarters of an hour.
+    timeout-minutes: 20
     needs: eval-scope
     if: needs.eval-scope.outputs.retrieval == 'true'
     strategy:
@@ -185,7 +199,7 @@ jobs:
       # rather than scored, so losing the survivors buys nothing but confusion.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5]
     defaults:
       run:
         working-directory: services/ai
@@ -242,7 +256,7 @@ jobs:
       # would let a shard exit 0 having written nothing, which the merge step
       # would then report as a missing case rather than as "not configured".
       - name: Run eval shard
-        run: uv run python -m octopus_ai.evaluation --shard ${{ matrix.shard }}/3 --out shard-${{ matrix.shard }}.json
+        run: uv run python -m octopus_ai.evaluation --shard ${{ matrix.shard }}/5 --out shard-${{ matrix.shard }}.json
 
       - name: Upload shard results
         uses: actions/upload-artifact@v4

@@ -208,14 +208,14 @@ uv run --directory services/ai python -m octopus_ai.evaluation
 
 It exits non-zero on a regression, so it works as a gate.
 
-CI splits the same run across three runners, which is worth knowing if you ever reproduce a CI result locally:
+CI splits the same run across five runners, which is worth knowing if you ever reproduce a CI result locally:
 
 ```bash
-uv run --directory services/ai python -m octopus_ai.evaluation --shard 1/3 --out shard-1.json
-uv run --directory services/ai python -m octopus_ai.evaluation --merge shard-1.json shard-2.json shard-3.json
+uv run --directory services/ai python -m octopus_ai.evaluation --shard 1/5 --out shard-1.json
+uv run --directory services/ai python -m octopus_ai.evaluation --merge shard-*.json
 ```
 
-**A shard deliberately refuses to print a verdict**, and `--shard i/n` with `n > 1` requires `--out` for that reason: recall over five cases is a different statistic from recall over fifteen. Only `--merge` applies the thresholds, and it fails if any golden case is missing rather than scoring what it happens to have. Two halves are scored differently on purpose: positives must surface the expected document (recall ≥ 0.80), and negatives must return **nothing at all** (zero tolerance). A miss is unhelpful; a leak lets the agent ground an answer in text that does not support it.
+**A shard deliberately refuses to print a verdict**, and `--shard i/n` with `n > 1` requires `--out` for that reason: recall over three cases is a different statistic from recall over fifteen. Only `--merge` applies the thresholds, and it fails if any golden case is missing rather than scoring what it happens to have. Two halves are scored differently on purpose: positives must surface the expected document (recall ≥ 0.80), and negatives must return **nothing at all** (zero tolerance). A miss is unhelpful; a leak lets the agent ground an answer in text that does not support it.
 
 Run it after any change to chunking, the embedder, the rerank threshold, or the corpus. Add a case whenever you add a document, and add a negative whenever you find a question the agent should refuse.
 
