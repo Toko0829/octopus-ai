@@ -108,30 +108,6 @@ export const PlanStage = z.object({
 });
 export type PlanStage = z.infer<typeof PlanStage>;
 
-/** The `payload` of an `action_embeds` row whose component is `plan`. */
-export const PlanEmbedPayload = z.object({
-  /**
-   * The goal this plan answers, in the person's own words.
-   *
-   * Optional only because embeds written before it existed do not carry it;
-   * everything new does. Two things need it and neither can reconstruct it.
-   *
-   * A **project** needs a goal, and approving a plan is what creates one. The
-   * plan's `title` is the AI's restatement, which is a reasonable fallback and
-   * not the same thing as what was asked.
-   *
-   * And the **flywheel** stores this payload as `feedback_events.subject`, the
-   * labelled example of a human accepting or rejecting AI output. Without the
-   * goal that label is an output with no input, which is not a training pair.
-   */
-  goal: z.string().optional(),
-  title: z.string(),
-  summary: z.string(),
-  stages: z.array(PlanStage),
-  citations: z.array(PlanCitation),
-});
-export type PlanEmbedPayload = z.infer<typeof PlanEmbedPayload>;
-
 /**
  * The five slots intake fills, named by `full-funnel-creator.md` step 1 rather
  * than invented here, so the playbook stays the specification.
@@ -154,6 +130,49 @@ export const IntakeSlot = z.object({
   source: z.enum(['stated', 'inferred']),
 });
 export type IntakeSlot = z.infer<typeof IntakeSlot>;
+
+/** The `payload` of an `action_embeds` row whose component is `plan`. */
+export const PlanEmbedPayload = z.object({
+  /**
+   * The goal this plan answers, in the person's own words.
+   *
+   * Optional only because embeds written before it existed do not carry it;
+   * everything new does. Two things need it and neither can reconstruct it.
+   *
+   * A **project** needs a goal, and approving a plan is what creates one. The
+   * plan's `title` is the AI's restatement, which is a reasonable fallback and
+   * not the same thing as what was asked.
+   *
+   * And the **flywheel** stores this payload as `feedback_events.subject`, the
+   * labelled example of a human accepting or rejecting AI output. Without the
+   * goal that label is an output with no input, which is not a training pair.
+   */
+  goal: z.string().optional(),
+  title: z.string(),
+  summary: z.string(),
+  stages: z.array(PlanStage),
+  citations: z.array(PlanCitation),
+
+  /**
+   * What intake established about this person: audience, offer, budget, timeline.
+   *
+   * Stored on the card so the EXECUTOR can reach it. Intake's slots reached the
+   * planner and then died: measured on a real run where the person gave their
+   * audience, 4 of 15 plan steps mentioned it and only 1 of 8 artifacts did, and
+   * that one only because the planner happened to write the word into a step
+   * title. So the plan knew who it was for and the work did not, and the copy
+   * came back aimed at a marketer instead of at the customer.
+   *
+   * On the card rather than a new column because the card is already the record
+   * of what was approved, `projects.source_embed_id` already points at it, and a
+   * jsonb payload needs no migration to carry one more field.
+   *
+   * Optional, like `goal` above and for the same reason: cards written before
+   * this do not have it, and absent must keep working rather than raising.
+   */
+  context: z.array(IntakeSlot).optional(),
+});
+export type PlanEmbedPayload = z.infer<typeof PlanEmbedPayload>;
 
 export const IntakeQuestion = z.object({
   slot: IntakeSlotKey,

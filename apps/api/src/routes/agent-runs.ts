@@ -159,6 +159,7 @@ export function planEmbedPayload(
   plan: ProposePlanProposal,
   goal: string,
   citations: PlanResponse['citations'],
+  context: IntakeSlot[] = [],
 ) {
   return {
     // Carried on the card because approving it creates a project, and a project
@@ -166,6 +167,12 @@ export function planEmbedPayload(
     // of it. It also completes the flywheel label: `feedback_events.subject`
     // stores this payload, and an output with no input is not a training pair.
     goal,
+    // What intake established, carried so the EXECUTOR can reach it. Measured on
+    // a real run: the planner used the person's audience in 4 of 15 steps and
+    // only 1 of 8 artifacts mentioned it, because the slots reached planning and
+    // died there. Omitted entirely when empty rather than stored as `[]`, so an
+    // absent context and an empty one stay distinguishable in the audit trail.
+    ...(context.length ? { context } : {}),
     title: plan.title,
     summary: plan.summary,
     stages: plan.stages.map((stage) => ({
@@ -230,6 +237,7 @@ export async function agentRunRoutes(
     citations: PlanResponse['citations'],
     runId: string,
     index: number,
+    context: IntakeSlot[] = [],
   ) {
     const admin = createServiceClient(opts.supabase);
     const idempotencyKey = `agent-run:${runId}:${index}`;
@@ -254,7 +262,7 @@ export async function agentRunRoutes(
     }
     if (!message) return;
 
-    const payload = planEmbedPayload(plan, goal, citations);
+    const payload = planEmbedPayload(plan, goal, citations, context);
 
     // Validated before it is stored, not on the way out. A payload that cannot
     // satisfy the contract is a bug here; writing it anyway would move the
@@ -742,7 +750,7 @@ export async function agentRunRoutes(
             await postAsAgent(roomId, proposal.body, runId, index);
             break;
           case 'propose_plan':
-            await postPlan(roomId, goal, proposal, plan.citations, runId, index);
+            await postPlan(roomId, goal, proposal, plan.citations, runId, index, next.context);
             break;
         }
       }

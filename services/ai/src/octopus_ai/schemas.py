@@ -304,6 +304,26 @@ class ExecuteRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     detail: str = Field(default="", max_length=2000)
     stage: str | None = None
+
+    context: list[IntakeSlot] = Field(
+        default_factory=list,
+        description=(
+            "What intake established about this person: audience, offer, budget, "
+            "timeline. Same block the planner receives, and governed by the same "
+            "two rules: it may make the deliverable CONCRETE, and it may never be "
+            "cited. "
+            "It reaches the executor because it previously did not, and the cost "
+            "was measured. On a run where the person gave their audience, 4 of 15 "
+            "plan steps mentioned it and 1 of 8 artifacts did, that one only "
+            "because the planner had written the word into a step title. So the "
+            "plan knew who it was for and the work did not: ad copy came back "
+            "aimed at a marketer rather than at the customer. "
+            "It is deliberately NOT added to the retrieval query. That is the "
+            "defect this project already measured twice, where a niche audience "
+            "word dominates a short query at a cross-encoder and retrieves "
+            "nothing at all."
+        ),
+    )
     trace: TraceContext
 
 

@@ -1,4 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { z } from 'zod';
+import { IntakeSlot } from '@octopus/contracts';
 
 /**
  * Which room a project's work should be announced in.
@@ -49,4 +51,46 @@ export async function roomForProject(
 
   if (embedError) throw embedError;
   return embed?.room_id ?? null;
+}
+
+/**
+ * What intake established about the person this project belongs to.
+ *
+ * Read from the same card, for the same reason: it is the record of what was
+ * approved, and `projects.source_embed_id` already points at it. Storing the
+ * slots there rather than in a new column meant no migration, and it keeps the
+ * context inseparable from the plan it shaped.
+ *
+ * Returns `[]` rather than throwing when a card predates this field or carries a
+ * malformed one. The executor writes for the reader the sources describe when
+ * context is absent, which is exactly the behaviour that shipped before this
+ * existed, so a missing context degrades to the old output rather than failing.
+ */
+export async function planContextForProject(
+  admin: SupabaseClient,
+  projectId: string,
+): Promise<IntakeSlot[]> {
+  const { data: project, error: projectError } = await admin
+    .from('projects')
+    .select('source_embed_id')
+    .eq('id', projectId)
+    .maybeSingle<{ source_embed_id: string | null }>();
+
+  if (projectError) throw projectError;
+  if (!project?.source_embed_id) return [];
+
+  const { data: embed, error: embedError } = await admin
+    .from('action_embeds')
+    .select('payload')
+    .eq('id', project.source_embed_id)
+    .maybeSingle<{ payload: unknown }>();
+
+  if (embedError) throw embedError;
+
+  // Parsed rather than cast. This payload is old data written by an earlier
+  // version of the code, so its shape is a claim to be checked and not a fact.
+  const parsed = z
+    .array(IntakeSlot)
+    .safeParse((embed?.payload as { context?: unknown } | null)?.context ?? []);
+  return parsed.success ? parsed.data : [];
 }

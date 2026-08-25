@@ -324,6 +324,7 @@ export interface ExecuteInput {
   stage: string | null;
   agentRunId: string;
   projectId: string;
+  context?: IntakeSlot[];
 }
 
 /**
@@ -351,6 +352,9 @@ export async function requestExecution(
         title: input.title,
         detail: input.detail,
         stage: input.stage,
+        // What intake established. May make the deliverable concrete, may never
+        // be cited, and is deliberately absent from the retrieval query.
+        context: input.context ?? [],
         trace: { agent_run_id: input.agentRunId, project_id: input.projectId },
       }),
     });

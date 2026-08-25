@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { nextStateAfterReview, review } from '@octopus/core';
 import { ArtifactEmbedPayload } from '@octopus/contracts';
 import { AiServiceError, requestExecution } from './ai';
-import { roomForProject } from './room-for-project';
+import { planContextForProject, roomForProject } from './room-for-project';
 
 /**
  * Running one AI-owned task: the maker-checker loop.
@@ -77,6 +77,17 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
   // anything cannot be failed for not citing anything.
   const expectsCitations = (task.citations ?? []).length > 0;
 
+  // Read once for the task rather than per attempt: it cannot change between
+  // retries, and a retry is already the slow path. Failing to read it must not
+  // stop the work, because an executor with no context writes exactly what it
+  // wrote before this existed.
+  let context: Awaited<ReturnType<typeof planContextForProject>> = [];
+  try {
+    context = await planContextForProject(admin, task.project_id);
+  } catch (err) {
+    log.warn({ taskId, err: String(err) }, 'could not read plan context, executing without it');
+  }
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const agentRunId = randomUUID();
 
@@ -97,6 +108,7 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
           stage: task.stage,
           agentRunId,
           projectId: task.project_id,
+          context,
         },
         deps.aiTimeoutMs,
       );
