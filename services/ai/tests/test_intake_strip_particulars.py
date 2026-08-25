@@ -93,10 +93,12 @@ def test_the_target_metric_is_deliberately_kept():
 
 
 def test_a_goal_that_would_be_gutted_is_left_alone():
-    """A polluted query retrieves badly; an empty one retrieves nothing.
+    """A polluted query retrieves badly; a one-word one retrieves nothing.
 
     The first is recoverable, so when stripping would leave too little to search
-    with, the original is kept deliberately.
+    with, the original is kept deliberately. The floor is two content words, and
+    it was three until it fired on a real goal and preserved the pollution it
+    exists to guard against.
     """
     original = "help students"
     assert strip_particulars(original, [slot("icp", "students")]) == original
@@ -174,3 +176,31 @@ def test_a_short_particular_does_not_match_a_longer_word():
     """Exact for short ones, so `ads` cannot eat `adspend` or `adjust`."""
     out = strip_particulars("adjust the ad spend upward", [slot("icp", "ads managers")])
     assert "adjust" in out
+
+
+def test_the_guard_does_not_preserve_the_pollution_it_guards_against():
+    """The floor fired on a real goal and returned it unstripped.
+
+    "get USA student signups from website" strips to "get signups from website",
+    whose content words are `signups` and `website`. At a floor of three that was
+    under the line, so the guard returned the polluted original, which is the
+    phrasing that has been refused repeatedly. Measured: the stripped version
+    retrieves a full six-stage plan.
+    """
+    out = strip_particulars(
+        "get USA student signups from website",
+        [
+            slot("icp", "Students from the USA"),
+            slot("offer", "Signups on bluelly.com"),
+            slot("target_metric", "USA student signups"),
+        ],
+    )
+    assert "USA" not in out
+    assert "student" not in out.lower()
+    assert out == "get signups from website"
+
+
+def test_one_content_word_is_still_refused():
+    """A floor of two, not none. "help" alone is not a search."""
+    original = "help students"
+    assert strip_particulars(original, [slot("icp", "students")]) == original

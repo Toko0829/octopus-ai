@@ -269,9 +269,19 @@ _STOPWORDS = frozenset(
     "a an and for from get in into more my of on our the to via with without".split()
 )
 
-# Below this many content words the stripped query is not a query any more, and a
-# search for "get sign-ups" alone would be worse than the polluted original.
-_MIN_CONTENT_WORDS = 3
+# Below this many content words the stripped query is not a query any more, and
+# searching for one word would be worse than the polluted original.
+#
+# **Two, not three, and the difference was measured.** At three, this guard fired
+# on "get USA student signups from website" and returned it unchanged: stripping
+# leaves "get signups from website", whose content words are `signups` and
+# `website`, and two was under the floor. So the guard against gutting a query
+# preserved exactly the pollution it sits next to, for the second time. The
+# stripped version retrieves a full six-stage plan; the polluted one is the
+# phrasing that has been refused repeatedly.
+#
+# One content word is still refused, because "help" alone is not a search.
+_MIN_CONTENT_WORDS = 2
 
 
 def strip_particulars(refined: str, slots: list[IntakeSlot]) -> str:
