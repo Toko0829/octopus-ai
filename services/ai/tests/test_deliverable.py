@@ -99,3 +99,42 @@ def test_no_instruction_uses_an_em_dash():
     """Rule 22. These reach a person through the artifact body."""
     for kind in ("copy", "landing", "sequence", "brief", "analysis"):
         assert "—" not in instruction_for(kind)
+
+
+def test_a_step_asking_for_a_brief_gets_a_brief():
+    """The real step that got this wrong.
+
+    "Create a brief for 3 distinct paid hooks" matched `hooks?` under `copy` and
+    came back as five finished ad variants: the wrong artefact, and the wrong
+    number, because the copy prompt fixes five. A step that says the word "brief"
+    is asking to be briefed, and an explicit word beats a topic word.
+    """
+    title = 'Create a brief for 3 distinct paid hooks'
+    detail = 'Draft a creative brief for up to three genuinely different hooks.'
+    assert classify(title, detail) == 'brief'
+
+
+def test_the_step_decides_the_count_when_it_says_one():
+    from octopus_ai.deliverable import requested_count
+
+    assert requested_count('Create a brief for 3 distinct paid hooks', '') == 3
+    assert requested_count('Write three headline variations', '') == 3
+    assert requested_count('Draft ad copy', 'Five variants for cold traffic.') == 5
+
+
+def test_a_step_that_names_no_count_keeps_the_default():
+    """Silence must not be read as a number, or every step becomes bespoke."""
+    from octopus_ai.deliverable import requested_count
+
+    assert requested_count('Write the landing page', 'Hero through final CTA.') is None
+    # A budget is not a count of deliverables, and the cap at nine is what stops
+    # "$2000/month" or "aged 18-25" being read as one.
+    assert requested_count('Set the budget', 'Spend 2000 per month on 18 to 25 year olds.') is None
+
+
+def test_a_named_count_reaches_the_instruction():
+    from octopus_ai.deliverable import instruction_for
+
+    assert '3 variants' in instruction_for('copy', 3)
+    assert 'FIVE variants' in instruction_for('copy', None)
+    assert 'FIVE variants' in instruction_for('copy', 5)

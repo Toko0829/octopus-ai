@@ -51,16 +51,23 @@ _PATTERNS: tuple[tuple[DeliverableKind, str], ...] = (
         r"\b(email\s+(sequence|series|flow|drip|nurture|campaign)|welcome\s+(sequence|series)|"
         r"drip\s+(sequence|campaign)|nurture\s+(sequence|flow)|autoresponder)\b",
     ),
+    # `brief` precedes `copy`, and that order was decided by a real step getting
+    # it wrong. "Create a brief for 3 distinct paid hooks" matched `hooks?` under
+    # `copy` and came back as five finished ad variants: not what was asked for,
+    # and not even the right number, because the copy prompt fixes five. A step
+    # that says the word "brief" is asking to be briefed. The word is explicit
+    # where `hooks` is a topic, so the explicit one wins.
+    (
+        "brief",
+        r"\bbriefs?\b|"
+        r"\b(creative\s+(direction|concepts?)|art\s+direction|"
+        r"visuals?|imagery|image[s]?|video|thumbnail|storyboard|moodboard|shot\s+list)\b",
+    ),
     (
         "copy",
         r"\b(ad\s+copy|copy|headlines?|primary\s+text|captions?|taglines?|"
         r"call[-\s]to[-\s]action|ctas?|hooks?|subject\s+lines?|"
         r"ad\s+(variations?|variants?|creatives?\s+copy)|posts?)\b",
-    ),
-    (
-        "brief",
-        r"\b(creative\s+(brief|direction|concepts?)|art\s+direction|"
-        r"visuals?|imagery|image[s]?|video|thumbnail|storyboard|moodboard|shot\s+list)\b",
     ),
 )
 
@@ -157,6 +164,51 @@ Write the decision, not a description of how one would decide.""",
 }
 
 
-def instruction_for(kind: DeliverableKind) -> str:
-    """The per-kind half of the execute prompt."""
-    return _INSTRUCTIONS[kind]
+# Steps say how many they want ("three headline variations", "a brief for 3
+# distinct paid hooks"), and the prompts state a default count. When the step is
+# explicit, the step wins: the plan is what the person approved, and returning
+# five where they approved three is the executor overruling them on the one
+# detail they were specific about.
+#
+# Only 2 to 9, spelled or numeric. Bigger numbers in a step are far more likely
+# to be a budget, an age range or a deadline than a count of deliverables.
+_COUNT_WORDS = {
+    "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9,
+}
+_COUNT_RE = re.compile(
+    r"\b(?P<n>[2-9]|two|three|four|five|six|seven|eight|nine)\s+"
+    r"(?:distinct\s+|different\s+|separate\s+|genuinely\s+different\s+)?"
+    r"(?:paid\s+|ad\s+|email\s+)?"
+    r"(?P<noun>variants?|variations?|hooks?|concepts?|briefs?|headlines?|emails?|angles?)\b",
+    re.I,
+)
+
+# The count each prompt states by default, so a step that says nothing keeps the
+# behaviour that shipped.
+_DEFAULT_COUNTS: dict[DeliverableKind, tuple[str, int]] = {
+    "copy": ("FIVE variants", 5),
+    "sequence": ("FOUR emails", 4),
+    "brief": ("Three concepts", 3),
+}
+
+
+def requested_count(title: str, detail: str) -> int | None:
+    """How many the step asked for, or None if it did not say."""
+    m = _COUNT_RE.search(f"{title} {detail}")
+    if not m:
+        return None
+    n = m.group("n").lower()
+    return _COUNT_WORDS.get(n, int(n) if n.isdigit() else None)
+
+
+def instruction_for(kind: DeliverableKind, count: int | None = None) -> str:
+    """The per-kind half of the execute prompt, honouring a count the step named."""
+    instruction = _INSTRUCTIONS[kind]
+    default = _DEFAULT_COUNTS.get(kind)
+    if count is None or default is None or count == default[1]:
+        return instruction
+
+    phrase, _ = default
+    unit = phrase.split(" ", 1)[1]
+    return instruction.replace(phrase, f"{count} {unit}", 1)
