@@ -12,6 +12,7 @@ returns raw rows.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -20,6 +21,22 @@ import httpx
 from .config import Settings
 
 logger = logging.getLogger("octopus.ai.db")
+
+_MAX_ATTEMPTS = 3
+_RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
+
+# PostgREST's code for "JWT issued at future": it compares the token's `iat`
+# against its own clock and refuses if the token looks like it comes from the
+# future. Our key is STATIC, so its `iat` is identical on every call and cannot
+# be the variable here; the clock is. Supabase serves PostgREST from more than
+# one node, so a single node with drift produces a 401 on some requests and not
+# others, against the same credential, in the same second.
+#
+# Retried for that reason, and **only** this code among the 401s. An ordinary
+# 401 means the key is wrong, where retrying burns three attempts to arrive at a
+# worse error message. That distinction is the same one `providers.py` draws
+# when it refuses to treat a 429 as a transient 5xx.
+_CLOCK_SKEW_CODE = "PGRST303"
 
 
 class DatabaseError(RuntimeError):
@@ -65,14 +82,58 @@ class Database:
         if prefer:
             headers["Prefer"] = prefer
 
-        response = await self._client.request(
-            method, f"{self._base}{path}", headers=headers, json=json, params=params
-        )
-        if response.status_code >= 400:
-            raise DatabaseError(f"{method} {path} -> {response.status_code} {response.text[:400]}")
-        if not response.content:
-            return None
-        return response.json()
+        # Bounded retry, which this client did not have and `providers.py` did.
+        # The asymmetry cost a CI run: one eval shard hit a transient 401 from a
+        # skewed PostgREST node, died, and because `--merge` refuses to report
+        # unless every golden case is present, one lost shard took the whole gate
+        # red. A single transient response must not be able to do that.
+        #
+        # Kept separate from `_post_with_retry` rather than shared. That function
+        # is POST-only, raises ProviderError, and carries Retry-After handling
+        # plus a rate-limit floor that exist for a metered provider API. Folding
+        # both into one helper would parameterise away exactly the distinctions
+        # each set of comments says are load-bearing.
+        delay = 0.5
+        last_detail = ""
+
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                response = await self._client.request(
+                    method, f"{self._base}{path}", headers=headers, json=json, params=params
+                )
+            except httpx.RequestError as exc:
+                last_detail = f"transport error: {exc}"
+                if attempt == _MAX_ATTEMPTS:
+                    break
+                await asyncio.sleep(delay)
+                delay *= 2
+                continue
+
+            if response.status_code < 400:
+                if not response.content:
+                    return None
+                return response.json()
+
+            body = response.text[:400]
+            last_detail = f"{response.status_code} {body}"
+            retryable = response.status_code in _RETRY_STATUSES or (
+                response.status_code == 401 and _CLOCK_SKEW_CODE in body
+            )
+            if not retryable or attempt == _MAX_ATTEMPTS:
+                break
+
+            logger.warning(
+                "%s %s attempt %d failed (%s); retrying in %.1fs",
+                method,
+                path,
+                attempt,
+                last_detail,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+
+        raise DatabaseError(f"{method} {path} -> {last_detail}")
 
     # ------------------------------------------------------------- retrieval --
 
