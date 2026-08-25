@@ -15,6 +15,16 @@
 > The RAG corpus is **not** seeded from here. It is ingested by the Python service from `services/ai/corpus/` via `uv run --directory services/ai python -m octopus_ai.seed` ([rag-knowledge](../docs/30-modules/rag-knowledge.md)).
 >
 > Migration versions must match their filenames; if a tool stamps its own timestamp, correct `supabase_migrations.schema_migrations` afterwards or `supabase db push` will replay it.
+>
+> **This warning was not enough, and the audit that catches it is two commands.** Six recorded versions had drifted from their filenames, so `supabase db push` would have replayed five migrations that had already run. The drift is invisible until you compare the two lists, because both halves look healthy on their own: every migration had in fact been applied, and every file was in fact in the repository. Compare them, matching on the `name` column rather than on timing:
+>
+> ```bash
+> psql "$DATABASE_URL" -tAc "select version from supabase_migrations.schema_migrations order by version" | tr -d '\r' > /tmp/db.txt
+> ls supabase/migrations/*.sql | sed -E 's#.*/([0-9]+)_.*#\1#' | sort > /tmp/repo.txt
+> comm -3 /tmp/repo.txt /tmp/db.txt
+> ```
+>
+> Anything printed is drift. Left column: in the repo, not recorded, so `db push` will try to replay it. Right column: recorded under a version no file has, which is what a tool-stamped apply leaves behind. Run it after applying anything through the MCP tool or the dashboard.
 
 Key platform features used: Postgres 16 + **RLS**, **pgvector** ([ADR-0002](../docs/40-adr/0002-stay-in-postgres-pgvector.md)), GoTrue asymmetric JWT/JWKS, Storage, **Realtime Broadcast + Presence** ([ADR-0003](../docs/40-adr/0003-realtime-broadcast-not-postgres-changes.md)), `pg_cron`, Supavisor pooling. Every migration lands with its RLS policy + pgTAP test and updates [data-model](../docs/10-architecture/data-model.md).
 
