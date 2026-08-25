@@ -305,12 +305,27 @@ select extensions.is(
   'a missing embed raises rather than silently building nothing'
 );
 
--- The atomicity claim, stated as an assertion rather than as a comment. The
--- empty-plan case above inserts a `projects` row and then raises; if the rollback
--- were not real, that row would still be here.
+-- The atomicity claim, stated as an assertion rather than as a comment. Three of
+-- the four failing calls insert a `projects` row and only then raise (bad owner
+-- and bad risk tier fail inside the task loop, empty plan fails after it), so if
+-- the statement-level rollback were not real those rows would still be here.
+--
+-- **Scoped to this suite's own cards rather than counting the table.** It used to
+-- assert `count(*) from public.projects = 2`, which is a claim about the whole
+-- database and not about anything this test did. It passed for as long as the
+-- database happened to hold no projects and broke the moment a real one existed,
+-- reporting `have: 3, want: 2` about a row the suite never touched. A test that
+-- silently depends on the rest of the database being empty is a test that starts
+-- lying the day the product is used, and pgTAP is not in CI to catch it.
 select extensions.is(
-  (select count(*) from public.projects),
-  2::bigint,
+  (select count(*) from public.projects
+     where source_embed_id in (
+       pg_temp.mid('e_badowner'),
+       pg_temp.mid('e_badrisk'),
+       pg_temp.mid('e_empty'),
+       pg_temp.mid('e_ownerless')
+     )),
+  0::bigint,
   'five failed calls left no partial projects behind: all of it, or none of it'
 );
 
