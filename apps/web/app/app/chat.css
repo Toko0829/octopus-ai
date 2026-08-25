@@ -1303,3 +1303,114 @@
   margin: 0;
   color: var(--amber-500);
 }
+
+/* --------------------------------------------------------- source panel ---- */
+/* Shares the command palette's scrim, so there is one overlay treatment rather
+   than a second one that drifts from it. Sized wider because a description is a
+   paragraph, not a search box. */
+
+.source-panel {
+  width: min(620px, 92vw);
+  max-height: 76vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: pop var(--dur-slow) var(--ease-out);
+}
+
+.source-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.source-lede {
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0 0 6px;
+}
+
+.source-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-top: 6px;
+}
+
+.source-input,
+.source-textarea {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+
+.source-textarea {
+  resize: vertical;
+  min-height: 120px;
+  line-height: 1.55;
+}
+
+.source-input:focus-visible,
+.source-textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.source-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.source-hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* A separator that says what it separates. Two inputs stacked with no word
+   between them read as "fill in both". */
+.source-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+  margin: 10px 0 2px;
+}
+.source-or::before,
+.source-or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.source-error {
+  color: var(--amber-500);
+  font-size: 13px;
+  margin: 6px 0 0;
+}
+
+.source-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}

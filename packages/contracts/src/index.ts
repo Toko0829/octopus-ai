@@ -270,7 +270,28 @@ export type ArtifactEmbedPayload = z.infer<typeof ArtifactEmbedPayload>;
  * untrue sentence in the audit trail and, worse, hand the flywheel a labelled
  * example of a person approving something they were never shown.
  */
-export const EmbedState = z.enum(['pending', 'approved', 'rejected', 'expired', 'answered']);
+/**
+ * Mirrors `public.embed_state`.
+ *
+ * `reported` and `dismissed` were missing here while the database had them, and
+ * the omission was not cosmetic: `messages.ts` parses every stored embed against
+ * this enum, so an artifact card written with `state: 'reported'` failed the
+ * parse and was dropped on read. `ArtifactCard` had therefore never rendered for
+ * anybody, and the only thing that reached the room was the plain-text fallback.
+ *
+ * Six values, because each records a different thing that happened rather than a
+ * verdict borrowed from a neighbouring one: a question is `answered`, a
+ * deliverable is `reported`, and a card someone walked away from is `dismissed`.
+ */
+export const EmbedState = z.enum([
+  'pending',
+  'approved',
+  'rejected',
+  'expired',
+  'answered',
+  'reported',
+  'dismissed',
+]);
 export type EmbedState = z.infer<typeof EmbedState>;
 
 /**

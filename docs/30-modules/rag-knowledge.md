@@ -6,6 +6,18 @@
 >
 > The full engineering spec lives in [rag.md](../10-architecture/rag.md); this module doc is the operational/domain view. Update both on any ingestion/retrieval/model/eval change.
 
+## Sources a user supplies
+
+The corpus is no longer only ours. `POST /sources` ingests a document about the user's own business, scoped to their room, and retrieval blends it with the shared corpus: shared rows always, that room's rows to that room, nobody else's ever.
+
+**Why it exists is measurable rather than aspirational.** Before it, every artifact closed with a sentence naming what it could not ground, and ad copy came back written about advertising rather than about the product. The pipeline was correct and the knowledge was missing.
+
+Stored as `authority: vendor`, `doc_type: user-source`. No new authority value: the business speaking about itself is the vendor case, and inventing an enum member to describe it would be the kind of invented provenance `corpus.py` already refuses.
+
+**One `knowledge_sources` row per room**, labelled with the room id. Document identity is `(source_id, title)`, so a shared source row would make two workspaces that both title something "Our product" supersede each other's documents. Per-room labelling confines that collision to the room where superseding is the correct behaviour, which is also what makes re-submitting an edited description work.
+
+**Measured after wiring it.** A product description ingests to one chunk, re-submitting identical text is `skipped_unchanged` with nothing re-embedded, and a different room retrieving the same goal sees none of it. It surfaces when the query is about the product ("what does this product do", "flashcards for students revising") and not when the query is about method ("promote website to get signups"). That is the cross-encoder behaving correctly rather than a scoping fault, and it means a source improves the steps that ask about the business while method steps still ground in the principles corpus. Making product knowledge reach every step regardless of query is a separate change, and it belongs with `context` rather than with retrieval, since a person's own description is not a source to be cited.
+
 ## Responsibilities
 
 - Own the knowledge corpus — **reference knowledge + real outcomes** — and its freshness.

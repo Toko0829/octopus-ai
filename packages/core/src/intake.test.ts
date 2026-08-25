@@ -225,3 +225,106 @@ describe('decideIntakeTurn', () => {
     expect(turn).toEqual({ kind: 'new_goal', goal: 'my CPA is too high', stalls: 0 });
   });
 });
+
+describe('starting something new while a card is open', () => {
+  const pendingAnswers = {
+    embedId: 'embed-1',
+    payload: {
+      goal: 'get my first 100 customers',
+      round: 1,
+      stalls: 0,
+      answers: [],
+      slots: [],
+      questions: [],
+      taskIds: [],
+      awaiting: 'answers' as const,
+    },
+  };
+
+  const pendingTasks = {
+    embedId: 'embed-2',
+    payload: {
+      goal: '',
+      round: 0,
+      stalls: 0,
+      answers: [],
+      slots: [],
+      questions: [],
+      taskIds: ['task-1', 'task-2'],
+      awaiting: 'task_answers' as const,
+    },
+  };
+
+  function turn(message: string, pending: unknown = pendingAnswers) {
+    return decideIntakeTurn({
+      message,
+      authorId: 'owner-1',
+      roomOwnerId: 'owner-1',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pending: pending as any,
+      maxRounds: 2,
+    });
+  }
+
+  it('overrides an open question card, and names the card to close', () => {
+    // The failure this exists for: four steps were waiting on decisions, the
+    // person typed a brand new request, and it was filed as the answer to all
+    // four. Nothing raised, and what they asked for was gone.
+    const result = turn('new goal: promote bluelly.com to US students');
+    expect(result.kind).toBe('new_goal');
+    if (result.kind !== 'new_goal') throw new Error('expected new_goal');
+    expect(result.goal).toBe('promote bluelly.com to US students');
+    expect(result.dismissedEmbedId).toBe('embed-1');
+  });
+
+  it('overrides a card waiting on task answers too', () => {
+    const result = turn('new goal: something else entirely', pendingTasks);
+    expect(result.kind).toBe('new_goal');
+  });
+
+  it('accepts the short form', () => {
+    const result = turn('new: promote bluelly.com');
+    expect(result.kind).toBe('new_goal');
+    if (result.kind !== 'new_goal') throw new Error('expected new_goal');
+    expect(result.goal).toBe('promote bluelly.com');
+  });
+
+  it('is case insensitive, because people type how they type', () => {
+    expect(turn('New Goal: promote bluelly.com').kind).toBe('new_goal');
+  });
+
+  it('does not fire on a message that merely starts with the word new', () => {
+    // No content heuristic decides this. "new customers from paid social" is an
+    // answer, and reading it as an escape would discard what was asked for.
+    const result = turn('new customers from paid social would be ideal');
+    expect(result.kind).toBe('answer');
+  });
+
+  it('ignores an empty escape rather than planning for nothing', () => {
+    // "new goal:" alone is somebody who has not said what they want yet.
+    const result = turn('new goal:');
+    expect(result.kind).toBe('answer');
+  });
+
+  it('is the owner only, like every other write to the room state', () => {
+    const result = decideIntakeTurn({
+      message: 'new goal: something else',
+      authorId: 'node-7',
+      roomOwnerId: 'owner-1',
+      pending: pendingAnswers,
+      maxRounds: 2,
+    });
+    // A human node in the room gets the non-owner path, which never touches the
+    // card. They cannot dismiss a question that was asked of somebody else.
+    expect(result.kind).toBe('new_goal');
+    if (result.kind !== 'new_goal') throw new Error('expected new_goal');
+    expect(result.dismissedEmbedId).toBeUndefined();
+  });
+
+  it('leaves an ordinary answer alone', () => {
+    const result = turn('students in the USA, budget 2000 a month');
+    expect(result.kind).toBe('answer');
+    if (result.kind !== 'answer') throw new Error('expected answer');
+    expect(result.goal).toBe('get my first 100 customers');
+  });
+});

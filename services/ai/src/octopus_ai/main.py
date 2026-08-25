@@ -22,11 +22,20 @@ from .db import Database
 from .decompose import decompose
 from .executor import execute_task
 from .groundedness import assess
+from .ingestion import Ingestor
 from .intake import run_intake
 from .planner import build_sources_block, plan_grounded, refuse
 from .providers import Providers
 from .retrieval import Retriever
-from .schemas import ExecuteRequest, IntakeRequest, IntakeResponse, PlanRequest, PlanResponse
+from .schemas import (
+    ExecuteRequest,
+    IntakeRequest,
+    IntakeResponse,
+    PlanRequest,
+    PlanResponse,
+    SourceRequest,
+    SourceResponse,
+)
 
 logger = logging.getLogger("octopus.ai")
 
@@ -195,7 +204,15 @@ async def plan(request: PlanRequest) -> PlanResponse:
             if state.settings.query_decomposition
             else None
         )
-        retrieval = await state.retriever.retrieve(request.goal, subqueries=subqueries)
+        # Scoped to the room, so anything this workspace told us about its own
+        # business is retrieved alongside the shared corpus. Shared rows always
+        # come back; another workspace's never do.
+        retrieval = await state.retriever.retrieve(
+            request.goal,
+            subqueries=subqueries,
+            room_id=request.room_id,
+            project_id=request.trace.project_id,
+        )
     except Exception:
         # A retrieval failure must not become an ungrounded answer. Refusing is
         # the correct degradation: the alternative is inventing a plan.
@@ -272,3 +289,82 @@ async def execute(request: ExecuteRequest) -> PlanResponse:
     assert state.retriever and state.providers and state.settings  # set in lifespan
 
     return await execute_task(request, state.retriever, state.providers, state.settings)
+
+
+@app.post("/sources", response_model=SourceResponse, tags=["knowledge"])
+async def add_source(request: SourceRequest) -> SourceResponse:
+    """Ingest one document a user supplied about their own business.
+
+    **Why this endpoint exists.** The corpus is marketing principles, so the
+    system knew marketing and not the user's product, and every deliverable said
+    so: "product-specific claims could not be included". Ad copy came back about
+    advertising rather than about the thing being advertised. This is how a
+    workspace tells us what it sells.
+
+    **Scoped to the room, and the isolation is enforced here rather than by RLS.**
+    This service holds the secret key, which bypasses row-level security, so
+    `owner_room_id` on the document and `p_room_id` in `hybrid_search` are what
+    keep one customer's business description out of another's ad copy. There is a
+    pgTAP suite (`room_sources.sql`) asserting exactly that, as a client and
+    through the function.
+
+    **One source row per room, and that is not cosmetic.** `find_current_version`
+    keys a document's identity on `(source_id, title)`. A shared source row would
+    make two workspaces that both title something "Our product" supersede each
+    other's documents. The per-room label keeps titles colliding only within the
+    room that owns them, which is exactly the scope where superseding is right.
+
+    **Synchronous, where ADR-0006 says ingestion is job-driven.** One bounded
+    document is a few seconds on a warm embedder, and Node accepts the request
+    with 202 and calls this in the background, so nobody is held waiting. The
+    ADR's concern is the request path, and the request path is Node's.
+
+    SECURITY: `text` is untrusted (rule 8). It is stored and later retrieved into
+    the same delimited SOURCES block the corpus uses; it is never treated as
+    instructions, and its room scope bounds the blast radius to its own author.
+    """
+    logger.info(
+        "source submitted",
+        extra={
+            "room_id": request.room_id,
+            "agent_run_id": request.trace.agent_run_id,
+            "chars": len(request.text),
+            "from_url": request.source_url is not None,
+        },
+    )
+
+    assert state.settings and state.db and state.providers  # set in lifespan
+
+    ingestor = Ingestor(state.settings, state.db, state.providers)
+    result = await ingestor.ingest(
+        text=request.text,
+        title=request.title,
+        # One knowledge_sources row per room. `upsert_source` matches on label,
+        # so the room id is what makes it per-room rather than global.
+        source_label=f"Provided by this workspace ({request.room_id[:8]})",
+        # The business speaking about itself is the vendor case. No new enum
+        # value: `corpus.py` records that an invented citation is worse than
+        # none, and labelling a customer's own words as `official` or `research`
+        # would be exactly that.
+        authority="vendor",
+        doc_type="user-source",
+        source_url=None,
+        owner_room_id=request.room_id,
+    )
+
+    logger.info(
+        "source ingested",
+        extra={
+            "room_id": request.room_id,
+            "document_id": result.document_id,
+            "chunks": result.chunks_written,
+            "skipped": result.skipped_unchanged,
+        },
+    )
+
+    return SourceResponse(
+        document_id=result.document_id,
+        chunks_written=result.chunks_written,
+        skipped_unchanged=result.skipped_unchanged,
+        superseded=result.superseded,
+    )

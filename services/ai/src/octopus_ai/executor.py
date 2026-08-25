@@ -122,7 +122,14 @@ async def execute_task(
     query = " ".join(f"{request.title}. {request.detail}".split())
 
     try:
-        retrieval = await retriever.retrieve(query)
+        # Scoped like planning: this room's own business documents are retrieved
+        # alongside the shared corpus, which is what lets a deliverable name the
+        # product instead of describing marketing in general.
+        retrieval = await retriever.retrieve(
+            query,
+            room_id=request.trace.room_id,
+            project_id=request.trace.project_id,
+        )
     except Exception:
         logger.exception("retrieval failed while executing", extra={"task_id": request.task_id})
         return _refuse(request, "Retrieval failed.", None)

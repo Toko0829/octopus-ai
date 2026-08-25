@@ -43,9 +43,13 @@ class StubRetriever:
 
     def __init__(self) -> None:
         self.queries: list[str] = []
+        self.scopes: list[tuple[str | None, str | None]] = []
 
-    async def retrieve(self, query: str, subqueries=None) -> RetrievalResult:
+    async def retrieve(
+        self, query: str, subqueries=None, room_id=None, project_id=None
+    ) -> RetrievalResult:
         self.queries.append(query)
+        self.scopes.append((room_id, project_id))
         # `grounded` is a property over `chunks`, not a field: an empty
         # retrieval is not grounding, and the type refuses to let a caller claim
         # otherwise.
@@ -137,3 +141,17 @@ async def test_no_context_still_executes():
 
     assert result.core == "executing-v1"
     assert "ABOUT THIS PERSON" not in providers.user_prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_is_scoped_to_the_room_and_project():
+    """A step retrieves this workspace's own business documents, not everyone's.
+
+    The scope has to be passed explicitly because this service holds the secret
+    key, which bypasses RLS: `hybrid_search`'s predicate is the only thing
+    keeping one customer's product description out of another's deliverable.
+    """
+    retriever, providers = StubRetriever(), StubProviders()
+    await execute_task(request_with(CONTEXT), retriever, providers, make_settings())
+
+    assert retriever.scopes == [("room-1", "project-1")]

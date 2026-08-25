@@ -24,6 +24,15 @@ class TraceContext(BaseModel):
 
     project_id: str | None = Field(default=None, description="The venture, when one exists.")
     agent_run_id: str = Field(description="The durable run this reasoning step belongs to.")
+    room_id: str | None = Field(
+        default=None,
+        description=(
+            "The workspace this step belongs to. A correlation id like the others, and "
+            "also the retrieval scope: a room's own business documents are returned to "
+            "that room and to nobody else. Optional so an older caller still validates, "
+            "and absent means the shared corpus alone."
+        ),
+    )
 
 
 class Citation(BaseModel):
@@ -371,5 +380,52 @@ class PlanResponse(BaseModel):
         description=(
             "Which reasoning core produced this, e.g. 'deterministic-v0'. Recorded so a "
             "regression can be tied to a core or prompt version."
+        )
+    )
+
+
+class SourceRequest(BaseModel):
+    """Ingest one document the user supplied about their own business.
+
+    **What this exists to fix, measured rather than assumed.** Every artifact the
+    executor produced ended with a variant of "product-specific claims could not
+    be included", because the corpus is marketing principles and knows nothing
+    about the user's product. The ad copy came back written about advertising.
+
+    Scoped to a ROOM, not a project. A project does not exist until a plan is
+    approved, business knowledge arrives before that, and one room now carries
+    many projects over its life. What someone tells us about their company
+    belongs to the workspace rather than to one plan inside it.
+
+    SECURITY: `text` is what a person typed or what a page said. It is DATA, not
+    instructions (rule 8). It reaches a prompt only inside the same delimited
+    SOURCES block the corpus travels in, and it is scoped to its own room, so
+    anything hostile inside it can only affect that room's own output.
+    """
+
+    room_id: str
+    title: str = Field(min_length=1, max_length=140)
+    text: str = Field(min_length=1, max_length=120_000)
+    source_url: str | None = Field(
+        default=None,
+        description="Where the text came from, when it was fetched from a page. Display only.",
+    )
+    trace: TraceContext
+
+
+class SourceResponse(BaseModel):
+    document_id: str
+    chunks_written: int
+    skipped_unchanged: bool = Field(
+        description=(
+            "True when the content hash matched what is already stored, so nothing "
+            "was re-embedded. Re-submitting the same text is cheap and safe."
+        )
+    )
+    superseded: bool = Field(
+        description=(
+            "True when this replaced an earlier version of the same titled document. "
+            "The old version is closed rather than deleted, so retrieval stops seeing "
+            "it while the audit trail keeps it."
         )
     )

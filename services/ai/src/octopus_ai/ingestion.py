@@ -162,6 +162,9 @@ class IngestResult:
     document_id: str
     chunks_written: int
     skipped_unchanged: bool
+    # Whether this closed an earlier version of the same titled document. Default
+    # False so the seed path and its tests are unchanged by the addition.
+    superseded: bool = False
 
 
 class Ingestor:
@@ -183,6 +186,7 @@ class Ingestor:
         doc_type: str | None = None,
         effective_date: str | None = None,
         lang: str = "english",
+        owner_room_id: str | None = None,
     ) -> IngestResult:
         source_id = await self._db.upsert_source(
             label=source_label, authority=authority, url=source_url
@@ -195,10 +199,14 @@ class Ingestor:
             # Same bytes, same chunker, and same embedding model as last time:
             # re-embedding would cost money and change nothing.
             logger.info("document unchanged, skipping", extra={"title": title})
-            return IngestResult(document_id=current["id"], chunks_written=0, skipped_unchanged=True)
+            return IngestResult(
+                document_id=current["id"], chunks_written=0, skipped_unchanged=True
+            )
 
         version = 1
+        superseded = False
         if current:
+            superseded = True
             # Changed. Close the old version's validity window BEFORE inserting
             # the new one. Skipping this is how a corpus ends up serving two
             # copies of the same document and reranking them against each other.
@@ -217,12 +225,22 @@ class Ingestor:
                 "effective_date": effective_date,
                 "content_hash": digest,
                 "version": version,
+                # Which workspace this belongs to, or None for the shared corpus.
+                # The chunk rows below deliberately do NOT carry it: the
+                # `doc_chunks_owner_sync` trigger copies it down, so a chunk can
+                # never disagree with its document about who owns it.
+                "owner_room_id": owner_room_id,
             }
         )
 
         pieces = chunk_document(text)
         if not pieces:
-            return IngestResult(document_id=document_id, chunks_written=0, skipped_unchanged=False)
+            return IngestResult(
+                document_id=document_id,
+                chunks_written=0,
+                skipped_unchanged=False,
+                superseded=superseded,
+            )
 
         prefix = deterministic_context(title, market, doc_type)
 
@@ -246,7 +264,10 @@ class Ingestor:
         written = await self._db.replace_chunks(document_id, rows)
         logger.info("ingested", extra={"title": title, "chunks": written})
         return IngestResult(
-            document_id=document_id, chunks_written=written, skipped_unchanged=False
+            document_id=document_id,
+            chunks_written=written,
+            skipped_unchanged=False,
+            superseded=superseded,
         )
 
     async def ingest_many(self, documents: list[dict]) -> list[IngestResult]:

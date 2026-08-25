@@ -148,6 +148,7 @@ class Database:
         candidates: int = 40,
         limit: int = 40,
         project_id: str | None = None,
+        room_id: str | None = None,
     ) -> list[dict]:
         """Dense + sparse + RRF, fused inside Postgres. One round trip."""
         rows = await self._request(
@@ -162,6 +163,11 @@ class Database:
                 "p_candidates": candidates,
                 "p_limit": limit,
                 "p_project_id": project_id,
+                # The workspace asking. Shared rows always come back; this room's
+                # own documents come back only to it. Stated here rather than
+                # left to a policy because this client holds the secret key,
+                # which bypasses RLS entirely.
+                "p_room_id": room_id,
             },
         )
         return rows or []

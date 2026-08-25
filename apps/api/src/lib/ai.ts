@@ -189,6 +189,7 @@ export async function requestPlan(
         trace: {
           agent_run_id: input.agentRunId,
           project_id: input.projectId ?? null,
+          room_id: input.roomId,
         },
       }),
     });
@@ -270,6 +271,11 @@ export interface IntakeInput {
  */
 export const DEFAULT_INTAKE_TIMEOUT_MS = 20_000;
 
+// Embedding scales with how much somebody pasted rather than with a model's
+// thinking, and this runs after the route has already replied, so a generous
+// ceiling costs nobody any waiting.
+const DEFAULT_SOURCE_TIMEOUT_MS = 120_000;
+
 export async function requestIntake(
   baseUrl: string,
   input: IntakeInput,
@@ -324,6 +330,7 @@ export interface ExecuteInput {
   stage: string | null;
   agentRunId: string;
   projectId: string;
+  roomId?: string | null;
   context?: IntakeSlot[];
 }
 
@@ -355,13 +362,93 @@ export async function requestExecution(
         // What intake established. May make the deliverable concrete, may never
         // be cited, and is deliberately absent from the retrieval query.
         context: input.context ?? [],
-        trace: { agent_run_id: input.agentRunId, project_id: input.projectId },
+        trace: {
+          agent_run_id: input.agentRunId,
+          project_id: input.projectId,
+          // The retrieval scope, so a step is written from this workspace's own
+          // business documents as well as the shared corpus.
+          room_id: input.roomId ?? null,
+        },
       }),
     });
 
     if (!res.ok) throw new AiServiceError(`AI service returned ${res.status}`, 'status');
 
     const parsed = PlanResponse.safeParse(await res.json());
+    if (!parsed.success) {
+      throw new AiServiceError(
+        `AI service response did not match the contract: ${parsed.error}`,
+        'contract',
+      );
+    }
+    return parsed.data;
+  } catch (err) {
+    if (err instanceof AiServiceError) throw err;
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new AiServiceError(`AI service timed out after ${timeoutMs}ms`, 'timeout');
+    }
+    throw new AiServiceError(
+      err instanceof Error ? err.message : 'AI service unreachable',
+      'unreachable',
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const SourceResponse = z.object({
+  document_id: z.string(),
+  chunks_written: z.number().int(),
+  skipped_unchanged: z.boolean(),
+  superseded: z.boolean(),
+});
+export type SourceResponse = z.infer<typeof SourceResponse>;
+
+export interface SourceInput {
+  roomId: string;
+  title: string;
+  text: string;
+  sourceUrl?: string | null;
+  agentRunId: string;
+}
+
+/**
+ * Hand the reasoning core a document about the user's own business.
+ *
+ * A longer budget than planning, and for a different reason: this is embedding
+ * work whose cost scales with the length of what somebody pasted, not with a
+ * model's thinking. It is also called from a background continuation after the
+ * route has already replied 202, so nobody is watching a spinner while it runs.
+ */
+export async function requestSource(
+  baseUrl: string,
+  input: SourceInput,
+  timeoutMs = DEFAULT_SOURCE_TIMEOUT_MS,
+): Promise<SourceResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${baseUrl}/sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        room_id: input.roomId,
+        title: input.title,
+        text: input.text,
+        source_url: input.sourceUrl ?? null,
+        trace: {
+          agent_run_id: input.agentRunId,
+          project_id: null,
+          room_id: input.roomId,
+        },
+      }),
+    });
+
+    if (!res.ok) throw new AiServiceError(`AI service returned ${res.status}`, 'status');
+
+    const parsed = SourceResponse.safeParse(await res.json());
     if (!parsed.success) {
       throw new AiServiceError(
         `AI service response did not match the contract: ${parsed.error}`,

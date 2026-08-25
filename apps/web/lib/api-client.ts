@@ -31,9 +31,26 @@ async function bff<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function createRoom(name: string) {
-  return bff<{ id: string; name: string; projectId: string | null }>('/rooms', {
+  // `ownerId` is already sent by the API and was simply not declared here. The
+  // chat shell derives whether the viewer may approve a card from it, so a new
+  // room without it would render as one the creator cannot act in.
+  return bff<{ id: string; name: string; projectId: string | null; ownerId: string | null }>(
+    '/rooms',
+    { method: 'POST', body: JSON.stringify({ name }) },
+  );
+}
+
+/**
+ * Tell Octopus something about this business.
+ *
+ * Accepted rather than completed: the API replies 202 and the outcome arrives in
+ * the room as a message, because reading a page and embedding it takes longer
+ * than a request should be held open for.
+ */
+export function addSource(roomId: string, input: { title?: string; text?: string; url?: string }) {
+  return bff<{ status: string; runId: string }>(`/rooms/${roomId}/sources`, {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(input),
   });
 }
 

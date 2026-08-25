@@ -42,6 +42,14 @@
 
 Turn the house style into shipped, accessible, themeable React — and make it **hard to ship slop** (lint/guardrails).
 
+### Two dead ends in the shell, closed
+
+**The rail's `+` had no handler at all.** Room creation lived only in the empty state, which stops rendering the moment you have one room, so a person with one workspace could not make another and the button that looked like the way to do it did nothing. That is the affordance-that-lies this design system's own rule against dead buttons exists to prevent. `CreateBusinessPanel` now creates the room and **selects it**, which `CreateRoom.tsx` does not: that component calls `router.refresh()`, so the new workspace would appear in the rail while the person kept looking at the old one.
+
+**`AddSourcePanel`** is where somebody tells Octopus what their business is: a description, a page to read, or a `.md`/`.txt` file read in the browser and dropped into the same box. No upload endpoint and no storage, because the text is the payload. It is shown only to the workspace owner, and the composer button is **absent** rather than disabled for everyone else, since an affordance that only fails when used is worse than none.
+
+Both reuse `.cmdk-scrim`, so there is one overlay treatment rather than a second that drifts from it. Every token used was checked against `globals.css` before shipping: the first draft referenced five that do not exist, which is precisely the defect recorded when `chat.css` was found referring to `--hairline` and `--warning` and silently doing nothing.
+
 ## Agent messages in the stream
 
 Posting a message also starts an agent run (`startAgentRun`), and the reply arrives over Realtime as an ordinary member message with `authorKind: 'agent'`, rendered with the accent bar and **Agent** badge. Two rules the client holds to:

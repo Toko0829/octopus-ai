@@ -6,6 +6,7 @@ import { messageRoutes } from './routes/messages';
 import { roomRoutes } from './routes/rooms';
 import { agentRunRoutes } from './routes/agent-runs';
 import { embedRoutes } from './routes/embeds';
+import { sourceRoutes } from './routes/sources';
 import { createAuthVerifier } from './plugins/auth';
 import { startTicker } from './lib/ticker';
 import { createServiceClient, requireSupabaseConfig } from './lib/supabase';
@@ -55,6 +56,16 @@ export async function buildServer(): Promise<FastifyInstance> {
     supabase,
     aiServiceUrl: env.AI_SERVICE_URL,
     aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+  });
+
+  // What the workspace tells us about its own business. Ingestion is embedding
+  // work rather than a reasoning step, so it does not share the plan budget: the
+  // route replies 202 and the default source timeout applies to the background
+  // continuation, where nobody is waiting on it.
+  await app.register(sourceRoutes, {
+    verify,
+    supabase,
+    aiServiceUrl: env.AI_SERVICE_URL,
   });
 
   // The durable backbone (ADR-0010). Started here rather than as a separate

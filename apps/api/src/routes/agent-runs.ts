@@ -429,6 +429,25 @@ export async function agentRunRoutes(
    * Only from `answered`, so this can never resurrect a card somebody else has
    * since acted on.
    */
+  /**
+   * Close a question the person walked away from.
+   *
+   * `dismissed` rather than `expired`, which means nobody acted in time, or
+   * `rejected`, which is a verdict on something they were shown. This was a
+   * deliberate act and neither of those, and `feedback_events` reads these
+   * states as training labels, so borrowing one would put an untrue sentence in
+   * the record.
+   */
+  async function dismissPendingIntake(embedId: string): Promise<void> {
+    const admin = createServiceClient(opts.supabase);
+    const { error } = await admin
+      .from('action_embeds')
+      .update({ state: 'dismissed', acted_at: new Date().toISOString() })
+      .eq('id', embedId)
+      .eq('state', 'pending');
+    if (error) app.log.error({ err: error, embedId }, 'could not dismiss the question');
+  }
+
   async function reopenPendingIntake(embedId: string): Promise<void> {
     const admin = createServiceClient(opts.supabase);
     const { error } = await admin
@@ -588,6 +607,19 @@ export async function agentRunRoutes(
       return { goal: message, context: [] };
     }
 
+    // The person overrode an open card to start something new. Closing it first
+    // matters: left pending, the next message would be read as an answer to a
+    // question nobody is going to answer, which is the loop this escape exists
+    // to break. Conditional on `pending` for the same reason consuming one is:
+    // two runs racing must not both act on it.
+    if (turn.kind === 'new_goal' && turn.dismissedEmbedId) {
+      await dismissPendingIntake(turn.dismissedEmbedId);
+      app.log.info(
+        { agentRunId: runId, roomId, embedId: turn.dismissedEmbedId },
+        'question card dismissed for a new goal',
+      );
+    }
+
     // The plan asked this person to do something only they can do, and they have
     // answered. That completes the step rather than describing a goal, so it never
     // reaches the reasoning core: there is nothing to reason about, the answer IS
@@ -699,7 +731,8 @@ export async function agentRunRoutes(
         },
         'Before I plan this, a few things I do not know yet.\n\n' +
           `${lines}\n\n` +
-          'Answer what you can in one message. I will work with whatever you give me.',
+          'Answer what you can in one message. I will work with whatever you give me.\n\n' +
+          'To start on something else instead, begin your message with "new goal:".',
         runId,
         0,
       );

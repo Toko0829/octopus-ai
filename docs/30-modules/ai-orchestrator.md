@@ -46,6 +46,20 @@
 >
 > **Durable, and on Postgres rather than on a vendor** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md), amending ADR-0001). Trigger.dev was the Phase 0 pin and stayed blocked on credentials for the length of the project, while two later decisions quietly removed the problem it solves: ADR-0006 left **no continuation to preserve**, since the reasoning core is stateless and Node commits each step, and `20260813120000` put the state machine under trigger enforcement in the database. A run's progress is rows, so a crash loses a worker rather than a run. What was actually missing was narrow and is now built: a lease on `task_runs` so a dead worker is distinguishable from a slow one, a reclaim sweep, and a ticker holding a single claim. **A human waitpoint needed nothing at all**: a task in `escalated` or `needs_user` waits in a row at zero compute for as long as it takes, which is the property a durable engine sells and this architecture gets by construction. Verified: 11 API assertions plus a Realtime probe confirming the agent's message is broadcast to a subscribed member.
 
+## Sources a workspace supplies (`POST /sources`)
+
+`services/ai` ingests one document about the user's own business, scoped to their room, and `/plan` and `/execute` now pass that room into retrieval so it is blended with the shared corpus.
+
+**It exists because the deliverables said so.** Every artifact closed by naming what it could not ground, and ad copy came back written about advertising rather than about the product. The pipeline was right and the knowledge was absent.
+
+**Isolation is enforced here, not by RLS.** This service holds the secret key, which bypasses row-level security, so `owner_room_id` on the way in and `p_room_id` on the way out are the only things keeping one customer's product description out of another's ad copy. `supabase/tests/room_sources.sql` asserts it through the function rather than through a policy, for exactly that reason.
+
+**Synchronous, where ADR-0006 says ingestion is job-driven.** One bounded document is seconds on a warm embedder, and Node accepts the request with 202 and calls this from a background continuation, so nobody waits. The ADR's concern is the request path, and the request path is Node's. There is no job runner in this service to hand it to; when one exists this moves.
+
+The text is untrusted (rule 8) and reaches a prompt only inside the same delimited SOURCES block the corpus travels in. Its room scope bounds the blast radius of anything hostile inside it to the workspace that submitted it.
+
+**What retrieval scoping does and does not buy, measured.** The source surfaces when a step's query is about the product and not when it is about method, which is the cross-encoder working rather than a fault. So a source sharpens the steps that ask about the business, while method steps still ground in principles. Making the product known to every step regardless of query belongs with `context`, which already carries the person's own facts into the prompt without pretending they were retrieved.
+
 ## Two-layer design
 
 - **Durable execution backbone** (Postgres, [ADR-0010](../40-adr/0010-postgres-durable-runner.md)): state is rows under a trigger-enforced machine, a lease distinguishes a dead worker from a slow one, and a ticker walks the graph. It survives crashes and deploys, retries, and **waits for days at zero compute** on a task sitting in `escalated`, which is a waitpoint by construction rather than a primitive anyone had to buy. ADR-0001 pinned Trigger.dev for this and is amended; Trigger.dev and then Temporal remain the documented escape hatches.

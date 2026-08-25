@@ -28,6 +28,8 @@ import { MessageStream } from './MessageStream';
 import { Composer } from './Composer';
 import { ContextPanel } from './ContextPanel';
 import { CommandPalette } from './CommandPalette';
+import { AddSourcePanel } from './AddSourcePanel';
+import { CreateBusinessPanel } from './CreateBusinessPanel';
 
 interface Props {
   viewerId: string;
@@ -55,6 +57,11 @@ export function ChatApp({
   const [activeChan, setActiveChan] = useState<string | null>(initialChannels[0]?.id ?? null);
   const [presence, setPresence] = useState<Record<string, Presence>>({});
   const [cmdkOpen, setCmdkOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  // Rooms arrive as a server prop and become state here, because creating one has
+  // to show up without a full page reload and has to move the selection with it.
+  const [roomList, setRoomList] = useState(rooms);
   const [toast, setToast] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
 
@@ -71,7 +78,7 @@ export function ChatApp({
    */
   const embedFetchedRef = useRef<Set<string>>(new Set());
 
-  const businesses = useMemo(() => rooms.map(toBusiness), [rooms]);
+  const businesses = useMemo(() => roomList.map(toBusiness), [roomList]);
   const uiChannels = useMemo(() => channels.map(toChannel), [channels]);
   const uiMembers = useMemo<UiMember[]>(
     () => members.map((m) => toMember(m, viewerId, presence[m.userId] ?? 'offline')),
@@ -309,7 +316,12 @@ export function ChatApp({
 
   return (
     <div className="shell">
-      <GuildRail businesses={businesses} activeId={roomId} onSelect={selectRoom} />
+      <GuildRail
+        businesses={businesses}
+        activeId={roomId}
+        onSelect={selectRoom}
+        onCreate={() => setCreateOpen(true)}
+      />
       <ChannelSidebar
         business={business}
         channels={uiChannels}
@@ -332,7 +344,11 @@ export function ChatApp({
           canAct={canAct}
           onEmbedAction={handleEmbedAction}
         />
-        <Composer channelName={activeChannel?.name ?? null} onSend={handleSend} />
+        <Composer
+          channelName={activeChannel?.name ?? null}
+          onSend={handleSend}
+          onAddSource={canAct ? () => setSourceOpen(true) : undefined}
+        />
       </div>
       <ContextPanel members={uiMembers} />
       <CommandPalette
@@ -345,6 +361,22 @@ export function ChatApp({
         }}
         onNotify={flash}
       />
+      {sourceOpen && (
+        <AddSourcePanel
+          roomId={roomId}
+          onClose={() => setSourceOpen(false)}
+          onAccepted={() => flash('Reading that now. I will say what I learned.')}
+        />
+      )}
+      {createOpen && (
+        <CreateBusinessPanel
+          onClose={() => setCreateOpen(false)}
+          onCreated={(room) => {
+            setRoomList((cur) => [...cur, room as (typeof cur)[number]]);
+            selectRoom(room.id);
+          }}
+        />
+      )}
       {toast && (
         <div className="toast">
           <span className="pulse" aria-hidden />

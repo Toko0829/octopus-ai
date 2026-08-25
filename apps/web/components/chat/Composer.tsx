@@ -6,9 +6,15 @@ import { IconPlus, IconSend } from './icons';
 interface Props {
   channelName: string | null;
   onSend: (text: string) => void;
+  /**
+   * Opens the add-source panel. Absent for anyone who is not the workspace
+   * owner, and the button is then not rendered at all rather than rendered and
+   * refused: an affordance that only fails when used is worse than none.
+   */
+  onAddSource?: () => void;
 }
 
-export function Composer({ channelName, onSend }: Props) {
+export function Composer({ channelName, onSend, onAddSource }: Props) {
   const [value, setValue] = useState('');
 
   function submit() {
@@ -21,9 +27,16 @@ export function Composer({ channelName, onSend }: Props) {
   return (
     <div className="composer">
       <div className="composer-box">
-        <button className="icon-btn" aria-label="Add attachment">
-          <IconPlus />
-        </button>
+        {onAddSource && (
+          <button
+            className="icon-btn"
+            onClick={onAddSource}
+            aria-label="Tell Octopus about your business"
+            title="Tell Octopus about your business"
+          >
+            <IconPlus />
+          </button>
+        )}
         <input
           className="composer-input"
           placeholder={channelName ? `Message #${channelName}` : 'Message this room'}

@@ -6,9 +6,11 @@ interface Props {
   businesses: UiBusiness[];
   activeId: string;
   onSelect: (id: string) => void;
+  /** Opens the create-business panel. Without it the button below is a lie. */
+  onCreate: () => void;
 }
 
-export function GuildRail({ businesses, activeId, onSelect }: Props) {
+export function GuildRail({ businesses, activeId, onSelect, onCreate }: Props) {
   return (
     <nav className="rail" aria-label="Your businesses">
       <div className="rail-home" title="Octopus">
@@ -28,7 +30,12 @@ export function GuildRail({ businesses, activeId, onSelect }: Props) {
           {b.mark}
         </button>
       ))}
-      <button className="rail-add" aria-label="Add business" title="Add business">
+      <button
+        className="rail-add"
+        onClick={onCreate}
+        aria-label="Add business"
+        title="Add business"
+      >
         <IconPlus width={18} height={18} />
       </button>
     </nav>

@@ -34,6 +34,14 @@
 - **PAUSED** — user kill-switch honored at a safe checkpoint.
 - **COMPLETED / CANCELLED** — terminal.
 
+### Starting something else while a question is open
+
+`decideIntakeTurn` reads every message from the room owner as a reply to whatever the room is waiting for. That is right almost always, and it had no way out. It cost a real goal: four steps were waiting on decisions, the person typed a brand new request, and it was filed as the answer to all four. Nothing failed, and what they actually asked for was gone.
+
+A message beginning `new goal:` (or `new:`) is now read as a new goal, and the stale card is moved to `dismissed` before planning, conditionally on `pending` so two runs racing cannot both act on it. The question and the waiting digest both advertise it, because an escape nobody is told about is not one.
+
+**No content heuristic decides this.** Guessing whether a sentence is "a new topic" would be wrong in both directions, and the expensive direction is discarding an answer somebody was asked for. An explicit prefix is unambiguous. `new goal:` with nothing after it leaves the card open rather than planning for an empty string.
+
 ## Playbook model
 
 A **playbook = Business Archetype × Jurisdiction Pack**, compiled by [rag-knowledge](rag-knowledge.md) into a **typed DAG**. Versioned (`playbook_versions`) so a plan is reproducible and auditable. The same compiler that outputs an Austin cafe outputs a Berlin online store or (future) a Tbilisi cafe.

@@ -88,6 +88,16 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
     log.warn({ taskId, err: String(err) }, 'could not read plan context, executing without it');
   }
 
+  // Resolved once and used twice: as the retrieval scope, so the step is written
+  // from this workspace's own business documents, and as the room the finished
+  // artifact is posted into. Both previously looked it up separately.
+  let roomId: string | null = null;
+  try {
+    roomId = await roomForProject(admin, task.project_id);
+  } catch (err) {
+    log.warn({ taskId, err: String(err) }, 'could not resolve the room for this task');
+  }
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const agentRunId = randomUUID();
 
@@ -108,6 +118,7 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
           stage: task.stage,
           agentRunId,
           projectId: task.project_id,
+          roomId,
           context,
         },
         deps.aiTimeoutMs,
@@ -196,6 +207,7 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
       // delivered invisibly, which looks from outside exactly like stopping.
       await postArtifact(admin, {
         projectId: task.project_id,
+        roomId,
         taskId,
         artifactId: artifact?.id ?? null,
         step: task.title,
@@ -280,6 +292,7 @@ async function postArtifact(
   admin: SupabaseClient,
   input: {
     projectId: string;
+    roomId: string | null;
     taskId: string;
     artifactId: string | null;
     step: string;
@@ -291,10 +304,10 @@ async function postArtifact(
   },
 ): Promise<void> {
   try {
-    const roomId = await roomForProject(admin, input.projectId);
-    // Loud, because the failure this replaced was silent. A missing room used to
-    // mean a finished, cited artifact was written to the database and simply
-    // never mentioned, which reads to the person as the system having stopped.
+    // Already resolved by the caller. Loud when it is missing, because the
+    // failure this replaced was silent: a finished, cited artifact written to
+    // the database and never mentioned, which reads as the system having stopped.
+    const roomId = input.roomId;
     if (!roomId) {
       input.log?.warn(
         { projectId: input.projectId, artifactId: input.artifactId },

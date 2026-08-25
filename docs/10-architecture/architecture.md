@@ -55,6 +55,18 @@ That mattered because delivery resolved the room by asking `rooms` which project
 
 `roomForProject` now resolves through `projects.source_embed_id` to the card's `room_id`. That link is unique, set at creation, and never changes: a project came from exactly one card, posted in exactly one room. `rooms.project_id` keeps its meaning as "the project this room is currently about", which is fine for a UI to read and is simply not the delivery path, because it answers a question that changes and this one does not. Both call sites, the artifact announcement and the waiting digest, now log loudly when no room resolves instead of returning quietly.
 
+### Artifact cards had never rendered, and two lines were why
+
+`apps/api/src/routes/messages.ts` validated every stored embed against a discriminated union with `plan` and `question` arms and no `artifact` arm, and `packages/contracts` `EmbedState` omitted `reported`, which is the state every artifact embed is written with. Either alone drops the row: `toEmbed` returns null on a parse failure, so the card was silently discarded on read and only the plain-text message body reached the room. `ArtifactCard` has existed and never once rendered.
+
+A union that ignores what it does not recognise is right for a corrupt row and wrong for a variant somebody forgot to add, and nothing distinguished the two. Both are closed, and a stored artifact now round-trips.
+
+### `POST /api/rooms/:roomId/sources`
+
+Owner-only, membership by RLS as the caller with the 404-not-403 idiom, and exactly one of `text` or `url`. Replies **202** and does the work in a background continuation, posting the outcome into the room: what was recorded, that it was unchanged, or why it failed. Nothing is silent (rule 16).
+
+URL fetching lives here rather than in `services/ai`, which talks to Postgres and to providers and to nothing else. It is the first outbound call either service makes on a user's instruction, so it is guarded on protocol, host, size, time and content type, with the redirect target re-vetted. DNS rebinding is explicitly not defended against and is recorded as a known limit in the module rather than left to be assumed.
+
 ## Service map
 
 | Service        | Tech                                                                                     | Responsibility                                                                                                                                                                                                                     |

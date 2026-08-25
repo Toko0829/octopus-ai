@@ -67,7 +67,8 @@ export function waitingMessage(summary: WaitingSummary, titles: Map<string, stri
     parts.push(
       `I have started on the plan and ${summary.needsUser.length === 1 ? 'one step needs' : `${summary.needsUser.length} steps need`} you:\n\n${lines}\n\n` +
         'Each is a decision, an authorisation, or something only you know. ' +
-        'Tell me what you want and I will carry on.',
+        'Tell me what you want and I will carry on. To start on something else ' +
+        'instead, begin your message with "new goal:".',
     );
   }
 

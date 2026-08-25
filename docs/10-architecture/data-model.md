@@ -10,6 +10,20 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### A workspace can hold its own knowledge (`20260817120000_room_sources.sql`)
+
+Every deliverable the executor wrote ended by naming what it could not include, because the corpus is ten documents of marketing principles and knows nothing about the user's product. `documents` and `doc_chunks` gain `owner_room_id`, the owner-sync trigger copies it down alongside `owner_project_id`, and `hybrid_search` gains `p_room_id` with the predicate `owner_room_id is null or owner_room_id = p_room_id`.
+
+**Room rather than project, and that is not arbitrary.** A project does not exist until a plan is approved, business knowledge arrives before that, and one room now carries many projects. `owner_project_id` is untouched and remains the right scope for what a single project produces, which is what the flywheel will write back.
+
+**The read policies had to change too**, and this is the part that would have leaked. They admitted a row when `owner_project_id is null`, which was complete while that was the only owner column: a room-scoped document has a null project owner and satisfied it. Both owners must now be null for a row to be shared.
+
+**The old eleven-argument `hybrid_search` is dropped rather than left beside the new one.** Adding a parameter creates a new function, and two functions of one name is how a scoping fix silently fails to apply to a caller that kept binding to the old signature.
+
+Verified by `supabase/tests/room_sources.sql`, **14 assertions against the live database**: the trigger syncs, room A retrieves its own and the shared corpus and never room B's, an unknown room gets shared only, a client sees neither room's rows, and exactly one `hybrid_search` exists. Asserted through the function rather than through RLS on purpose, because the AI service calls it with the secret key, which bypasses RLS entirely: that predicate is the only isolation there is.
+
+The same migration adds `dismissed` to `embed_state`, for a question card somebody walked away from. Not `expired`, which means nobody acted in time, and not `rejected`, which is a verdict on something they were shown.
+
 ## ERD overview (domains)
 
 ```

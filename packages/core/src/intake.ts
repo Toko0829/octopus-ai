@@ -39,6 +39,12 @@ export type IntakeTurn =
       kind: 'new_goal';
       goal: string;
       stalls: 0;
+      /**
+       * Set only when the person overrode an open card to start something new.
+       * The caller closes that card before planning, so the question does not
+       * sit waiting for an answer nobody is going to give.
+       */
+      dismissedEmbedId?: string;
     }
   | {
       /**
@@ -116,6 +122,29 @@ export function decideIntakeTurn(input: IntakeTurnInput): IntakeTurn {
   }
 
   const { payload, embedId } = input.pending;
+
+  // **6. The owner can always say "this is something else".**
+  //
+  // Every branch below reads the message as a reply to what the room is already
+  // waiting for, which is right almost always and has no way out. It cost a real
+  // goal: four steps were waiting on decisions, the person typed a brand new
+  // request, and it was filed as the answer to all four. Nothing failed, and
+  // what they actually asked for was gone.
+  //
+  // No content heuristic decides this. Guessing whether a sentence is "a new
+  // topic" would be wrong in both directions, and the expensive direction is
+  // discarding an answer someone was asked for. An explicit prefix is
+  // unambiguous, and the copy that asks the question advertises it.
+  const escape = /^new(\s+goal)?\s*[:：]\s*/i.exec(goal);
+  if (escape) {
+    const rest = goal.slice(escape[0].length).trim();
+    // "new goal:" with nothing after it is a person who has not said what they
+    // want yet. Treating that as a goal would plan for an empty string, so the
+    // card stays open and this falls through to the branches below.
+    if (rest) {
+      return { kind: 'new_goal', goal: rest, stalls: 0, dismissedEmbedId: embedId };
+    }
+  }
 
   // **5. A card waiting on TASK answers is the plan asking, not intake.**
   //
