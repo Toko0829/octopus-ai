@@ -37,7 +37,15 @@ Approve / Pay / Sign / Assign / Accept — **permission-gated by role**, carryin
 
 > **Live (Phase 1):** the `action_embeds` table (`20260812120000`) and its first component, `plan`. Rows are **client-readable, server-written**: membership is inherited from the message's room, and there is no client INSERT or UPDATE policy, because a client that could insert here could fabricate an approval card. `unique (message_id)` keeps it one card per message.
 >
-> **Not built yet:** the action route. Acting on an embed must re-check `required_role` server-side and move `state` off `pending`, so the card currently renders read-only. The `state` column exists precisely to make an embed single-use, which matters far more for Pay and Sign than for a plan: without it, approving twice is two approvals.
+> **The action route is live**, re-checking membership, `required_role` and `state` server-side, with a conditional update so two concurrent approvals cannot both win. The `state` column is what makes an embed single-use, which matters far more for Pay and Sign than for a plan: without it, approving twice is two approvals.
+>
+> **Approving a plan card now creates work**, not just a verdict: `public.materialise_plan` turns it into a project and one task per step, in one transaction, reading the payload from the card so what was approved is what gets built ([architecture.md](../10-architecture/architecture.md)). The embed is therefore the authorisation boundary between a proposal and execution, which is the shape Pay and Sign inherit.
+>
+> **The `question` component is live** (`20260815120000`), which is the spec's batched user-only question finally having something that produces one: intake asks before a vague goal reaches retrieval. The card additionally **carries the intake's state** between rounds, because the AI service is stateless (ADR-0006) and this row is already written, already RLS-scoped to the room, and already visible to the person whose answers it holds.
+>
+> Its answer path is different from every other embed's, and that matters. An answer is an ordinary **chat message**, not a write to `action_embeds`, so it never reaches the action route where `required_role` is checked. The owner-only rule is therefore enforced in the agent run instead: a reply from anyone else is treated as a new goal rather than as an answer, which is what it would have been without an intake in flight. `required_role` is still set, for the UI.
+>
+> `embed_state` gains **`answered`**, because the four original states describe a verdict and a question has none. Recording one as `approved` would put an untrue sentence in the audit trail and, worse, hand the flywheel a labelled example of a person approving something they were never shown.
 >
 > **A card arrives on fetch, not on broadcast.** The Postgres trigger broadcasts the `messages` row and cannot see another table, so a plan card appears on the next load rather than instantly. Visible latency, never a wrong render.
 

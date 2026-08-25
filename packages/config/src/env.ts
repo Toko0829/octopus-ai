@@ -28,6 +28,28 @@ const EnvSchema = z.object({
   // The default is not raised to cover the slowest case, because agent runs are
   // async (202 + runId) and a long default only delays reporting a hung service.
   AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
+  /**
+   * Intake's own budget, deliberately far shorter than the planning one.
+   *
+   * Intake is a single cheap-tier model call with no retrieval, measured at
+   * roughly 1.3s warm, so 20s is generous for steady state. It is configurable
+   * for the cold case rather than the slow one: the reasoning service loads a
+   * 2.2GB embedder during startup and does not serve until it has, so a request
+   * arriving during a boot or a dev-server reload queues behind that and can
+   * exceed a budget sized for warm traffic. Raising this trades a slower failure
+   * for fewer spurious ones; it is not a fix for an intake that is genuinely slow.
+   */
+  INTAKE_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
+  /**
+   * How often the durable backbone walks the DAG (ADR-0010).
+   *
+   * A heartbeat, not an event stream: work starts within one interval rather than
+   * instantly. That is affordable because the interactive path does not wait on
+   * it, since approving a plan already runs a tick inline, so this only bounds how
+   * quickly background progress is noticed and how quickly a lost worker is
+   * reclaimed.
+   */
+  TICK_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
 
   // Services.
   API_PORT: z.coerce.number().int().positive().default(3001),

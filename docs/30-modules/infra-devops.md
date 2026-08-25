@@ -39,6 +39,31 @@ supabase/       migrations, RLS policies, seed, edge functions
 - Supabase → managed cloud.
 - **Region co-location** near the launch cohort to minimize Postgres/Realtime latency.
 
+### `services/ai` has a container, and it is sized by measurement rather than guess
+
+`services/ai/Dockerfile` builds the reasoning core CPU-only, with **both model snapshots baked in**. Build it from the service directory, not the repo root: the service sits outside the pnpm workspace ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) and needs nothing from it, so `docker build -t octopus-ai services/ai` ships a 1.1 MB context instead of `node_modules`.
+
+Weights are baked rather than fetched on boot because a cold start otherwise takes minutes and needs the network healthy at the worst moment, and because it would undo [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)'s startup warm-up: a missing or corrupt model is supposed to fail at boot with a named error, not on someone's first question.
+
+**Measured on the built image, not estimated:**
+
+|                                |                                             |
+| ------------------------------ | ------------------------------------------- |
+| Image layers                   | **6.44 GB** (4.59 GB weights, 1.71 GB venv) |
+| Peak RSS, both models resident | **5.15 GB** (embedder 4.22, reranker +0.93) |
+| Cold start to `/health`        | ~17s, embedder warmed                       |
+| Reranker first load            | ~22s, lazy on first use                     |
+
+So the deployment floor is an **8 GB instance**, and that answers the sizing question [roadmap.md](../10-architecture/roadmap.md) defers to Phase 2. One uvicorn worker, deliberately: each worker holds its own copy of both models, so a second doubles memory to buy concurrency on a service whose bottleneck is per-request CPU. Scale with instances.
+
+**CPU-only torch is pinned in `uv.lock`, not in the Dockerfile.** The CUDA build was 2,480 MB of the 3,179 MB of Linux wheels, 78% of the payload, and no environment here has a GPU. Pinning it in the image alone would have left CI scoring the golden set on one torch build while production ran another, which [ADR-0009](../40-adr/0009-local-reranker.md) records as the kind of change that moves model scores. One torch everywhere, and `uv.lock` is already in the eval's trigger paths so the gate re-measures it.
+
+Two things the build gets right only because running it proved them wrong first. **Model paths are stable symlinks (`/opt/models/embed`) set as plain `ENV`**, not resolved into a shell wrapper: the first version put them in the CMD's shell only, so `docker run <image> python -m octopus_ai.evaluation --shard ...` — exactly how a CI shard would invoke it — saw an empty path and failed with a repo-id error. That is now a smoke test in the workflow rather than a thing to remember. And the container takes **secrets from the environment but never model location**; passing a developer's `services/ai/.env` straight in drags a host-specific `EMBED_LOCAL_PATH` along with it and breaks the image's own layout.
+
+The `ai-image` CI job builds it on any PR touching `services/ai/`, and publishes to **GHCR** from `main` as `:${{ github.sha }}` and `:latest`. Layer cache lives in the registry rather than the Actions cache, because the weights layer alone is 4.6 GB against a 10 GB per-repository cache limit that the uv and HF caches already share.
+
+**The eval shards deliberately do not run inside the image, and that is a measurement rather than an oversight.** Rerouting them was the original motivation: setup is ~90s per shard, and at five shards that is the floor which stopped further splitting from helping. But most of that 90s was `uv sync` pulling the CUDA torch stack, and the lockfile pin already removed it from every install including CI's. What remains is restoring ~4.6 GB of weights from the Actions cache, and a registry pull of an image containing those same weights moves the same bytes. That trade might win and might not. Claiming it without measuring would be the same unmeasured "obvious fix" the three-shard split already taught this workflow to distrust, where per-shard call counts turned out even and per-call time did not.
+
 ## Connection pooling
 
 Fastify → Postgres via **Supavisor / PgBouncer transaction pooling** to survive connection storms (serverless + many workers).
@@ -46,6 +71,10 @@ Fastify → Postgres via **Supavisor / PgBouncer transaction pooling** to surviv
 ## CI/CD
 
 **GitHub Actions** + Turborepo remote cache; review apps per PR; the **`.docmeta.yml` doc-drift check** (fails a PR that touches mapped code without touching its owning doc); RAG **eval gates**; **pgTAP** RLS tests; OpenAPI + ts-rest client regeneration.
+
+**`apps/api` now has a runner too, and what forced it is worth recording.** The note below says to add vitest per package as each grows tests. `apps/api` grew four in one session, and **every one of them was silent**: an error message that told a person the reasoning service had not responded when it had, an intake branch that fell through to planning without saying so, a token limit that turned the plan card into prose, and a search query polluted with the person's own audience. None raised, none failed a type check, and each was found only by driving the product by hand and reading what appeared in the room. Manual checking is what made that session slow, not the defects themselves.
+
+**`pnpm test` is now a CI step, and it is new.** `services/ai` has had pytest since it existed while the TypeScript half had nothing, which `README.md` recorded as a gap rather than a decision. `packages/core` is what made that untenable: it decides whether a task runs unsupervised, and "read it carefully" is not a control. **vitest**, deliberately scoped to `packages/core` rather than installed across the monorepo, because a test runner in a package with no tests is a dependency with no purpose. Add it per package as each grows tests. `turbo run test` picks up any package declaring the script.
 
 ## Migrations
 

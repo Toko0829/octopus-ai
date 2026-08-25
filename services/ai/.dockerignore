@@ -1,0 +1,20 @@
+# The build context is this directory. Everything the image needs is pyproject,
+# uv.lock, src, corpus and eval; the rest is either rebuilt inside the image or
+# must never enter it.
+
+# Rebuilt by `uv sync` in the deps stage, and a host venv is the wrong platform.
+.venv
+
+# Secrets. The platform injects the environment in production; a .env reaching a
+# layer would bake credentials into a distributable artifact.
+.env
+.env.*
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Tests are not shipped. CI runs pytest against a checkout, not against this
+# image, and the eval shards need `eval/` rather than `tests/`.
+tests/

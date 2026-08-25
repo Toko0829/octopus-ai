@@ -476,6 +476,33 @@
   background: var(--surface-hover);
   border-color: var(--border);
 }
+/* Shown only on the two tiers that change what happens to the person. A chip on
+   every step is a wall of badges nobody reads, which is worse than none on the
+   one surface built for checking. */
+.risk {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+}
+.risk-icon {
+  font-weight: 700;
+}
+.risk-high {
+  color: var(--warn);
+  background: var(--warn-quiet);
+  border-color: color-mix(in oklab, var(--warn) 35%, transparent);
+}
+.risk-external {
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
 .plan-sources {
   padding: var(--sp-3) var(--sp-5);
   border-top: 1px solid var(--border);
@@ -1184,4 +1211,95 @@
   resize: vertical;
   font-family: inherit;
   font-size: 13px;
+}
+
+/* ------------------------------------------------------------ artifact card --
+ *
+ * The deliverable an approved step produced. Deliberately quieter than the plan
+ * card: a plan is a proposal that asks for a decision, this is finished work
+ * being handed over, and shouting about it would make every completed step
+ * compete with the one thing that does need an answer.
+ *
+ * Hairline border rather than shadow, following the Command Deck rule that
+ * hairlines do the structural work and elevation is reserved for genuine layering.
+ */
+.artifact-card {
+  margin-top: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+  max-width: 640px;
+}
+
+.artifact-head {
+  padding: var(--sp-4) var(--sp-5) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.artifact-step {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.artifact-stage {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-hover);
+  color: var(--text-muted);
+}
+
+.artifact-title {
+  margin: var(--sp-2) 0 0;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.artifact-body {
+  padding: var(--sp-4) var(--sp-5);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.artifact-body p {
+  margin: 0 0 var(--sp-3);
+}
+
+.artifact-body p:last-child {
+  margin-bottom: 0;
+}
+
+.artifact-sources {
+  padding: var(--sp-3) var(--sp-5) var(--sp-4);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.artifact-sources-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.artifact-sources ul {
+  margin: var(--sp-2) 0 0;
+  padding-left: var(--sp-4);
+}
+
+/* Stated in words, never by colour alone: an uncited deliverable must not be
+ * able to pass as grounded (rule 10, and the accessibility rule that role and
+ * status are never carried by colour). */
+.artifact-unverified {
+  margin: 0;
+  color: var(--amber-500);
 }

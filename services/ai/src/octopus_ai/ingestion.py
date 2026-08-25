@@ -195,9 +195,7 @@ class Ingestor:
             # Same bytes, same chunker, and same embedding model as last time:
             # re-embedding would cost money and change nothing.
             logger.info("document unchanged, skipping", extra={"title": title})
-            return IngestResult(
-                document_id=current["id"], chunks_written=0, skipped_unchanged=True
-            )
+            return IngestResult(document_id=current["id"], chunks_written=0, skipped_unchanged=True)
 
         version = 1
         if current:
@@ -206,9 +204,7 @@ class Ingestor:
             # copies of the same document and reranking them against each other.
             await self._db.supersede_document(current["id"])
             version = int(current["version"]) + 1
-            logger.info(
-                "superseding document", extra={"title": title, "new_version": version}
-            )
+            logger.info("superseding document", extra={"title": title, "new_version": version})
 
         document_id = await self._db.insert_document(
             {

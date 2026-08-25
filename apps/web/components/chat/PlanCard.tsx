@@ -26,12 +26,33 @@
 'use client';
 
 import { useState } from 'react';
-import type { ActionEmbed, FunnelStage, PlanStep, StepOwner } from '@octopus/contracts';
+import type {
+  FunnelStage,
+  PlanActionEmbed,
+  PlanStep,
+  StepOwner,
+  TaskRiskTier,
+} from '@octopus/contracts';
 
 const ownerMeta: Record<StepOwner, { cls: string; label: string }> = {
   AI: { cls: 'owner-ai', label: 'AI' },
   HUMAN: { cls: 'owner-human', label: 'Human' },
   YOU: { cls: 'owner-you', label: 'You' },
+};
+
+/**
+ * Only the two tiers that change what happens are shown.
+ *
+ * `reversible` is the ordinary case and covers most of a plan, so a chip on every
+ * step would be a wall of badges that teaches people to stop reading them, which
+ * costs more than it buys on the one surface built for checking. `read_only` is
+ * quieter still. A step with no entry here renders no chip.
+ *
+ * Word plus icon, never colour alone (rule 15).
+ */
+const riskMeta: Partial<Record<TaskRiskTier, { cls: string; label: string; icon: string }>> = {
+  high_risk: { cls: 'risk-high', label: 'Needs your approval', icon: '!' },
+  external: { cls: 'risk-external', label: 'Uses an outside service', icon: '↗' },
 };
 
 const stageLabels: Record<FunnelStage, string> = {
@@ -44,7 +65,11 @@ const stageLabels: Record<FunnelStage, string> = {
 };
 
 interface Props {
-  embed: ActionEmbed;
+  /**
+   * Narrowed to the plan variant rather than taking the union. A card that
+   * renders a plan should not be handed a question and left to re-check.
+   */
+  embed: PlanActionEmbed;
   /** True when the viewer owns the workspace, which is what `requiredRole` means today. */
   canAct: boolean;
   onAct: (embedId: string, action: 'approve' | 'request_changes', note?: string) => Promise<void>;
@@ -52,6 +77,7 @@ interface Props {
 
 function Step({ step, sources }: { step: PlanStep; sources: string[] }) {
   const owner = ownerMeta[step.owner];
+  const risk = riskMeta[step.riskTier];
   // Indices are 1-based and were range-checked server-side, but the lookup still
   // guards: a card is the wrong place to discover a bad index.
   //
@@ -65,6 +91,14 @@ function Step({ step, sources }: { step: PlanStep; sources: string[] }) {
       <div className="stage-title">
         {step.title}
         <span className={`owner ${owner.cls}`}>{owner.label}</span>
+        {risk ? (
+          <span className={`risk ${risk.cls}`}>
+            <span className="risk-icon" aria-hidden>
+              {risk.icon}
+            </span>
+            {risk.label}
+          </span>
+        ) : null}
       </div>
       <div className="stage-detail">{step.detail}</div>
       {cited.length > 0 ? (

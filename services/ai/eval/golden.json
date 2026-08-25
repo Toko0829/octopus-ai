@@ -19,7 +19,27 @@
     "system RETURNS NOTHING, which is what forces the agent to refuse instead of",
     "grounding an answer in whatever was nearest. A retriever that scores well on",
     "positives and leaks on negatives is worse than useless here: it produces",
-    "confident, cited, wrong plans."
+    "confident, cited, wrong plans.",
+    "",
+    "All four negatives above are BUSINESS-FORMATION topics, far from the corpus in",
+    "vocabulary as well as in subject. That is why they all pass, and it is also why",
+    "they hid a real defect for so long: they only ever tested the easy direction.",
+    "`scope_negatives` below is the hard direction, and it is scored separately.",
+    "",
+    "SCOPE_NEGATIVES are in-vocabulary but uncovered: marketing questions, phrased",
+    "in marketing words, that this corpus does not answer. Retrieval LEAKS on them",
+    "by design and no threshold can fix it, because a rerank score ranks chunks",
+    "within the corpus and cannot say whether the corpus covers the question.",
+    "Measured: 'conversion tracking in GA4' scores 0.0211 against a 0.0013",
+    "threshold, while the legitimate broad goal 'launch my app and get me to my",
+    "first 100 customers' tops out at 0.0018. The bands overlap by 12x.",
+    "",
+    "So these cases do NOT belong in `cases`: putting them there would fail the",
+    "retrieval gate permanently for something retrieval cannot be asked to do.",
+    "They are the groundedness gate's set, scored by `--gate`, which is a",
+    "credentialed, LLM-dependent pass and deliberately NOT the deterministic CI",
+    "gate. Add one whenever you find a marketing question the corpus does not",
+    "cover; that is now a security task, not a coverage one."
   ],
 
   "cases": [
@@ -112,6 +132,39 @@
       "query": "how do I run payroll and withhold taxes for my first employee",
       "expect_docs": [],
       "notes": "Adjacent to running a business but outside the marketing wedge entirely."
+    }
+  ],
+
+  "scope_negatives": [
+    {
+      "id": "scope-webinar-funnel",
+      "query": "how do I build a webinar funnel that converts",
+      "notes": "Measured leak: 0.0067 local, 0.318 Cohere, both well clear of threshold. Retrieves landing-conversion and content-strategy, neither of which discusses webinars at all. The archetypal case: right field, right vocabulary, wrong question."
+    },
+    {
+      "id": "scope-ga4-tracking",
+      "query": "how do I set up conversion tracking in GA4",
+      "notes": "Measured leak: 0.0211 local, 0.281 Cohere. The strongest leak in the set, and it outscores the legitimate broad goal by 12x. Measurement is the one funnel stage with no dedicated document, and this is what that gap feels like to a user."
+    },
+    {
+      "id": "scope-app-store",
+      "query": "how do I rank higher in the app store",
+      "notes": "Measured leak: 0.0053 local, 0.082 Cohere. ASO shares almost every word with the SEO document and shares none of its mechanics."
+    },
+    {
+      "id": "scope-ad-specs",
+      "query": "what are the character limits for facebook ad headlines",
+      "notes": "Uncovered ON PURPOSE, which makes it the sharpest test here. rag-knowledge.md records that the corpus carries principles rather than platform specifics, because specifics go stale between crawls and rag.md forbids quoting them from memory. A confident answer to this is a fabrication by construction, not a retrieval accident."
+    },
+    {
+      "id": "scope-influencer-rates",
+      "query": "how much should I pay an influencer for a sponsored post",
+      "notes": "Deliberately near-miss: ftc-disclosure-basics covers DISCLOSING a paid partnership and says nothing about pricing one. A gate that waves this through is matching on topic rather than on question, which is exactly the failure being tested."
+    },
+    {
+      "id": "scope-affiliate-program",
+      "query": "should I start an affiliate program and how do I structure the commission",
+      "notes": "A recognised acquisition channel the corpus has no document for. Offer-design covers pricing to a buyer, not commission to a partner."
     }
   ]
 }

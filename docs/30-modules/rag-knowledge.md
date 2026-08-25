@@ -31,7 +31,7 @@
 >
 > **The seed corpus is internally authored and labelled `internal`.** It is deliberately not attributed to regulators or ad platforms: a fabricated citation is worse than none, because the entire value of a citation is that the reader can check it. Real external sources arrive with the crawlers.
 >
-> **Not built yet:** crawlers and the freshness pipeline (`pg_cron` re-crawl, content-hash re-check against live sources), LLM-generated contextual prefixes (a metadata-derived prefix is used instead), the remaining query transformations (self-query, HyDE), and the Ragas/DeepEval gate. **Query decomposition is built** and is the production path. `eval_golden_set` exists as a table but is empty.
+> **Not built yet:** crawlers and the freshness pipeline (`pg_cron` re-crawl, content-hash re-check against live sources), LLM-generated contextual prefixes (a metadata-derived prefix is used instead), the remaining query transformations (self-query, HyDE), and the Ragas/DeepEval gate. **Query decomposition and the groundedness gate are built** and are the production path. `eval_golden_set` exists as a table but is empty.
 
 ## In-Postgres pgvector (rationale)
 
@@ -43,7 +43,7 @@ Vectors live in the same Postgres as everything else — relational, RLS-permiss
 
 ## Retrieval
 
-**Query decomposition (live)** → dense (local BAAI `bge-m3`, or OpenAI `text-embedding-3-large`, 1024 dims either way — [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)) + sparse (`tsvector`/BM25) → **RRF (k=60)** → in-process **`bge-reranker-v2-m3`** cross-encoder ([ADR-0009](../40-adr/0009-local-reranker.md)) over **top-25** → top 6–8, with a relevance threshold that **drops** weak chunks. Candidate depth is measured against corpus size rather than fixed; see ADR-0009.
+**Query decomposition (live)** → dense (local BAAI `bge-m3`, or OpenAI `text-embedding-3-large`, 1024 dims either way — [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)) + sparse (`tsvector`/BM25) → **RRF (k=60)** → in-process **`bge-reranker-v2-m3`** cross-encoder ([ADR-0009](../40-adr/0009-local-reranker.md)) over **top-25** → top 6–8, with a relevance threshold that **drops** weak chunks → **groundedness gate** (live), which refuses when the survivors rank well but do not answer the question. Candidate depth is measured against corpus size rather than fixed; see ADR-0009.
 
 > **Decomposition splits a goal into per-stage sub-queries, each reranked on its own.** A broad goal ("get me my first 100 customers") otherwise retrieves whichever funnel stage matches best, and the planner correctly leaves the rest empty rather than inventing steps. Measured on the golden set: coverage of a broad goal went **0.33 → 1.00**.
 >
@@ -85,7 +85,7 @@ The golden set is a **file, not `eval_golden_set` rows**, because document UUIDs
 
 Baseline on the ten-document corpus with bge-m3: **positive recall 1.00, MRR 1.00, zero leaks.** True-positive rerank scores land between 0.127 and 0.637 while out-of-scope queries clear the 0.05 threshold not at all, so the threshold has real margin and did **not** need recalibrating after the corpus tripled.
 
-> **Known defect: the score threshold is not a scope gate, and cannot become one.** Measured, not suspected. A rerank score answers "which chunk ranks best for this query", which always has an answer when the query is marketing and the whole corpus is marketing. It does not answer "does the corpus cover this". So an **in-vocabulary but uncovered** question retrieves loosely-related chunks and clears the threshold, and the agent returns a confident cited plan for something no source supports, which is exactly what rule 10 forbids.
+> **The score threshold is not a scope gate, and cannot become one.** Measured, not suspected. A rerank score answers "which chunk ranks best for this query", which always has an answer when the query is marketing and the whole corpus is marketing. It does not answer "does the corpus cover this". So an **in-vocabulary but uncovered** question retrieves loosely-related chunks and clears the threshold, and without a further check the agent returns a confident cited plan for something no source supports, which is exactly what rule 10 forbids.
 >
 > | Query                                    |  local bge |    Cohere |
 > | ---------------------------------------- | ---------: | --------: |
@@ -95,11 +95,54 @@ Baseline on the ten-document corpus with bge-m3: **positive recall 1.00, MRR 1.0
 > | POS "launch my app, first 100 customers" |     0.0018 |     0.066 |
 > | _threshold_                              |   _0.0013_ |    _0.05_ |
 >
-> **The bands overlap on both providers**, so no threshold separates them: the strongest uncovered question outscores the weakest legitimate goal by 12x locally and 4.8x on Cohere. Raising the threshold kills the README's own north-star example first. This is **not** a regression from [ADR-0009](../40-adr/0009-local-reranker.md); Cohere behaves the same way and is worse in relative terms. It went unnoticed because all four golden negatives are business-formation topics, far from the corpus in vocabulary as well as subject (the liquor-licence case scores exactly 0.000000 on Cohere).
+> **The bands overlap on both providers**, so no threshold separates them: the strongest uncovered question outscores the weakest legitimate goal by 12x locally and 4.8x on Cohere. Raising the threshold kills the README's own north-star example first. This is **not** a regression from [ADR-0009](../40-adr/0009-local-reranker.md); Cohere behaves the same way and is worse in relative terms. It went unnoticed because all four golden negatives are business-formation topics, far from the corpus in vocabulary as well as subject (the liquor-licence case scores exactly 0.000000 on Cohere), so they only ever tested the easy direction.
 >
-> The fix is a real groundedness check between retrieval and generation, asking whether the retrieved sources actually answer the question, rather than how well they rank. One cheap-tier call per goal, the tier decomposition already uses. **Not built.** Deferred deliberately while Phase 1 is read-only with no users and no side effects; it must land before the agent can act on a plan.
+> **Closed by the groundedness gate**, which sits between retrieval and generation and asks whether the retrieved sources actually answer the question rather than how well they rank. One cheap-tier call per goal, the tier decomposition already uses. See "The groundedness gate" below. The retrieval numbers above are unchanged and are not expected to change: the leak is a property of ranking, and the fix is a different question asked of a different component.
 
-**Not built (generation).** Ragas/DeepEval faithfulness and answer relevancy (≥ 0.75 and ≥ 0.8, with context precision ≥ 0.7 and context recall ≥ 0.8) need an LLM judge, which costs money per run and returns a different number each time. Those belong in a separate credentialed pass, not in the deterministic gate above.
+## The groundedness gate
+
+Between retrieval and generation, `groundedness.assess` asks one question of the retrieved sources: **do these answer the goal, or do they merely rank against it?** Live, on by default (`GROUNDEDNESS_CHECK`), and the reason Phase 2 can begin: while Phase 1 was read-only the leak above produced a bad answer, and the moment a plan can spend money or publish, it produces a bad action.
+
+Five properties it depends on, each of which is a way it could quietly stop working:
+
+- **It judges the exact sources block the planner will receive.** Building a separate one would let the gate approve one set of material while the planner grounds in another.
+- **It fails closed.** A provider failure, malformed JSON, or a non-boolean `supported` all return `unverified`, and the caller refuses. Same asymmetry the eval already applies: a miss is unhelpful but safe, a leak is not. `bool("false")` is `True`, so the boolean is type-checked rather than coerced; one implicit coercion there would turn the gate into a no-op that still logs as though it ran.
+- **A refusal names its own reason.** `refusing-v0` (nothing retrieved), `refusing-ungrounded-v1` (retrieved, judged not to answer) and `refusing-unverified-v1` (check could not run) are separate cores because they mean different things: the first two are corpus signals that should drive what gets ingested next, the third is an operational signal that should page someone. Collapsing them would make a provider outage look like a coverage gap on the same dashboard. It also keeps the **copy honest**: a user whose question is covered must never be told it is out of scope because a call failed, which is the same class of defect this refusal copy already had once.
+- **Partial coverage is still supported.** The gate asks whether the sources address what was asked, not whether they address all of it. The plan card is built to render empty stages, so demanding total coverage would refuse the product's own north-star goal.
+- **It blocks before generation, not after.** A plan that is written and then discarded has already cost the call, and the discarded text is one refactor away from being shown.
+
+### Measuring it
+
+`scope_negatives` in `golden.json` is its set: marketing questions, in marketing vocabulary, that this corpus does not answer. They are **deliberately not** ordinary negatives, because retrieval leaks on them by design and filing them under `cases` would fail the retrieval gate forever for a property retrieval does not have.
+
+```bash
+uv run --directory services/ai python -m octopus_ai.evaluation --gate
+```
+
+Both halves run in one pass, and that is the point: a gate measured only against questions it should refuse scores 1.00 by refusing everything, and that version would ship. So it also scores the **false-refusal** rate over the positives. Thresholds mirror the retrieval gate's asymmetry: block rate 1.00 (zero tolerance), pass rate ≥ 0.80.
+
+**Measured, on `gpt-5.4-nano` over 6 scope negatives and 11 positives:**
+
+| Run              | Blocked |   Passed |      |
+| ---------------- | ------: | -------: | ---- |
+| First            |    1.00 | **0.64** | FAIL |
+| After prompt fix |    1.00 | **1.00** | PASS |
+
+**The first run is the more useful of the two.** It blocked every uncovered question and refused four legitimate goals: `cpa-too-high` and `creative-brief`, both of which have a dedicated corpus document, and `broad-first-customers`, which is the product's own north-star example. The refusal reasons gave the diagnosis away, because each one asserted that the sources _did_ cover the goal and then answered false anyway ("The sources discuss CPA control and testing/scaling principles").
+
+That is the **same failure ADR-0009 already records**, where an over-tightened decomposition prompt took that same north-star case from coverage 1.00 to 0.33. Second occurrence, different component. The shared cause is asking a model for a disposition ("be strict", "when unsure, answer false") instead of a test it can apply.
+
+The fix was to make the question operational: **"could you write concrete steps for this goal quoting only these sources?"** Plus a self-check that removes the cheap refusal: **if the answer is false, `reason` must name the specific thing the sources lack, and if it cannot be named the answer is true.** The "when unsure, answer false" instruction was deleted, along with the list of ways adjacency shows up, which was priming the model to go looking for it.
+
+**Recorded rather than smoothed over: three of the six scope negatives never reached the gate.** Retrieval refused them outright (`chunks=0`), so the 1.00 block rate is true of the system and the gate itself was exercised on three cases, not six. The `blocked_by` column exists to make that visible rather than to let a system-level number stand in for a component-level one. It is an argument for adding scope negatives that demonstrably leak, not for trusting the headline.
+
+**This pass is credentialed and LLM-dependent, and is deliberately not in CI**, for exactly the reason the Ragas faithfulness metrics are not: it calls a model, so it bills per run and does not return the same answer every time. Stapling it to the deterministic gate would make every merge depend on a provider being up. What is gated in CI is the _logic_: that the verdict parser rejects a non-boolean, that every failure path returns `unverified`, and that the gate is called before generation.
+
+**Partly built (generation), and the split is between what needs a judge and what does not.** `--plan` (`plan_eval.py`) scores the **structure** of the plans the planner produces: did a card come back at all or did it fall back to prose, do all six stages exist, does every citation point at a supplied source, does an AI-owned step carry one (rule 10, and the router escalates it if not), is the copy inside the brand's rules. Each is a yes or no about a structure, computed from the response alone, so the scoring is deterministic and has hermetic tests even though running it needs credentials.
+
+That gap had a cost. Retrieval was gated and the gate had its own two-sided pass, and **nothing checked what the planner then did with the sources**, so a token limit that truncated the plan JSON went unnoticed: `parse_plan` rejected it, the core degraded to cited prose exactly as designed, and every whole-funnel goal quietly produced no plan card while no number moved. `card_rate` is held at **zero tolerance** for that reason, since a fallback means the feature did not happen; structural defects inside a card are scored as a rate on the same asymmetry as retrieval, because a flawed card is still something a person can read and correct.
+
+**Still not built.** Ragas/DeepEval faithfulness and answer relevancy (≥ 0.75 and ≥ 0.8, with context precision ≥ 0.7 and context recall ≥ 0.8) need an LLM judge, which costs money per run and returns a different number each time. Whether the plan is any _good_ is exactly the part that needs one, and it belongs in a separate credentialed pass rather than in the deterministic gate above.
 
 **There is no rerank quota any more.** Reranking is in-process ([ADR-0009](../40-adr/0009-local-reranker.md)), so an eval run costs CPU rather than provider calls. What was previously the dominant constraint — a trial key's 10 calls a minute against ~81 calls per run — is gone. OpenAI is still needed for decomposition and generation.
 

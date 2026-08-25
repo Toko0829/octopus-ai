@@ -219,6 +219,24 @@ uv run --directory services/ai python -m octopus_ai.evaluation --merge shard-*.j
 
 Run it after any change to chunking, the embedder, the rerank threshold, or the corpus. Add a case whenever you add a document, and add a negative whenever you find a question the agent should refuse.
 
+### The groundedness gate has its own set, and its own run
+
+The rerank threshold **ranks chunks within the corpus. It cannot tell you the corpus does not cover a question**, and those are different questions. Measured: "how do I set up conversion tracking in GA4" scores 0.0211 against a 0.0013 threshold, while the legitimate goal "launch my app and get me to my first 100 customers" tops out at 0.0018. No threshold separates them.
+
+So `scope_negatives` in `golden.json` holds marketing questions, in marketing words, that the corpus does not answer, and they are scored separately:
+
+```bash
+uv run --directory services/ai python -m octopus_ai.evaluation --gate
+```
+
+**Do not move these into `cases`.** Retrieval leaks on them by design, so filing them as ordinary negatives fails the retrieval gate permanently for something retrieval cannot be asked to do.
+
+The pass scores both halves. Scope negatives must be refused (block rate 1.00), and legitimate goals must **not** be (pass rate ≥ 0.80), because a gate measured only on what it should refuse scores perfectly by refusing everything.
+
+> **This one is not in CI, deliberately.** It calls a model, so it bills per run and does not return the same answer every time, which is the same reason the Ragas faithfulness metrics are absent. What CI gates is the gate's _logic_: that a non-boolean `supported` is rejected rather than coerced (`bool("false")` is `True`), that every failure path blocks rather than opens, and that the check runs before generation.
+>
+> `GROUNDEDNESS_CHECK=false` turns it off. That is for measuring the stages separately, not for production: a service with it off answers questions its corpus does not cover, and it logs a warning at startup saying so. Add a scope negative whenever you find a marketing question the corpus cannot answer; that is now a safety task rather than a coverage one.
+
 > **A Cohere trial key allows 10 calls a minute, and the golden set needs far more than that.** With query decomposition on, one positive case is one rerank for the goal plus one per sub-query, up to seven; at 15 cases (11 positive) a full run is up to ~81 rerank calls. Set `COHERE_RERANK_RPM=8` and the run holds itself under the limit, taking ~10 minutes. On a production key leave it unset and the whole set finishes in seconds.
 >
 > Do not reach for `EVAL_CASE_DELAY_S` to solve this. It pauses between **cases**, and a case is no longer one call, so it cannot express a per-call quota. That mistake is what broke CI: the harness paused politely between bursts of seven. It survives only as a coarse manual throttle and defaults to `0`.

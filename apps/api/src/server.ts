@@ -7,7 +7,8 @@ import { roomRoutes } from './routes/rooms';
 import { agentRunRoutes } from './routes/agent-runs';
 import { embedRoutes } from './routes/embeds';
 import { createAuthVerifier } from './plugins/auth';
-import { requireSupabaseConfig } from './lib/supabase';
+import { startTicker } from './lib/ticker';
+import { createServiceClient, requireSupabaseConfig } from './lib/supabase';
 
 /**
  * Build the Fastify app (authoritative REST API). See docs/10-architecture/architecture.md.
@@ -45,8 +46,36 @@ export async function buildServer(): Promise<FastifyInstance> {
     supabase,
     aiServiceUrl: env.AI_SERVICE_URL,
     aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+    intakeTimeoutMs: env.INTAKE_REQUEST_TIMEOUT_MS,
   });
-  await app.register(embedRoutes, { verify, supabase });
+  // Approving a plan runs a scheduler tick, and a tick can execute AI tasks, so
+  // this route needs the same reasoning-core wiring as agent runs.
+  await app.register(embedRoutes, {
+    verify,
+    supabase,
+    aiServiceUrl: env.AI_SERVICE_URL,
+    aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+  });
+
+  // The durable backbone (ADR-0010). Started here rather than as a separate
+  // process because there is nothing to separate yet: a run's state is rows, so
+  // the ticker is a loop that wakes up, recovers what died, and walks the graph.
+  // `apps/agent` is where this moves when it earns its own deployment.
+  //
+  // Registered as a Fastify hook so a closing server stops ticking and releases
+  // its claim, rather than leaving a lease that the next instance has to wait out.
+  const stopTicker = startTicker({
+    admin: createServiceClient(supabase),
+    executor: {
+      aiServiceUrl: env.AI_SERVICE_URL,
+      aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+      log: app.log,
+    },
+    stepBudgetMs: env.AI_REQUEST_TIMEOUT_MS,
+    intervalMs: env.TICK_INTERVAL_MS,
+    log: app.log,
+  });
+  app.addHook('onClose', async () => stopTicker());
 
   return app;
 }

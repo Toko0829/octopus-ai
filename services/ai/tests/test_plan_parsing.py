@@ -19,13 +19,19 @@ def _plan(stages, title="Growth plan", summary="A short summary.") -> str:
     return json.dumps({"title": title, "summary": summary, "stages": stages})
 
 
-def _step(title="Do the thing", citations=None):
-    return {
+def _step(title="Do the thing", citations=None, **over):
+    step = {
         "title": title,
         "detail": "Some concrete detail about what happens.",
         "owner": "AI",
         "citations": citations if citations is not None else [1],
     }
+    step.update(over)
+    return step
+
+
+def _first_step(plan):
+    return next(s.steps[0] for s in plan.stages if s.steps)
 
 
 def test_missing_stages_are_filled_in_empty_and_ordered():
@@ -122,5 +128,67 @@ def test_step_count_per_stage_is_bounded():
     with pytest.raises(ValidationError):
         parse_plan(
             _plan([{"stage": "strategy", "steps": [_step(), _step(), _step(), _step()]}]),
+            source_count=3,
+        )
+
+
+def test_the_risk_tier_the_model_proposed_survives_parsing():
+    plan = parse_plan(
+        _plan([{"stage": "strategy", "steps": [_step(risk_tier="read_only")]}]),
+        source_count=3,
+    )
+    assert _first_step(plan).risk_tier == "read_only"
+
+
+def test_a_step_missing_a_risk_tier_defaults_to_reversible():
+    """Absent is not wrong, and must not cost the card.
+
+    Cards written before this field existed, and a model that omits it, both land
+    on the tier every task already had. Failing the plan instead would degrade a
+    working card to prose over a field the clamp checks anyway.
+    """
+    plan = parse_plan(_plan([{"stage": "strategy", "steps": [_step()]}]), source_count=3)
+    assert _first_step(plan).risk_tier == "reversible"
+
+
+def test_an_unrecognised_risk_tier_is_rejected_rather_than_coerced():
+    """A tier the enum does not hold is a shape error, not a missing value."""
+    with pytest.raises(ValidationError):
+        parse_plan(
+            _plan([{"stage": "strategy", "steps": [_step(risk_tier="probably_fine")]}]),
+            source_count=3,
+        )
+
+
+def test_a_step_that_commits_is_raised_even_when_the_model_says_reversible():
+    """The whole reason this field exists: the planner is not the authority.
+
+    The router refuses to auto-run `high_risk` whatever the owner says, so a
+    planner that labels a spending step `reversible` with owner `AI` is the exact
+    case rules 7 and 11 exist to catch.
+    """
+    step = _step(title="Set the daily budget", risk_tier="reversible")
+    step["detail"] = "Set the budget to the band the founder gave at intake."
+    plan = parse_plan(_plan([{"stage": "channels", "steps": [step]}]), source_count=3)
+    assert _first_step(plan).risk_tier == "high_risk"
+
+
+def test_acceptance_criteria_are_normalised_and_capped():
+    step = _step(acceptance_criteria=["  names three gaps ", "", "lists a cadence"])
+    plan = parse_plan(_plan([{"stage": "strategy", "steps": [step]}]), source_count=3)
+    assert _first_step(plan).acceptance_criteria == ["names three gaps", "lists a cadence"]
+
+
+def test_more_than_three_criteria_is_rejected_by_the_schema():
+    with pytest.raises(ValidationError):
+        parse_plan(
+            _plan(
+                [
+                    {
+                        "stage": "strategy",
+                        "steps": [_step(acceptance_criteria=["a", "b", "c", "d"])],
+                    }
+                ]
+            ),
             source_count=3,
         )

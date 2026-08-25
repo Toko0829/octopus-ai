@@ -164,7 +164,25 @@ class Settings:
     generation_model: str = "gpt-5.4"
     generation_model_fast: str = "gpt-5.4-mini"
     generation_model_cheap: str = "gpt-5.4-nano"
+    # The budget for a SHORT, classification-shaped call: decomposition, the
+    # groundedness gate. Their outputs are a handful of fields.
     generation_max_tokens: int = 900
+
+    # And the budget for a LONG one: a six-stage plan, or a drafted deliverable.
+    #
+    # These are separate because one number for both silently broke the product's
+    # marquee feature. A plan is six stages of up to three steps, each with a title
+    # and up to 600 characters of detail, and the gpt-5 family counts **reasoning
+    # tokens against this same limit**, so 900 left far too little for the output.
+    # The JSON came back truncated, `parse_plan` rejected it, and `plan_grounded`
+    # degraded to cited prose exactly as designed. Nothing errored, nothing was
+    # logged as broken, and every whole-funnel goal quietly returned no plan card.
+    #
+    # Measured directly rather than inferred: at 900 the response was 4101
+    # characters and failed to parse with "EOF while parsing a string"; at 4000 it
+    # was 4311 characters and validated. Raise this if plans start arriving as
+    # prose again, and treat that symptom as this cause until proven otherwise.
+    generation_max_tokens_long: int = 4000
 
     # Retrieval shape, from rag.md: fuse to 40 candidates, rerank down to 6-8.
     # Query decomposition (rag.md retrieval step 1). Splits a goal into
@@ -180,6 +198,44 @@ class Settings:
     # So decomposition multiplies rerank traffic, and a rate-limited key feels it
     # directly. `rerank_rpm` below is what keeps that survivable.
     query_decomposition: bool = True
+
+    # The groundedness gate (rule 10), between retrieval and generation.
+    #
+    # It exists because the rerank threshold **is not a scope gate and cannot be
+    # made into one**. A rerank score ranks chunks within the corpus; it does not
+    # decide whether the corpus covers the question, and when the query is
+    # marketing and the whole corpus is marketing there is always a best chunk.
+    # Measured: "conversion tracking in GA4" scores 0.0211 locally against a
+    # 0.0013 threshold, while the legitimate broad goal "launch my app and get me
+    # to my first 100 customers" tops out at 0.0018. The bands overlap by 12x, so
+    # no threshold separates them and raising it kills the north-star goal first.
+    #
+    # One cheap-tier call per goal, the tier decomposition already uses.
+    #
+    # DEFAULT ON, and turning it off is a deliberate, logged act. It is selectable
+    # only so the eval can measure retrieval and the gate as separate stages, and
+    # so the cost of the gate is measurable rather than assumed. A deployment that
+    # disables it is answering questions its corpus does not cover.
+    groundedness_check: bool = True
+    # Empty means "use the cheap tier". Kept overridable because this judgement is
+    # harder than decomposition's, so the tier may have to move without dragging
+    # decomposition's tier with it.
+    groundedness_model: str = ""
+
+    # Intake (full-funnel-creator.md step 1), which runs BEFORE retrieval and does
+    # not use it. Both numbers are product decisions rather than measured ones,
+    # and are settings precisely so they can be moved once there is something to
+    # measure them against.
+    #
+    # `intake_max_rounds` is the harder of the two, and it is capped low on
+    # purpose: vision.md makes user-touch-count per result a guardrail to drive
+    # DOWN, and ai-orchestrator.md requires user-only facts to be raised as a
+    # single batched question. An intake that keeps asking is a worse product than
+    # one that plans from four answers out of five, because the plan card renders
+    # unsupported stages empty and a thin plan is visible where an exhausted person
+    # is not.
+    intake_min_completeness: float = 0.75
+    intake_max_rounds: int = 2
 
     # How many RRF survivors reach the reranker. This is a MEASURED setting tied
     # to corpus size, not a constant.
@@ -289,6 +345,16 @@ class Settings:
         )
 
     @property
+    def active_groundedness_model(self) -> str:
+        """The tier the groundedness gate runs on, defaulting to the cheap one.
+
+        Resolved here rather than defaulted in the field, so overriding the
+        generation tiers per environment moves the gate with them instead of
+        leaving it pinned to whatever the cheap tier was when this was written.
+        """
+        return self.groundedness_model or self.generation_model_cheap
+
+    @property
     def rerank_local_source(self) -> str:
         """Where to load the local reranker from: an explicit path, else the repo id."""
         return self.rerank_local_path or self.rerank_local_model
@@ -340,7 +406,12 @@ def get_settings() -> Settings:
         generation_model_fast=os.environ.get("GENERATION_MODEL_FAST", "gpt-5.4-mini"),
         generation_model_cheap=os.environ.get("GENERATION_MODEL_CHEAP", "gpt-5.4-nano"),
         generation_max_tokens=_int("GENERATION_MAX_TOKENS", 900),
+        generation_max_tokens_long=_int("GENERATION_MAX_TOKENS_LONG", 4000),
         query_decomposition=_bool("QUERY_DECOMPOSITION", True),
+        groundedness_check=_bool("GROUNDEDNESS_CHECK", True),
+        groundedness_model=os.environ.get("GROUNDEDNESS_MODEL", ""),
+        intake_min_completeness=_float("INTAKE_MIN_COMPLETENESS", 0.75),
+        intake_max_rounds=_int("INTAKE_MAX_ROUNDS", 2),
         retrieval_candidates=_int("RETRIEVAL_CANDIDATES", 25),
         rerank_top_n=_int("RERANK_TOP_N", 8),
         rerank_rpm=_int("COHERE_RERANK_RPM", 0),

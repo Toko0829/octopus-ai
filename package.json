@@ -12,6 +12,7 @@
     "dev": "turbo run dev",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
     "lint": "prettier --check .",
     "format": "prettier --write .",
     "check:docs": "node scripts/check-docs.mjs",

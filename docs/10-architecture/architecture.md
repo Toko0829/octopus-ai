@@ -99,15 +99,35 @@ Two corollaries that are easy to get wrong:
 
 ## Structured plans across the seam
 
-The reasoning core can now return a **plan** as well as prose. `packages/contracts` owns the wire shape (`PlanEmbedPayload`, six fixed `FunnelStage` values, `StepOwner`), so Python, Fastify and the browser all derive from one definition.
+The reasoning core can now return a **plan** as well as prose. `packages/contracts` owns the wire shape (`PlanEmbedPayload`, six fixed `FunnelStage` values, `StepOwner`, `TaskRiskTier`), so Python, Fastify and the browser all derive from one definition. `TaskRiskTier` lives here rather than in `packages/core` because it crosses the wire: the tier is an input to an authorisation decision, and the router imports the same definition the card is rendered from.
 
-Three properties this path depends on:
+Four properties this path depends on:
 
 - **Proposals are a discriminated union.** An unknown `kind` fails the parse rather than being skipped, so a core that invents a proposal kind breaks the run instead of quietly doing nothing.
 - **The payload is validated before it is stored, not on the way out.** Node parses the plan against the contract and refuses to write one that fails. Storing an invalid payload would move the failure to every future read and into the browser, where it is much harder to attribute.
+- **The two casings are mapped field by field, never spread.** The core speaks snake_case and the contract speaks camelCase. For most fields that is cosmetic; for `risk_tier` it is not, because `riskTier` carries a default, so spreading the core's step would drop the tier, parse cleanly, and land every step on `reversible` with nothing raising anywhere. That is the same outcome the tier exists to prevent, reached through the mapping instead of through the planner, so `planEmbedPayload` in `apps/api/src/routes/agent-runs.ts` is pure, exported, and pinned by tests.
 - **A plan writes two rows: the message and its embed.** The message body carries the plan in plain text, so it stays legible in a notification, in the audit trail, or in any client that does not know this embed type. The card is an enhancement of a readable message, never the only way to read it. The insert is keyed by the same deterministic idempotency key, so a replayed run posts neither twice.
 
 `GET /api/rooms/:roomId/messages` returns each message with its embed joined, so the stream and its cards arrive together and cannot render out of step. Realtime is the exception: the trigger broadcasts the `messages` row and cannot see `action_embeds`, so a card materialises on the next fetch.
+
+## Intake runs before retrieval, and the card carries its state
+
+An agent run no longer goes straight to `/plan`. It calls `POST /intake` first, and that call decides whether this turn plans or asks. Details of the scoring are in [ai-orchestrator.md](../30-modules/ai-orchestrator.md); what belongs here is the seam.
+
+**A goal and an answer are the same event on the wire.** Both arrive as a chat message that starts an agent run, and only the room's state tells them apart. Reading a fresh goal as an answer buries it inside a stale intake; reading an answer as a goal throws away what the person just said and asks again. `decideIntakeTurn` in `@octopus/core` makes that call, with no IO, so the rule is checkable without a database.
+
+**The question card is where the intake's state lives.** The AI service is stateless by design (ADR-0006), so something on this side has to carry the slots between rounds, and an `action_embeds` row is already written, already RLS-scoped to the room, and already visible to the person whose answers it holds. A new table would have been a second place for the same facts. It also means the state and the questions it produced cannot disagree, because they are one row.
+
+Four properties this path depends on:
+
+- **Only the room's owner answers.** Intake answers describe the person's own budget, customers and timeline, and a human node sitting in the room must not be able to state them. `required_role` on the embed cannot enforce this, because an answer arrives as a chat message and never reaches the action route where that role is checked, so the check lives in the run. A message from anyone else is treated as a new goal, which is what it would have been without an intake in flight.
+- **The card is consumed with a conditional update**, `eq('state','pending')` in the same statement, so two runs racing on one answer cannot both proceed. Same guard the approve path uses.
+- **It is consumed after the intake call, not before.** Marking first would mean a failed or timed-out intake silently swallows what the person typed. This way the card stays pending and the next message tries again.
+- **Intake failing plans anyway.** Any error falls through to planning on the original message, which is the behaviour that existed before intake. It improves a query; it is not a precondition for answering. Nothing is granted by passing through, because the groundedness gate still runs inside `/plan`.
+
+`answered` was added to `embed_state` rather than reusing `approved`. The four original states describe a verdict and a question has none, so recording an answered question as approved would put an untrue sentence in the audit trail and hand `feedback_events` a labelled example of a person approving something they were never shown.
+
+**Acting on a card is now an allow-list.** `approve` means "materialise this plan into a project", and the action route is reached by embed id alone, so a component check refuses anything that is not a plan before `materialise_plan` is handed a payload written for a different shape.
 
 ## Acting on an embed
 
@@ -120,9 +140,26 @@ Three properties this path depends on:
 
 The verdict is then written to `feedback_events` (flywheel v0) and posted into the room as a system message, because the chat is the audit trail and a state change nobody can see is not one anyone can dispute. If the flywheel write fails the decision still stands and the failure is logged loudly: losing a label must not un-approve a plan.
 
+## Approving a plan is what creates the work
+
+An approval calls `public.materialise_plan(embedId)`, which creates a `projects` row and one `tasks` row per step, and links the room to the project. Four properties, and the first two are the reason it is a database function rather than a sequence of calls from Node.
+
+- **All of it, or none of it.** supabase-js speaks PostgREST, one statement per call, so it has no transactions. A project created without its tasks is a project the scheduler would call finished. One function is one transaction.
+- **What was approved is what gets built.** The function reads the payload out of `action_embeds` itself rather than accepting a task list from the route. Passing the steps in would mean the rows materialised are whatever the caller says they are, and the entire point of the card is that a person read a specific plan and agreed to _it_.
+- **Idempotent per card.** `projects.source_embed_id` is unique, and a repeat call returns the project it already built. That is what makes the ordering safe: materialising happens **after** the verdict is recorded, so if it fails the decision still stands and a retry cannot produce a second project. Rolling the approval back instead would silently undo a person's decision because of an error they never saw.
+- **The wire's owner becomes the row's owner.** `AI` / `HUMAN` / `YOU` map to `ai` / `human` / `user`, and an unrecognised value **raises** rather than defaulting. Defaulting would quietly route a task meant for a person to the AI, which is the one direction this mapping must never fail in.
+
+**No `task_deps` are written.** The planner returns stages and steps, not dependencies, and inferring "strategy before content" from stage order would invent a constraint nobody stated. An invented edge is worse than a missing one: a missing edge lets things run in parallel that perhaps should not, while an invented one blocks work for a reason that does not exist and cannot be traced to anything.
+
+`PlanEmbedPayload` gained `goal` for this, carrying the request in the person's own words. It also repairs the flywheel label, since `feedback_events.subject` stores this payload and an output with no input is not a training pair.
+
+**One scheduler tick runs immediately after**, so the person who just approved something sees where each step went rather than watching rows sit `PENDING` until some future trigger fires. It is not fatal: the approval and the project both stand whatever the tick does, and the next tick finds the same tasks. The decisions live in `@octopus/core` with no database access at all; `apps/api/src/lib/scheduler.ts` is the adapter that gives them one. See [business-projects-workflow.md](../30-modules/business-projects-workflow.md) for the router's rules and for the one place the tick deliberately stops short.
+
 ## Timeouts across the Node/Python seam
 
-`requestPlan` in `apps/api/src/lib/ai.ts` bounds a full grounded turn: embed, hybrid search, cross-encoder rerank, then generation. It defaults to **90s**, raised from 30s when [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md) moved embedding in-process, because a CPU embed is work rather than an API call and a normal turn could exceed the old budget.
+`requestPlan` in `apps/api/src/lib/ai.ts` bounds a full grounded turn: decompose, embed, hybrid search, cross-encoder rerank, the **groundedness gate**, then generation. It defaults to **90s**, raised from 30s when [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md) moved embedding in-process, because a CPU embed is work rather than an API call and a normal turn could exceed the old budget.
+
+The gate is one cheap-tier model call per goal and adds roughly a second to a turn dominated by tens of seconds of cross-encoder CPU, so the budget is unchanged. It is worth stating rather than assuming, because it is the one step in the turn that can only ever be added to: it is a safety check, so it cannot be dropped to save time, and the correct response to it not fitting is a larger instance rather than a shorter check.
 
 It is now configurable via `AI_REQUEST_TIMEOUT_MS`, because reranking moved in-process ([ADR-0009](../40-adr/0009-local-reranker.md)) and the cost now scales with the cores the AI service has: roughly **71s per goal on 12 threads, 230s on one**. 90s fits a well-provisioned instance and not a small one.
 
@@ -131,7 +168,7 @@ It is now configurable via `AI_REQUEST_TIMEOUT_MS`, because reranking moved in-p
 Two properties this depends on, both easy to regress:
 
 - **The reasoning service warms its model at startup**, so the budget covers steady-state work rather than a cold load. Without that, the first request after a deploy pays several seconds of model load and the timeout fires on a service that is perfectly healthy.
-- **A timeout is reported as a timeout.** The failure previously surfaced to the user as "the reasoning service did not respond", which is indistinguishable from the service being down and sends debugging in the wrong direction. If this budget is ever hit in normal use, the answer is to find what got slower, not to raise the number again.
+- **A timeout is reported as a timeout**, and this line was written as settled while the code did the opposite, which is worth recording because it is exactly the drift the doc rule exists to catch. `requestPlan` did throw a specific error, and the route then flattened **every** `AiServiceError` into "the reasoning service did not respond" before posting it. The distinction existed in the logs and was lost on the one surface a person reads, which is indistinguishable from the service being down and sends debugging in the wrong direction. `AiServiceError` now carries a `kind` (`timeout` / `unreachable` / `status` / `contract`) and `failureNotice` maps it to what the room sees. A timeout is also the only one of the four that is **not a fault**, so it is the only one that suggests what to do; the rest are ours to fix and say so plainly. Found by hitting it: a whole-funnel goal exceeded 90s on a developer machine and reported a healthy service as unresponsive. If this budget is hit in normal use, the answer is to find what got slower, not to raise the number again.
 
 ## Synchronous vs asynchronous boundary
 

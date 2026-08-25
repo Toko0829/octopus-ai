@@ -42,7 +42,15 @@
 
   /* ---- Status ---- */
   --green-500: #3f9d5a;
+  /* Two steps for the same reason coral has them: one amber cannot clear AA on
+     both skins, and this was measured rather than assumed. The risk chip's text
+     sits on a 14% (light) / 20% (dark) wash of --amber-500 over the card surface.
+     --amber-500 as the text colour measures 2.34 on light and 4.93 on dark, so
+     the obvious single token fails the skin the design system calls primary.
+     --amber-700 on light measures 5.23 and --amber-400 on dark measures 7.15. */
+  --amber-400: #edb757;
   --amber-500: #d69128;
+  --amber-700: #8a5a12;
   --red-500: #d9524a;
 
   /* ---- Semantic (LIGHT / editorial default) ---- */
@@ -66,6 +74,13 @@
   --accent-text: var(--teal-700);
   --human: var(--coral-600);
   --human-quiet: color-mix(in oklab, var(--coral-500) 12%, transparent);
+  /* Caution, for a plan step that spends, publishes or connects an account.
+     Deliberately not coral, which already means "a human does this": a step the
+     AI may not run alone is a different claim from a step a person performs, and
+     one hue saying both is how a badge stops meaning anything. Always paired
+     with a word and an icon, never colour alone (rule 15). */
+  --warn: var(--amber-700);
+  --warn-quiet: color-mix(in oklab, var(--amber-500) 14%, transparent);
   /* Ink, not white. White on the teal accent measures 3.74 in the light skin and
      2.07 in dark, both under AA, and this token colours every primary button
      including the sign-in CTA. Ink measures 5.16 and 9.30. It also keeps the
@@ -151,6 +166,8 @@
   --accent-text: var(--teal-300);
   --human: var(--coral-400);
   --human-quiet: color-mix(in oklab, var(--coral-500) 18%, transparent);
+  --warn: var(--amber-400);
+  --warn-quiet: color-mix(in oklab, var(--amber-500) 20%, transparent);
   --role-you: var(--ink-300);
   --role-agent: var(--teal-400);
   --role-node: var(--coral-400);
@@ -178,6 +195,8 @@
     --accent-text: var(--teal-300);
     --human: var(--coral-400);
     --human-quiet: color-mix(in oklab, var(--coral-500) 18%, transparent);
+    --warn: var(--amber-400);
+    --warn-quiet: color-mix(in oklab, var(--amber-500) 20%, transparent);
     --role-you: var(--ink-300);
     --role-agent: var(--teal-400);
     --role-node: var(--coral-400);

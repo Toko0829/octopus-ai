@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { IntakeQuestion, IntakeSlot, TaskRiskTier } from '@octopus/contracts';
 
 /**
  * Client for the Python AI service (ADR-0006).
@@ -26,6 +27,14 @@ const PlanStep = z.object({
   detail: z.string().min(1).max(600),
   owner: z.enum(['AI', 'HUMAN', 'YOU']),
   citations: z.array(z.number().int().positive()),
+  /**
+   * Snake_case because this mirrors the Python schema, and renamed to `riskTier`
+   * where the payload is built. Defaulted rather than required for the same
+   * reason the core defaults it: a core that omits the field must not take down a
+   * card, and the clamp on the other side has already had its say.
+   */
+  risk_tier: TaskRiskTier.optional().default('reversible'),
+  acceptance_criteria: z.array(z.string()).max(3).optional().default([]),
 });
 
 const PlanStage = z.object({
@@ -47,11 +56,28 @@ export const ProposePlanProposal = z.object({
 export type ProposePlanProposal = z.infer<typeof ProposePlanProposal>;
 
 /**
+ * What a task produced. Citations are source LABELS rather than indices, unlike
+ * `PlanStep`: the checker's job includes catching a source the maker was never
+ * given, and an index is checkable for range but not for provenance.
+ */
+export const WriteArtifactProposal = z.object({
+  kind: z.literal('write_artifact'),
+  title: z.string().min(1).max(140),
+  body: z.string().min(1).max(8000),
+  citations: z.array(z.string()),
+});
+export type WriteArtifactProposal = z.infer<typeof WriteArtifactProposal>;
+
+/**
  * Discriminated so an unknown `kind` fails the parse loudly rather than being
  * silently dropped. The core widening its own powers by inventing a proposal
  * kind should break the run, not quietly do nothing.
  */
-export const Proposal = z.discriminatedUnion('kind', [PostMessageProposal, ProposePlanProposal]);
+export const Proposal = z.discriminatedUnion('kind', [
+  PostMessageProposal,
+  ProposePlanProposal,
+  WriteArtifactProposal,
+]);
 export type Proposal = z.infer<typeof Proposal>;
 
 export const Citation = z.object({
@@ -73,11 +99,48 @@ export type PlanResponse = z.infer<typeof PlanResponse>;
 export interface PlanInput {
   roomId: string;
   goal: string;
+  /**
+   * What intake established: audience, offer, budget, timeline.
+   *
+   * Sent alongside the goal rather than folded into it, and that is measured
+   * rather than stylistic. Folding them in broke retrieval: "Get signups for
+   * travelers." returned nothing at all, because a niche audience word dominates
+   * a short query at a cross-encoder and appears nowhere in a corpus of marketing
+   * principles. The same word survived a longer phrasing and was then refused by
+   * the groundedness gate, which read the person's own particulars as a topic the
+   * sources were obliged to cover. The goal searches; this tailors.
+   */
+  context?: IntakeSlot[];
   agentRunId: string;
   projectId?: string | null;
 }
 
-export class AiServiceError extends Error {}
+/**
+ * Why a call to the reasoning core failed, as a value rather than as prose.
+ *
+ * The distinction reaches a person, which is the whole reason it is typed.
+ * `architecture.md` requires that "a timeout is reported as a timeout", because
+ * telling someone the service did not respond when it did, slowly, sends the next
+ * person to debug it in exactly the wrong direction. That was written as settled
+ * and the code did not do it: every failure here was flattened into one sentence
+ * at the point it was posted, so the distinction existed in the logs and was lost
+ * in the room.
+ *
+ * `timeout` is also the only one of these that is not a fault. The service is
+ * healthy and the work genuinely takes longer than this environment allows, which
+ * has a remedy the others do not: give it more time or more cores.
+ */
+export type AiFailureKind = 'timeout' | 'unreachable' | 'status' | 'contract';
+
+export class AiServiceError extends Error {
+  constructor(
+    message: string,
+    readonly kind: AiFailureKind = 'unreachable',
+  ) {
+    super(message);
+    this.name = 'AiServiceError';
+  }
+}
 
 /**
  * Ask the reasoning core for proposals.
@@ -122,6 +185,7 @@ export async function requestPlan(
       body: JSON.stringify({
         room_id: input.roomId,
         goal: input.goal,
+        context: input.context ?? [],
         trace: {
           agent_run_id: input.agentRunId,
           project_id: input.projectId ?? null,
@@ -130,22 +194,186 @@ export async function requestPlan(
     });
 
     if (!res.ok) {
-      throw new AiServiceError(`AI service returned ${res.status}`);
+      throw new AiServiceError(`AI service returned ${res.status}`, 'status');
     }
 
     const parsed = PlanResponse.safeParse(await res.json());
     if (!parsed.success) {
       // A shape we do not recognise is a contract break, not something to
       // muddle through with.
-      throw new AiServiceError(`AI service response did not match the contract: ${parsed.error}`);
+      throw new AiServiceError(
+        `AI service response did not match the contract: ${parsed.error}`,
+        'contract',
+      );
     }
     return parsed.data;
   } catch (err) {
     if (err instanceof AiServiceError) throw err;
     if (err instanceof Error && err.name === 'AbortError') {
-      throw new AiServiceError(`AI service timed out after ${timeoutMs}ms`);
+      throw new AiServiceError(`AI service timed out after ${timeoutMs}ms`, 'timeout');
     }
-    throw new AiServiceError(err instanceof Error ? err.message : 'AI service unreachable');
+    throw new AiServiceError(
+      err instanceof Error ? err.message : 'AI service unreachable',
+      'unreachable',
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The intake verdict. Scores rather than a decision this side must take on
+ * trust: `completeness` and `proximity` are counted in the AI service from a
+ * required-slot set and the stages the corpus covers, so a caller can see WHY it
+ * was told to ask again.
+ */
+export const IntakeResponse = z.object({
+  slots: z.array(IntakeSlot),
+  focus_stages: z.array(z.string()),
+  completeness: z.number().min(0).max(1),
+  proximity: z.number().min(0).max(1),
+  ready: z.boolean(),
+  /**
+   * `not_a_request` and `out_of_domain` are separate because the reply differs. A
+   * greeting has nothing to decline and only needs a question; a request from
+   * another field has to be declined before anything is asked, or the question is
+   * a way of keeping someone talking rather than an honest redirect.
+   */
+  outcome: z.enum(['ready', 'needs_detail', 'not_a_request', 'out_of_domain']),
+  questions: z.array(IntakeQuestion).max(4),
+  refined_goal: z.string(),
+  reasoning_summary: z.string(),
+  core: z.string(),
+});
+export type IntakeResponse = z.infer<typeof IntakeResponse>;
+
+export interface IntakeInput {
+  roomId: string;
+  goal: string;
+  answers: string[];
+  slots: IntakeSlot[];
+  round: number;
+  agentRunId: string;
+  projectId?: string | null;
+}
+
+/**
+ * Intake gets its own, much shorter budget, and that is the point rather than an
+ * oversight.
+ *
+ * `requestPlan`'s 90s covers embedding, hybrid search and a CPU cross-encoder.
+ * Intake does none of that: it is one cheap-tier model call and no retrieval at
+ * all, by design, because what someone sells is not in the corpus. Giving it the
+ * planning budget would mean a hung service holds a person for a minute and a
+ * half before asking them a question, which is the worst possible place to spend
+ * that patience.
+ */
+export const DEFAULT_INTAKE_TIMEOUT_MS = 20_000;
+
+export async function requestIntake(
+  baseUrl: string,
+  input: IntakeInput,
+  timeoutMs = DEFAULT_INTAKE_TIMEOUT_MS,
+): Promise<IntakeResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${baseUrl}/intake`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        room_id: input.roomId,
+        goal: input.goal,
+        answers: input.answers,
+        slots: input.slots,
+        round: input.round,
+        trace: { agent_run_id: input.agentRunId, project_id: input.projectId ?? null },
+      }),
+    });
+
+    if (!res.ok) throw new AiServiceError(`AI service returned ${res.status}`, 'status');
+
+    const parsed = IntakeResponse.safeParse(await res.json());
+    if (!parsed.success) {
+      throw new AiServiceError(
+        `AI service response did not match the contract: ${parsed.error}`,
+        'contract',
+      );
+    }
+    return parsed.data;
+  } catch (err) {
+    if (err instanceof AiServiceError) throw err;
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new AiServiceError(`AI service timed out after ${timeoutMs}ms`, 'timeout');
+    }
+    throw new AiServiceError(
+      err instanceof Error ? err.message : 'AI service unreachable',
+      'unreachable',
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface ExecuteInput {
+  taskId: string;
+  title: string;
+  detail: string;
+  stage: string | null;
+  agentRunId: string;
+  projectId: string;
+}
+
+/**
+ * Ask the reasoning core to draft the deliverable for one approved task.
+ *
+ * Shares `requestPlan`'s budget and its reasoning: executing a step runs the same
+ * retrieve, rerank and generate path, so it costs about the same and scales with
+ * the same cores.
+ */
+export async function requestExecution(
+  baseUrl: string,
+  input: ExecuteInput,
+  timeoutMs = DEFAULT_PLAN_TIMEOUT_MS,
+): Promise<PlanResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${baseUrl}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        task_id: input.taskId,
+        title: input.title,
+        detail: input.detail,
+        stage: input.stage,
+        trace: { agent_run_id: input.agentRunId, project_id: input.projectId },
+      }),
+    });
+
+    if (!res.ok) throw new AiServiceError(`AI service returned ${res.status}`, 'status');
+
+    const parsed = PlanResponse.safeParse(await res.json());
+    if (!parsed.success) {
+      throw new AiServiceError(
+        `AI service response did not match the contract: ${parsed.error}`,
+        'contract',
+      );
+    }
+    return parsed.data;
+  } catch (err) {
+    if (err instanceof AiServiceError) throw err;
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new AiServiceError(`AI service timed out after ${timeoutMs}ms`, 'timeout');
+    }
+    throw new AiServiceError(
+      err instanceof Error ? err.message : 'AI service unreachable',
+      'unreachable',
+    );
   } finally {
     clearTimeout(timer);
   }

@@ -6,7 +6,7 @@
 >
 > **Implementation status (Phase 1).** Live: the schema (`20260728210000_rag_schema.sql`), hybrid retrieval with RRF fusion in SQL (`public.hybrid_search`), Cohere rerank with a calibrated drop-threshold, structure-first chunking, batched embedding, and content-hash supersession. A four-document internally-authored seed corpus covers paid acquisition, advertising disclosure, lifecycle email and early-stage SEO for US.
 >
-> **Not built yet, in this doc's order:** crawlers and the freshness pipeline (steps 1 to 3 and the `pg_cron` re-crawl), layout-aware parsing and OCR (step 4), **LLM-generated contextual prefixes** (step 7 uses a metadata-derived prefix instead), structured supplier/cost-benchmark rows (step 10), the query-transformation stage (self-query, multi-query/HyDE, decomposition, routing), and the whole **evaluation section** — `eval_golden_set` exists as an empty table and no Ragas/DeepEval gate runs. Treat the rest of this document as specification, not description.
+> **Not built yet, in this doc's order:** crawlers and the freshness pipeline (steps 1 to 3 and the `pg_cron` re-crawl), layout-aware parsing and OCR (step 4), **LLM-generated contextual prefixes** (step 7 uses a metadata-derived prefix instead), structured supplier/cost-benchmark rows (step 10), and the remaining query transformations (self-query, multi-query/HyDE, routing). **Decomposition and the groundedness gate are live.** Of the evaluation section, the **retrieval** gate is live and runs in CI; the Ragas/DeepEval **generation** metrics are not, and `eval_golden_set` remains an empty table (the golden set is a file). Treat the rest of this document as specification, not description.
 
 ## Why RAG is load-bearing here
 
@@ -69,7 +69,9 @@ Heavy ingestion runs as background jobs (pg-boss / Trigger.dev), **never in the 
 
    Two properties of this step are measured rather than assumed, and both are easy to get wrong. **Candidate depth is tied to corpus size**, not fixed at 40: against the current 43-chunk corpus RRF already places the expected document at rank 1-3, so depth beyond ~25 bought nothing and cost linear cross-encoder time. Raise it as the corpus grows. And **the threshold is per provider**, because the two score distributions are not comparable: 0.05 for Cohere, 0.0013 for bge. Applying one to the other measured recall 0.45.
 
-   **The threshold is not a scope gate**, and cannot be made into one. It ranks chunks within the corpus; it does not decide whether the corpus covers the question. An in-vocabulary but uncovered question ("how do I run a webinar funnel") therefore clears it on **both** providers. See the measured bands in [rag-knowledge.md](../30-modules/rag-knowledge.md); a real groundedness check is still outstanding.
+   **The threshold is not a scope gate**, and cannot be made into one. It ranks chunks within the corpus; it does not decide whether the corpus covers the question. An in-vocabulary but uncovered question ("how do I run a webinar funnel") therefore clears it on **both** providers. See the measured bands in [rag-knowledge.md](../30-modules/rag-knowledge.md). That question is answered by step 6 instead.
+
+6. **Groundedness gate** — one cheap-tier model call asking whether the surviving sources actually **answer** the goal, rather than how well they rank. Fails closed, judges the same sources block the planner receives, and runs before generation. This is the check the "Guarded generation" section below has always specified; until it existed, the drop-threshold was standing in for it and could not do the job. Spec and measurement in [rag-knowledge.md](../30-modules/rag-knowledge.md).
 
 ## Two corpora: reference knowledge + real outcomes
 
@@ -95,7 +97,7 @@ The knowledge base has two layers on the same pgvector infrastructure:
 ## Guarded generation
 
 - **Mandatory citations** on legal/tax/permit output, each with an **effective date**.
-- **Groundedness gate:** claims not supported by retrieved, in-date sources (or below similarity threshold) are flagged `unverified` and **cannot gate a legal action** — they escalate to a human node.
+- **Groundedness gate (live):** claims not supported by retrieved, in-date sources are flagged `unverified` and **cannot gate a legal action** — they escalate to a human node. Note the parenthetical this line used to carry, "or below similarity threshold", was wrong as a definition of the gate rather than merely incomplete: a similarity threshold ranks within the corpus and cannot tell you the corpus does not cover the question. That conflation is what let an in-vocabulary uncovered question through. Retrieval step 6 is the real check.
 - **Injection quarantine:** all retrieved content is untrusted **data**, never instructions.
 - **Multi-tenant isolation:** retrieval respects RLS; no cross-tenant leakage.
 
