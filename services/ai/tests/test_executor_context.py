@@ -155,3 +155,53 @@ async def test_retrieval_is_scoped_to_the_room_and_project():
     await execute_task(request_with(CONTEXT), retriever, providers, make_settings())
 
     assert retriever.scopes == [("room-1", "project-1")]
+
+
+class RepeatingProviders(StubProviders):
+    """A maker that cites one source twice and one it was never given."""
+
+    async def complete_json(self, *, system: str, user: str, model=None, max_tokens=None) -> str:
+        self.system_prompts.append(system)
+        self.user_prompts.append(user)
+        return json.dumps(
+            {
+                "title": "Cold traffic ad copy",
+                "body": "## Variant 1, Problem first\nHeadline: x\nPrimary text: y\nCTA: z",
+                "citations": [
+                    "Controlling CPA on paid social",
+                    "Controlling CPA on paid social",
+                    "A source nobody supplied",
+                ],
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_source_quoted_twice_is_listed_once():
+    """Citations are per chunk, so one document usually contributes several.
+
+    Listing it repeatedly reads as several independent sources agreeing rather
+    than one being quoted more than once, which overstates the grounding on the
+    surface built to let somebody check it.
+    """
+    result = await execute_task(
+        request_with([]), StubRetriever(), RepeatingProviders(), make_settings()
+    )
+    artifact = result.proposals[0]
+    assert artifact.citations == ["Controlling CPA on paid social"]
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_is_not_counted_as_a_fabrication():
+    """The two are different events and the summary must not conflate them.
+
+    A repeated citation is the model quoting one source twice. An unsupplied one
+    is it naming a source it was never given, which is what the checker escalates
+    a task for. Reporting the first as the second would make a harmless habit
+    look like the failure that stops work.
+    """
+    result = await execute_task(
+        request_with([]), StubRetriever(), RepeatingProviders(), make_settings()
+    )
+    # Three cited, one genuinely unsupplied. The duplicate is not in that count.
+    assert "1 unsupplied citation(s) dropped" in result.reasoning_summary

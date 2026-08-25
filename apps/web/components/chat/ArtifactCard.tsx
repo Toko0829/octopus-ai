@@ -31,6 +31,20 @@ export function ArtifactCard({ embed }: Props) {
   const { step, stage, title, body, citations } = embed.payload;
   const grounded = citations.length > 0;
 
+  /**
+   * Deduplicated, because citations are per CHUNK and a document usually
+   * contributes several. Listing the label once per chunk showed one source
+   * three times, which reads as three independent sources corroborating the
+   * work: an overstatement of its support, on the one surface built for
+   * checking that support.
+   *
+   * The plan card was corrected for exactly this and the artifact card was not,
+   * which nobody could see because the card never rendered: `messages.ts` had no
+   * `artifact` arm in its embed union, so every one of these was dropped on read.
+   * Fixing that read path is what surfaced this.
+   */
+  const sources = [...new Set(citations)];
+
   return (
     <article className="artifact-card" aria-label={`Deliverable for ${step}`}>
       <header className="artifact-head">
@@ -54,7 +68,7 @@ export function ArtifactCard({ embed }: Props) {
           <>
             <span className="artifact-sources-label">Sources</span>
             <ul>
-              {citations.map((label) => (
+              {sources.map((label) => (
                 <li key={label}>{label}</li>
               ))}
             </ul>

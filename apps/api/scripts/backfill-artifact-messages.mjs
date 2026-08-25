@@ -90,7 +90,9 @@ for (const artifact of artifacts) {
     continue;
   }
 
-  const citations = Array.isArray(artifact.citations) ? artifact.citations : [];
+  // Deduplicated, matching `postArtifact`. These rows were written before the
+  // core deduped, so most of them repeat a document label several times.
+  const citations = [...new Set(Array.isArray(artifact.citations) ? artifact.citations : [])];
   const sources = citations.length
     ? `\n\nSources: ${citations.join('; ')}`
     : '\n\nNo sources are cited for this, so treat it as unverified.';

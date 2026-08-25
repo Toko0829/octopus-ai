@@ -319,8 +319,14 @@ async function postArtifact(
     // A deliverable with no citation is not the same as one with sources, and the
     // reader has to be told which they are holding. Rule 10 applied to work:
     // uncited output must never be presented as if it were grounded.
-    const sources = input.citations.length
-      ? `\n\nSources: ${input.citations.join('; ')}`
+    // Deduplicated for the same reason the card is. Citations are per chunk, and
+    // one document usually contributes several, so repeating its label reads as
+    // several sources agreeing rather than one being quoted more than once. The
+    // core already dedupes what it returns; this also covers artifacts stored
+    // before it did, which the backfill will deliver.
+    const cited = [...new Set(input.citations)];
+    const sources = cited.length
+      ? `\n\nSources: ${cited.join('; ')}`
       : '\n\nNo sources are cited for this, so treat it as unverified.';
 
     const { data: message, error: messageError } = await admin

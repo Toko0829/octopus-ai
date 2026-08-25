@@ -200,8 +200,20 @@ async def execute_task(
     # problem. Dropping it instead lets the checker judge the remaining grounding
     # on its merits.
     supplied = {c.label for c in citations}
-    kept = [c for c in draft.citations if c in supplied]
-    dropped = len(draft.citations) - len(kept)
+    # Deduplicated as well as filtered, and order preserved so the first mention
+    # still leads. Citations are per CHUNK and one document usually contributes
+    # several, so an undeduplicated list shows the same source repeatedly, which
+    # reads as several independent sources agreeing rather than one being quoted
+    # more than once. That overstates the grounding on the surface built to let
+    # somebody check it, and the plan card was corrected for exactly this.
+    supported = [c for c in draft.citations if c in supplied]
+    kept = list(dict.fromkeys(supported))
+    # Counted against `supported`, not against `kept`. Folding the two together
+    # would report a repeated citation as a fabricated one, and those are not the
+    # same event: a duplicate is the model quoting one source twice, while an
+    # unsupplied label is it naming a source it was never given, which is what
+    # the checker escalates a task for.
+    dropped = len(draft.citations) - len(supported)
     if dropped:
         logger.warning(
             "dropped %d citation(s) naming sources that were not supplied",
