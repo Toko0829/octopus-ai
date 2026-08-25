@@ -47,6 +47,14 @@
 
 Region co-location: Supabase + Fly.io services are co-located in the region nearest the launch cohort to keep Postgres round-trips and Realtime latency low.
 
+### A room can carry more than one project, and for a while it could not
+
+`rooms.project_id` is written once, by `materialise_plan`, under `where ... and project_id is null`. So the **first** project approved in a room claims it permanently, and every plan approved in that room afterwards created a project that was never linked to anywhere.
+
+That mattered because delivery resolved the room by asking `rooms` which project it belonged to. Measured on the live database rather than reasoned about: a real run produced **8 approved tasks and 8 stored artifacts, none of which reached the chat**, while the room still pointed at a project from nine days earlier. The lookup found no room and returned early, so the person saw "Plan approved" and then nothing at all, with no error anywhere. Rule 16's silent failure producing the exact "plans visibly, delivers invisibly" symptom the artifact card was built to end.
+
+`roomForProject` now resolves through `projects.source_embed_id` to the card's `room_id`. That link is unique, set at creation, and never changes: a project came from exactly one card, posted in exactly one room. `rooms.project_id` keeps its meaning as "the project this room is currently about", which is fine for a UI to read and is simply not the delivery path, because it answers a question that changes and this one does not. Both call sites, the artifact announcement and the waiting digest, now log loudly when no room resolves instead of returning quietly.
+
 ## Service map
 
 | Service        | Tech                                                                                     | Responsibility                                                                                                                                                                                                                     |

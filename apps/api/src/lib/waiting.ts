@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { TickReport, TickResult } from '@octopus/core';
 import { QuestionEmbedPayload } from '@octopus/contracts';
+import { roomForProject } from './room-for-project';
 
 /**
  * Telling somebody that a task is waiting on them.
@@ -96,22 +97,28 @@ export function waitingMessage(summary: WaitingSummary, titles: Map<string, stri
 export async function notifyWaiting(
   admin: SupabaseClient,
   report: TickReport,
-  log: { info: (o: unknown, m: string) => void; error: (o: unknown, m: string) => void },
+  log: {
+    info: (o: unknown, m: string) => void;
+    warn: (o: unknown, m: string) => void;
+    error: (o: unknown, m: string) => void;
+  },
 ): Promise<void> {
   const summary = summariseWaiting(report);
   if (!hasWaiting(summary)) return;
 
   try {
-    const { data: room, error: roomError } = await admin
-      .from('rooms')
-      .select('id')
-      .eq('project_id', report.projectId)
-      .maybeSingle();
-    if (roomError) throw roomError;
-    // A project with no room has nobody to tell. Not an error: the room link is
-    // written when a plan materialises, and a project created another way is a
-    // shape this does not have to handle yet.
-    if (!room) return;
+    const roomId = await roomForProject(admin, report.projectId);
+    // Loud rather than quiet. This used to read "a project with no room has
+    // nobody to tell", which was true and hid a real defect: `rooms.project_id`
+    // is claimed by the FIRST project approved in a room, so every later project
+    // in that room went unannounced with nothing said about it.
+    if (!roomId) {
+      log?.warn(
+        { projectId: report.projectId },
+        'project has no room, so waiting steps cannot be reported',
+      );
+      return;
+    }
 
     const waitingIds = WAITING_OUTCOMES.flatMap((outcome) =>
       report.results.filter((r) => r.outcome === outcome).map((r) => r.taskId),
@@ -135,7 +142,7 @@ export async function notifyWaiting(
     const { data: message, error: postError } = await admin
       .from('messages')
       .insert({
-        room_id: room.id,
+        room_id: roomId,
         author_id: null,
         author_kind: 'agent',
         body: waitingMessage(summary, titles),
@@ -168,7 +175,7 @@ export async function notifyWaiting(
 
       const { error: embedError } = await admin.from('action_embeds').insert({
         message_id: message.id,
-        room_id: room.id,
+        room_id: roomId,
         component: 'question',
         payload: payload.data,
         // Echoed for the UI. What actually stops a human node answering on the

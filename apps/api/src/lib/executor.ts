@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { nextStateAfterReview, review } from '@octopus/core';
 import { ArtifactEmbedPayload } from '@octopus/contracts';
 import { AiServiceError, requestExecution } from './ai';
+import { roomForProject } from './room-for-project';
 
 /**
  * Running one AI-owned task: the maker-checker loop.
@@ -278,13 +279,17 @@ async function postArtifact(
   },
 ): Promise<void> {
   try {
-    const { data: room, error: roomError } = await admin
-      .from('rooms')
-      .select('id')
-      .eq('project_id', input.projectId)
-      .maybeSingle();
-    if (roomError) throw roomError;
-    if (!room) return;
+    const roomId = await roomForProject(admin, input.projectId);
+    // Loud, because the failure this replaced was silent. A missing room used to
+    // mean a finished, cited artifact was written to the database and simply
+    // never mentioned, which reads to the person as the system having stopped.
+    if (!roomId) {
+      input.log?.warn(
+        { projectId: input.projectId, artifactId: input.artifactId },
+        'artifact has no room to post into, so delivered work is invisible',
+      );
+      return;
+    }
 
     // A deliverable with no citation is not the same as one with sources, and the
     // reader has to be told which they are holding. Rule 10 applied to work:
@@ -296,7 +301,7 @@ async function postArtifact(
     const { data: message, error: messageError } = await admin
       .from('messages')
       .insert({
-        room_id: room.id,
+        room_id: roomId,
         author_id: null,
         author_kind: 'agent',
         body: `${input.step}\n\n${input.title}\n\n${input.body}${sources}`,
@@ -331,7 +336,7 @@ async function postArtifact(
 
     const { error: embedError } = await admin.from('action_embeds').insert({
       message_id: message.id,
-      room_id: room.id,
+      room_id: roomId,
       component: 'artifact',
       payload: payload.data,
       // Reports rather than asks. Reviewing a deliverable is a real decision and
