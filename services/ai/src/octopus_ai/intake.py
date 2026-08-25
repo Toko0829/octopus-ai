@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 from .decompose import COVERED_STAGES
@@ -80,6 +81,12 @@ BROAD_REQUIRED_SLOTS = ("icp", "offer", "target_metric", "budget_band")
 # query, so pasting every slot into it would undo that. It stays a restatement,
 # not a summary of the intake.
 MAX_REFINED_GOAL_CHARS = 200
+
+# And a cap in WORDS, which is the unit that actually moved the measurement. A
+# character cap does not stop a nine-word query, and nine words was the difference
+# between a grounded plan and `refusing-v0` on the same corpus. Seven matches the
+# 7.1-word mean ADR-0009 measured for sub-queries after that rewrite.
+MAX_REFINED_GOAL_WORDS = 7
 
 INTAKE_PROMPT = """You are the intake step of Octopus, which runs full-funnel \
 digital marketing for solo founders and creators.
@@ -148,7 +155,12 @@ The caller decides which of your questions are actually asked, so return one per
 empty slot and do not rank or omit them.
 
 REFINED_GOAL. Restate what they want as a SEARCH QUERY, not as a description of
-their business. Under twelve words, in a practitioner's vocabulary.
+their business. **Seven words or fewer**, in a practitioner's vocabulary.
+
+Seven is measured, not a style preference. The same intent at nine words
+retrieved nothing at all where the five-word version returned a full plan: a
+cross-encoder dilutes on long queries, and the relevance threshold has very
+little room. Shorter is safer here, and the slots carry everything you leave out.
 
 **Leave out their audience, their budget, their product's name, and any number
 they gave.** Those are captured in the slots and handed to the planner
@@ -251,6 +263,124 @@ class ParsedIntake:
     refined_goal: str
 
 
+# Words that carry no retrieval signal on their own, so removing a particular
+# either side of one must not leave them stranded as the whole query.
+_STOPWORDS = frozenset(
+    "a an and for from get in into more my of on our the to via with without".split()
+)
+
+# Below this many content words the stripped query is not a query any more, and a
+# search for "get sign-ups" alone would be worse than the polluted original.
+_MIN_CONTENT_WORDS = 3
+
+
+def strip_particulars(refined: str, slots: list[IntakeSlot]) -> str:
+    """Remove the person's own particulars from the retrieval query.
+
+    The prompt already asks for this, with `travelers` as the worked example, and
+    **the model agreed and then did it anyway** on a case it had not been shown:
+    `icp: students` came back inside "get student sign-ups via website promotion",
+    which retrieved nothing at all. Measured on the live corpus, removing that one
+    word turns `refusing-v0` into a grounded six-stage plan.
+
+    So this is the third time this project has met the same shape and it gets the
+    same answer as the other two: **a disposition in a prompt is complied with and
+    then ignored, so the rule moves into code.** Decomposition was told "most
+    goals need one or two stages" and the groundedness gate was told "when unsure,
+    answer false"; both were fixed here rather than there.
+
+    Nothing is lost by removing them. `icp`, `offer` and `budget_band` travel to
+    the planner as `context`, which is what makes the steps concrete. They are
+    simply not search terms: a corpus of marketing principles holds no company
+    names, no budget figures, and no niche audience word.
+
+    Conservative in one direction on purpose. If stripping would leave too little
+    to search with, the original is kept: a polluted query retrieves badly, an
+    empty one retrieves nothing, and the first is recoverable where the second is
+    not.
+    """
+    # **Only `icp`.** The first version of this also drew words from `offer` and
+    # `budget_band`, and that was wrong in a way the same measurement had already
+    # ruled out. An offer reads "Website bluelly.com sign-ups", which contributed
+    # `sign`, `ups` and `website` as particulars, so stripping removed the audience
+    # AND the metric and left two content words, tripping the guard below and
+    # returning the polluted original. Meanwhile the measured evidence was
+    # explicit: "get sign-ups via website promotion" retrieved fine. The audience
+    # word was the whole poison, so the audience word is the whole rule.
+    #
+    # `target_metric` was never included, for the related reason: "signups",
+    # "customers" and "revenue" are practitioner vocabulary the corpus is written
+    # in, and removing them guts the query rather than cleaning it.
+    particulars: set[str] = set()
+    for slot in slots:
+        if slot.key != "icp":
+            continue
+        for word in re.findall(r"[a-z0-9]+", slot.value.lower()):
+            if word not in _STOPWORDS and len(word) > 2:
+                particulars.add(word)
+
+    def is_particular(word: str) -> bool:
+        bare = word.lower().strip(".,;:!?")
+        if not bare:
+            return False
+        # Any digit at all: budgets, ages, counts and dates are never search terms.
+        if any(ch.isdigit() for ch in bare):
+            return True
+        # A dot means a domain or a product name. A corpus of marketing principles
+        # contains no company names, so this can only dilute the query.
+        if "." in word.strip(".,;:!?"):
+            return True
+        # Prefix match rather than equality, so `students` in a slot removes
+        # `student` in the goal. Five characters is long enough that `content`
+        # does not match `contact`, and short enough to catch ordinary plurals.
+        return any(
+            bare.startswith(p[:5]) or p.startswith(bare[:5])
+            for p in particulars
+            if len(p) >= 4 and len(bare) >= 4
+        )
+
+    kept = [w for w in refined.split() if not is_particular(w)]
+    content = [w for w in kept if w.lower().strip(".,;:!?") not in _STOPWORDS]
+    if len(content) < _MIN_CONTENT_WORDS:
+        return refined
+    return " ".join(_shorten(kept, content))
+
+
+def _shorten(kept: list[str], content: list[str]) -> list[str]:
+    """Hold the query near the length a cross-encoder actually scores well.
+
+    **Measured in production, not inferred.** Four phrasings of the same intent
+    against the same corpus:
+
+        get sign-ups for a new website via paid acquisition  (9)  refusing-v0
+        get sign-ups from paid acquisition                   (5)  grounded
+        get signups from paid acquisition                    (5)  grounded
+        paid acquisition for a new website                   (6)  grounded
+
+    Hyphenation did not decide it and neither did the wording; length did. That is
+    ADR-0009's finding arriving in production: sub-queries fell from 20-30 words to
+    a 7.1-word mean and that was a quality fix, not only a cost one. With the local
+    threshold's margin at 1.76x, the tightest safety property in retrieval, a few
+    extra words of dilution is the whole distance.
+
+    It is fatal rather than merely worse because decomposition is **additive to
+    grounding**: the goal is searched first and the sub-queries are abandoned if it
+    retrieves nothing. The failing query above got 25 candidates where the others
+    got 150, so a diluted goal takes the entire plan down before decomposition can
+    help.
+
+    Function words go first because they carry no signal at a cross-encoder, so
+    dropping them shortens the query without removing anything it was searching
+    for. Only if that is not enough does it truncate, keeping the front where the
+    intent sits.
+    """
+    if len(kept) <= MAX_REFINED_GOAL_WORDS:
+        return kept
+    if len(content) <= MAX_REFINED_GOAL_WORDS:
+        return content
+    return content[:MAX_REFINED_GOAL_WORDS]
+
+
 def parse_intake(raw: str) -> ParsedIntake:
     """Turn the model's JSON into slots, touched stages, questions and a restatement.
 
@@ -311,6 +441,7 @@ def parse_intake(raw: str) -> ParsedIntake:
         questions.append(IntakeQuestion(slot=slot, question=text[:240]))  # type: ignore[arg-type]
 
     refined = " ".join(str(data.get("refined_goal") or "").split())[:MAX_REFINED_GOAL_CHARS]
+    refined = strip_particulars(refined, slots)
 
     # Type-checked rather than coerced, for the reason the groundedness gate states
     # about its own boolean: `bool("false")` is `True`, and a missing or garbled
