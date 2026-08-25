@@ -6,6 +6,21 @@
 >
 > The full engineering spec lives in [rag.md](../10-architecture/rag.md); this module doc is the operational/domain view. Update both on any ingestion/retrieval/model/eval change.
 
+## The corpus decides which words work, and that is now measured
+
+Retrieval is sensitive to the exact metric word, and the margin is what makes it so. Two phrasings of one intent against the same corpus:
+
+| goal                                    | result                                                  |
+| --------------------------------------- | ------------------------------------------------------- |
+| marketing plan to get **registrations** | `refusing-v0`, 25 candidates, none above threshold      |
+| marketing plan to get **signups**       | `grounded-plan-v1`, 150 candidates, full six-stage plan |
+
+The corpus says "signups" throughout and never says "registrations". At a 1.76x threshold margin a synonym the corpus does not contain simply falls through, so a person who says "register on my website" is refused where one who says "sign up" is served, for the same request.
+
+**This is a corpus gap, not a retrieval defect.** The fix is vocabulary coverage: the documents should use the words people actually use, including registration, subscriber, enquiry and booking alongside signup. A prompt instruction telling intake to normalise the metric is the wrong lever, and this project has measured three times what happens to prompt-level dispositions. Add a golden case with each vocabulary the corpus takes on, per the standing rule that the negative half is load-bearing.
+
+Until then the failure is at least legible: `refusing-v0` names it as nothing retrieved rather than as a gate refusal, which is the distinction those separate cores exist to preserve.
+
 ## Sources a user supplies
 
 The corpus is no longer only ours. `POST /sources` ingests a document about the user's own business, scoped to their room, and retrieval blends it with the shared corpus: shared rows always, that room's rows to that room, nobody else's ever.

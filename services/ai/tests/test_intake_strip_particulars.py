@@ -132,3 +132,45 @@ def test_a_short_query_is_left_exactly_as_it_is():
     """Shortening must not fire on something already in range."""
     original = "get signups from paid acquisition"
     assert strip_particulars(original, []) == original
+
+
+def test_a_short_particular_is_removed_too():
+    """The gap that produced a real refusal, on a goal the corpus answers.
+
+    `USA` was extracted as a particular and then never compared against
+    anything, because the prefix rule required four characters on both sides.
+    "marketing plan to get USA signups" therefore reached the groundedness gate,
+    which read the person's own geography as a topic the sources were obliged to
+    cover, and refused.
+    """
+    out = strip_particulars(
+        "marketing plan to get USA signups",
+        [slot("icp", "students from the USA"), slot("offer", "bluelly.com registration")],
+    )
+    assert "USA" not in out
+    assert "signups" in out, "the metric is practitioner vocabulary and must survive"
+
+
+def test_other_short_qualifiers_too():
+    """`UK` needed the extraction floor lowered as well as the match relaxed.
+
+    `USA` was collected and never compared; `UK`, at two characters, was never
+    collected at all. Both halves of the same leak.
+
+    The goals here are deliberately long enough to survive stripping. A shorter
+    one trips the minimum-content guard and comes back unchanged, which is that
+    guard working rather than this rule failing.
+    """
+    for icp, word in [("UK-based freelancers", "UK"), ("B2B SaaS teams", "B2B")]:
+        out = strip_particulars(
+            f"lower cost per acquisition on paid social for {word} buyers",
+            [slot("icp", icp)],
+        )
+        assert word not in out, f"{word} leaked into the query"
+        assert "acquisition" in out, "the practitioner vocabulary must survive"
+
+
+def test_a_short_particular_does_not_match_a_longer_word():
+    """Exact for short ones, so `ads` cannot eat `adspend` or `adjust`."""
+    out = strip_particulars("adjust the ad spend upward", [slot("icp", "ads managers")])
+    assert "adjust" in out

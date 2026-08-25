@@ -316,7 +316,12 @@ def strip_particulars(refined: str, slots: list[IntakeSlot]) -> str:
         if slot.key != "icp":
             continue
         for word in re.findall(r"[a-z0-9]+", slot.value.lower()):
-            if word not in _STOPWORDS and len(word) > 2:
+            # Two characters, not three. `UK` is a particular and was not even
+            # being extracted, which is the other half of the same leak: `USA`
+            # was extracted and never compared, `UK` was never collected at all.
+            # Safe at this length only because short particulars are matched
+            # exactly below rather than by prefix.
+            if word not in _STOPWORDS and len(word) >= 2:
                 particulars.add(word)
 
     def is_particular(word: str) -> bool:
@@ -330,13 +335,27 @@ def strip_particulars(refined: str, slots: list[IntakeSlot]) -> str:
         # contains no company names, so this can only dilute the query.
         if "." in word.strip(".,;:!?"):
             return True
-        # Prefix match rather than equality, so `students` in a slot removes
+        # Two rules, because one does not cover both shapes of particular.
+        #
+        # **Long ones match on a prefix**, so `students` in a slot removes
         # `student` in the goal. Five characters is long enough that `content`
         # does not match `contact`, and short enough to catch ordinary plurals.
+        #
+        # **Short ones match exactly**, and that gap cost a real refusal. The
+        # length floor below existed to stop a three-letter word prefix-matching
+        # half the vocabulary, and its effect was that `USA` was extracted as a
+        # particular and then never compared against anything: "marketing plan to
+        # get USA signups" reached the groundedness gate, which read the person's
+        # own geography as a topic the sources were obliged to cover and refused a
+        # goal the corpus answers perfectly well. `UK`, `B2B` and every other
+        # short qualifier had the same hole.
         return any(
-            bare.startswith(p[:5]) or p.startswith(bare[:5])
+            (
+                bare.startswith(p[:5]) or p.startswith(bare[:5])
+                if len(p) >= 4 and len(bare) >= 4
+                else bare == p
+            )
             for p in particulars
-            if len(p) >= 4 and len(bare) >= 4
         )
 
     kept = [w for w in refined.split() if not is_particular(w)]
