@@ -15,7 +15,13 @@ silent grounding failure, so it is pinned here.
 import httpx
 import pytest
 
-from octopus_ai.config import ConfigError, Settings, _choice
+from octopus_ai.config import (
+    RERANK_LOCAL_MIN_SCORE_DEFAULT,
+    ConfigError,
+    Settings,
+    _choice,
+    get_settings,
+)
 from octopus_ai.providers import Providers
 
 
@@ -84,9 +90,43 @@ def test_the_local_threshold_keeps_its_measured_margin():
     the consequence of crossing the lower one is a LEAK: cited sources that do
     not support the answer. Anyone retuning this should have to change a test
     that says so.
+
+    Raising it was tried when crawled sources grew the corpus and a car-licence
+    negative began scoring 0.008. It was reverted: the positive and negative
+    bands are 2.75x apart on a signal that moves 3x between identical runs, so a
+    threshold cannot separate them and raising it refuses legitimate goals at
+    random instead. Scope is the groundedness gate's job, which is why that leak
+    now lives in `scope_negatives`.
     """
     threshold = _settings(rerank_provider="local").active_rerank_min_score
     assert 0.001007 < threshold < 0.001772
+
+
+def test_the_configured_threshold_is_the_one_production_uses(monkeypatch):
+    """The guard above must describe the running system, not a second copy of it.
+
+    Every setting in `config.py` writes its default twice, on the dataclass field
+    and again in `get_settings()`. For a model name that is survivable. For this
+    it was not, and it was learned by doing it: the threshold was re-measured, the
+    field was updated, the test above went green, and the eval kept running the
+    old number because the factory still carried it. The run reported a leak that
+    had already been fixed everywhere except where it counted.
+
+    So the two are now one constant, and this asserts they cannot drift apart
+    again. It reads `get_settings()`, which is the path the service actually
+    takes, rather than constructing a Settings directly as the rest of this file
+    does.
+    """
+    for key in ("RERANK_PROVIDER", "RERANK_LOCAL_MIN_SCORE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "sb_secret_test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().active_rerank_min_score == RERANK_LOCAL_MIN_SCORE_DEFAULT
+    finally:
+        get_settings.cache_clear()
 
 
 def test_local_path_is_separate_from_local_identity():

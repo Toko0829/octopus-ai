@@ -263,7 +263,14 @@ class Providers:
 
         return out
 
-    async def complete_json(self, *, system: str, user: str, model: str | None = None) -> str:
+    async def complete_json(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
         """One generation call constrained to return a JSON object.
 
         `json_object` mode rather than a JSON schema: it is the broadly supported
@@ -300,7 +307,7 @@ class Providers:
                 # Not a determinism guarantee: providers stay free to vary at
                 # temperature 0. It removes the deliberate variance, not all of it.
                 "temperature": 0,
-                "max_completion_tokens": self._s.generation_max_tokens,
+                "max_completion_tokens": max_tokens or self._s.generation_max_tokens,
             },
             what="openai chat completion (json)",
         )

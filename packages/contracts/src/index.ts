@@ -51,6 +51,18 @@ export type FunnelStage = z.infer<typeof FunnelStage>;
 export const StepOwner = z.enum(['AI', 'HUMAN', 'YOU']);
 export type StepOwner = z.infer<typeof StepOwner>;
 
+/**
+ * What running a step would do to the outside world. Mirrors
+ * `public.task_risk_tier` and the tool risk tiers in `ai-orchestrator.md`.
+ *
+ * This is on the wire because it is an input to an authorisation decision, not a
+ * presentation detail: the router refuses to auto-run `high_risk` whatever the
+ * step's owner says, and `materialise_plan` carries it onto the task row so that
+ * refusal survives the plan card it came from.
+ */
+export const TaskRiskTier = z.enum(['read_only', 'reversible', 'external', 'high_risk']);
+export type TaskRiskTier = z.infer<typeof TaskRiskTier>;
+
 export const PlanCitation = z.object({
   sourceId: z.string(),
   label: z.string(),
@@ -69,6 +81,24 @@ export const PlanStep = z.object({
    * than render it identically to a grounded step (AGENTS.md rule 10).
    */
   citations: z.array(z.number().int().positive()),
+  /**
+   * What this step would do to the outside world, proposed by the planner and
+   * then raised (never lowered) by the clamp in `services/ai`.
+   *
+   * Optional for the same reason `PlanEmbedPayload.goal` is: cards written before
+   * this field existed do not carry it. Absent means `reversible`, which is
+   * exactly what those cards already materialised as, so an old card renders and
+   * approves unchanged. A tier that is *present and unrecognised* is a different
+   * thing and `materialise_plan` raises on it rather than defaulting.
+   */
+  riskTier: TaskRiskTier.optional().default('reversible'),
+  /**
+   * Checkable statements about what the finished step must contain. Nothing reads
+   * them yet; the marketplace's maker-checker validates a node's proof against
+   * them, and generating them alongside the step is far cheaper than backfilling
+   * criteria for work that has already been done.
+   */
+  acceptanceCriteria: z.array(z.string()).optional().default([]),
 });
 export type PlanStep = z.infer<typeof PlanStep>;
 
@@ -78,16 +108,190 @@ export const PlanStage = z.object({
 });
 export type PlanStage = z.infer<typeof PlanStage>;
 
+/**
+ * The five slots intake fills, named by `full-funnel-creator.md` step 1 rather
+ * than invented here, so the playbook stays the specification.
+ */
+export const IntakeSlotKey = z.enum(['icp', 'offer', 'target_metric', 'budget_band', 'timeline']);
+export type IntakeSlotKey = z.infer<typeof IntakeSlotKey>;
+
+/**
+ * One thing established about what the person wants.
+ *
+ * `source` separates what they said from what the model concluded, and it is
+ * load-bearing rather than informational: an inferred slot is a guess about
+ * someone's business that will shape a plan they act on, so the card has to be
+ * able to show it as a guess. It also keeps a wrong inference attributable to the
+ * model instead of to the person for "saying" something they never said.
+ */
+export const IntakeSlot = z.object({
+  key: IntakeSlotKey,
+  value: z.string().min(1).max(400),
+  source: z.enum(['stated', 'inferred']),
+});
+export type IntakeSlot = z.infer<typeof IntakeSlot>;
+
 /** The `payload` of an `action_embeds` row whose component is `plan`. */
 export const PlanEmbedPayload = z.object({
+  /**
+   * The goal this plan answers, in the person's own words.
+   *
+   * Optional only because embeds written before it existed do not carry it;
+   * everything new does. Two things need it and neither can reconstruct it.
+   *
+   * A **project** needs a goal, and approving a plan is what creates one. The
+   * plan's `title` is the AI's restatement, which is a reasonable fallback and
+   * not the same thing as what was asked.
+   *
+   * And the **flywheel** stores this payload as `feedback_events.subject`, the
+   * labelled example of a human accepting or rejecting AI output. Without the
+   * goal that label is an output with no input, which is not a training pair.
+   */
+  goal: z.string().optional(),
   title: z.string(),
   summary: z.string(),
   stages: z.array(PlanStage),
   citations: z.array(PlanCitation),
+
+  /**
+   * What intake established about this person: audience, offer, budget, timeline.
+   *
+   * Stored on the card so the EXECUTOR can reach it. Intake's slots reached the
+   * planner and then died: measured on a real run where the person gave their
+   * audience, 4 of 15 plan steps mentioned it and only 1 of 8 artifacts did, and
+   * that one only because the planner happened to write the word into a step
+   * title. So the plan knew who it was for and the work did not, and the copy
+   * came back aimed at a marketer instead of at the customer.
+   *
+   * On the card rather than a new column because the card is already the record
+   * of what was approved, `projects.source_embed_id` already points at it, and a
+   * jsonb payload needs no migration to carry one more field.
+   *
+   * Optional, like `goal` above and for the same reason: cards written before
+   * this do not have it, and absent must keep working rather than raising.
+   */
+  context: z.array(IntakeSlot).optional(),
 });
 export type PlanEmbedPayload = z.infer<typeof PlanEmbedPayload>;
 
-export const EmbedState = z.enum(['pending', 'approved', 'rejected', 'expired']);
+export const IntakeQuestion = z.object({
+  slot: IntakeSlotKey,
+  question: z.string().min(1).max(240),
+});
+export type IntakeQuestion = z.infer<typeof IntakeQuestion>;
+
+/**
+ * The `payload` of an `action_embeds` row whose component is `question`.
+ *
+ * This card is also where the intake's state lives between rounds. The AI service
+ * is stateless by design (ADR-0006), so something on this side has to carry the
+ * slots forward, and a row that is already written, already RLS-scoped to the
+ * room, and already visible to the person is a better place for it than a new
+ * table nothing else would use. It also means the state and the questions it
+ * produced can never disagree, because they are one row.
+ */
+export const QuestionEmbedPayload = z.object({
+  /**
+   * What this card is waiting for, and it changes what the next message MEANS.
+   *
+   * `answers` is the ordinary case: the goal is known and we are filling slots, so
+   * the reply is appended to `answers`.
+   *
+   * `goal` is the case where there is no usable goal yet, because the person said
+   * hello or asked about something this system cannot ground. Their next message
+   * **replaces** the goal rather than being filed as an answer to it. Without this
+   * distinction a conversation opening with "Hello" would plan for the goal
+   * "Hello" forever, with everything real buried in `answers`.
+   */
+  awaiting: z.enum(['goal', 'answers', 'task_answers']),
+  /** The goal so far. Empty while `awaiting` is `goal`. */
+  goal: z.string(),
+  /**
+   * The slot-bound questions this card asked. Empty is legitimate and means the
+   * card is waiting for a goal rather than for slots: "what are you trying to
+   * grow" fills no particular slot, and forcing it under one would put a false
+   * label on the answer when it comes back.
+   */
+  questions: z.array(IntakeQuestion).max(4),
+  /** What rounds so far established. Handed straight back to `/intake`. */
+  slots: z.array(IntakeSlot),
+  /** Rounds already completed, so the cap is enforceable across requests. */
+  round: z.number().int().min(0).max(10),
+  /** Everything the person has said since the goal, oldest first. */
+  answers: z.array(z.string()),
+  /**
+   * Consecutive turns that produced no usable goal.
+   *
+   * Bounded separately from `round` because the two measure different things.
+   * `round` limits how much we interrogate someone who HAS told us what they
+   * want. This limits how long we keep asking someone who has not. Following the
+   * thread is right; following it forever is a system that will not take no for
+   * an answer, so it stops and says so.
+   */
+  stalls: z.number().int().min(0).max(10),
+  /**
+   * The tasks this card is collecting answers for, when `awaiting` is
+   * `task_answers`.
+   *
+   * A third kind of waiting, and it is genuinely different from the other two.
+   * Intake asks what someone wants before there is a plan; this asks a question
+   * the **plan itself** raised, about work only they can do: a budget, a
+   * positioning call, which analytics source counts. Their reply is not context
+   * for a future plan, it is the deliverable for a step that already exists.
+   */
+  taskIds: z.array(z.string().uuid()).default([]),
+});
+export type QuestionEmbedPayload = z.infer<typeof QuestionEmbedPayload>;
+
+/**
+ * A deliverable the agent produced for one approved step.
+ *
+ * Rendered as a card so the work is readable where the person already is, rather
+ * than living in a table only SQL can reach. `citations` are source LABELS, as
+ * `WriteArtifactProposal` carries them: the checker's job includes catching a
+ * source the maker was never given, and a label is checkable for provenance where
+ * an index is only checkable for range.
+ */
+export const ArtifactEmbedPayload = z.object({
+  taskId: z.string().uuid(),
+  artifactId: z.string().uuid(),
+  /** The step this delivers, in the plan's own words. */
+  step: z.string().min(1).max(200),
+  stage: FunnelStage.optional(),
+  title: z.string().min(1).max(140),
+  body: z.string().min(1).max(8000),
+  citations: z.array(z.string()).default([]),
+});
+export type ArtifactEmbedPayload = z.infer<typeof ArtifactEmbedPayload>;
+
+/**
+ * `answered` exists because the four original states describe a **verdict**, and
+ * a question has none. Recording an answered question as `approved` would put an
+ * untrue sentence in the audit trail and, worse, hand the flywheel a labelled
+ * example of a person approving something they were never shown.
+ */
+/**
+ * Mirrors `public.embed_state`.
+ *
+ * `reported` and `dismissed` were missing here while the database had them, and
+ * the omission was not cosmetic: `messages.ts` parses every stored embed against
+ * this enum, so an artifact card written with `state: 'reported'` failed the
+ * parse and was dropped on read. `ArtifactCard` had therefore never rendered for
+ * anybody, and the only thing that reached the room was the plain-text fallback.
+ *
+ * Six values, because each records a different thing that happened rather than a
+ * verdict borrowed from a neighbouring one: a question is `answered`, a
+ * deliverable is `reported`, and a card someone walked away from is `dismissed`.
+ */
+export const EmbedState = z.enum([
+  'pending',
+  'approved',
+  'rejected',
+  'expired',
+  'answered',
+  'reported',
+  'dismissed',
+]);
 export type EmbedState = z.infer<typeof EmbedState>;
 
 /**
@@ -104,6 +308,16 @@ export type EmbedActionBody = z.infer<typeof EmbedActionBody>;
 export const EmbedActionResponse = z.object({
   id: z.string().uuid(),
   state: EmbedState,
+  /**
+   * The project an approval created, when it created one.
+   *
+   * Null on `request_changes`, and also null when materialising failed after the
+   * verdict was recorded. That second case is deliberate rather than an error
+   * response: the decision stands whatever happened afterwards, so the caller is
+   * told the verdict took effect and that no project came of it, instead of
+   * being told the approval failed when it did not.
+   */
+  projectId: z.string().uuid().nullable(),
 });
 export type EmbedActionResponse = z.infer<typeof EmbedActionResponse>;
 
@@ -112,16 +326,35 @@ export type EmbedActionResponse = z.infer<typeof EmbedActionResponse>;
  * client so the UI can disable what the caller cannot do, but the server checks
  * it again on the action route: a rule enforced only in React is not enforced.
  */
-export const ActionEmbed = z.object({
+const EmbedBase = {
   id: z.string().uuid(),
   messageId: z.string().uuid(),
-  component: z.literal('plan'),
-  payload: PlanEmbedPayload,
   requiredRole: z.string(),
   state: EmbedState,
   createdAt: z.string(),
-});
+};
+
+/**
+ * Discriminated on `component` rather than left as one shape with a widened
+ * payload. A card whose component says `plan` and whose payload is a question is
+ * a bug the client should fail on, not render half of, and a union is what makes
+ * that a parse error at the boundary instead of an undefined field deep in a
+ * component.
+ */
+export const ActionEmbed = z.discriminatedUnion('component', [
+  z.object({ ...EmbedBase, component: z.literal('plan'), payload: PlanEmbedPayload }),
+  z.object({ ...EmbedBase, component: z.literal('question'), payload: QuestionEmbedPayload }),
+  z.object({ ...EmbedBase, component: z.literal('artifact'), payload: ArtifactEmbedPayload }),
+]);
 export type ActionEmbed = z.infer<typeof ActionEmbed>;
+
+/**
+ * The narrowed variants, so a component that renders one kind of card says so in
+ * its own signature rather than re-narrowing a union it was handed.
+ */
+export type PlanActionEmbed = Extract<ActionEmbed, { component: 'plan' }>;
+export type QuestionActionEmbed = Extract<ActionEmbed, { component: 'question' }>;
+export type ArtifactActionEmbed = Extract<ActionEmbed, { component: 'artifact' }>;
 
 /**
  * A chat message as returned by the API. `seq` is the monotonic ordering cursor
@@ -214,6 +447,146 @@ export type RoomMember = z.infer<typeof RoomMember>;
 
 const RoomParams = z.object({ roomId: z.string().uuid() });
 
+/* --------------------------------------------------------------- workflow */
+
+/**
+ * What a plan became once it was approved: a project, its tasks, and what those
+ * tasks produced. These mirror the enums in `supabase/migrations/20260813120000_workflow_dag.sql`
+ * and `20260813160000_artifacts.sql` rather than restating a subset, because a
+ * client that silently drops a state it does not recognise shows a person a
+ * shorter project than they have.
+ */
+export const ProjectStatus = z.enum([
+  'draft',
+  'planning',
+  'active',
+  'paused',
+  'completed',
+  'cancelled',
+]);
+export type ProjectStatus = z.infer<typeof ProjectStatus>;
+
+export const TaskOwnerType = z.enum(['ai', 'human', 'user']);
+export type TaskOwnerType = z.infer<typeof TaskOwnerType>;
+
+/**
+ * The full per-task machine from business-projects-workflow.md, marketplace half
+ * included. Those states have no code behind them yet and are listed anyway: the
+ * machine is specified in full, and a union that omits them would reject a row
+ * the database can legally produce the day the matcher lands.
+ */
+export const TaskState = z.enum([
+  'pending',
+  'ready',
+  'routing',
+  'ai_running',
+  'ai_self_check',
+  'escalated',
+  'needs_user',
+  'matching',
+  'offered',
+  'claimed',
+  'escrow_funded',
+  'in_progress',
+  'proof_submitted',
+  'in_review',
+  'approved',
+  'payout_pending',
+  'paid',
+  'done',
+  'rejected',
+  'disputed',
+  'failed',
+  'cancelled',
+  'blocked',
+]);
+export type TaskState = z.infer<typeof TaskState>;
+
+export const ArtifactKind = z.enum(['draft', 'analysis', 'asset', 'proof', 'answer']);
+export type ArtifactKind = z.infer<typeof ArtifactKind>;
+
+/**
+ * What a task produced. `body` is inline text and `storagePath` is a file; a row
+ * always has one of the two, enforced by a check constraint, because an artifact
+ * with neither is a task that reported success and produced nothing.
+ *
+ * `citations` are document titles resolved at write time, not indices, so the
+ * checker can catch a source the maker was never given. An empty list is
+ * meaningful and is rendered as such: rule 10 says uncited work cannot pass as
+ * grounded.
+ */
+export const Artifact = z.object({
+  id: z.string().uuid(),
+  taskId: z.string().uuid(),
+  kind: ArtifactKind,
+  title: z.string().nullable(),
+  body: z.string().nullable(),
+  storagePath: z.string().nullable(),
+  citations: z.array(z.string()),
+  createdBy: AuthorKind,
+  createdAt: z.string(),
+});
+export type Artifact = z.infer<typeof Artifact>;
+
+/**
+ * One step of an approved plan. `ownerType` is what the planner proposed;
+ * `state` is where the router and the scheduler actually put it, and the two
+ * disagreeing is information rather than a bug (rule 1 of the router outranks
+ * `ownerType` for high-risk work).
+ */
+export const Task = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  title: z.string(),
+  detail: z.string().nullable(),
+  stage: z.string().nullable(),
+  ownerType: TaskOwnerType,
+  state: TaskState,
+  riskTier: TaskRiskTier,
+  position: z.number().int(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  /** What this step delivered. Empty while it has not run or has not passed review. */
+  artifacts: z.array(Artifact).default([]),
+});
+export type Task = z.infer<typeof Task>;
+
+/**
+ * A project as the list view needs it: enough to say what it is and how far it
+ * has got, without shipping every task body to render a row.
+ *
+ * `waitingOnYou` and `escalated` are counted out separately rather than left
+ * inside `states`, because they are the only two numbers that ask the reader to
+ * do something, and burying them in a map of twenty-three states is how a
+ * summary stops summarising.
+ */
+export const ProjectSummary = z.object({
+  id: z.string().uuid(),
+  goal: z.string(),
+  status: ProjectStatus,
+  createdAt: z.string(),
+  taskCount: z.number().int(),
+  /** Tasks in a terminal-good state (`approved`, `done`, `paid`). */
+  doneCount: z.number().int(),
+  waitingOnYou: z.number().int(),
+  escalated: z.number().int(),
+  artifactCount: z.number().int(),
+});
+export type ProjectSummary = z.infer<typeof ProjectSummary>;
+
+export const ProjectDetail = z.object({
+  id: z.string().uuid(),
+  goal: z.string(),
+  status: ProjectStatus,
+  createdAt: z.string(),
+  /** The room the project's plan card was posted in. Null only for legacy rows. */
+  roomId: z.string().uuid().nullable(),
+  tasks: z.array(Task),
+});
+export type ProjectDetail = z.infer<typeof ProjectDetail>;
+
+const ProjectParams = z.object({ projectId: z.string().uuid() });
+
 export const contract = c.router(
   {
     health: {
@@ -284,6 +657,30 @@ export const contract = c.router(
         404: ApiError,
       },
       summary: 'Current members of a room, with profile basics',
+    },
+
+    listProjects: {
+      method: 'GET',
+      path: '/rooms/:roomId/projects',
+      pathParams: RoomParams,
+      responses: {
+        200: z.object({ projects: z.array(ProjectSummary) }),
+        401: ApiError,
+        404: ApiError,
+      },
+      summary: 'Projects approved in a room, newest first, with progress counts',
+    },
+
+    getProject: {
+      method: 'GET',
+      path: '/projects/:projectId',
+      pathParams: ProjectParams,
+      responses: {
+        200: ProjectDetail,
+        401: ApiError,
+        404: ApiError,
+      },
+      summary: 'One project with its tasks and everything they produced',
     },
 
     listMessages: {

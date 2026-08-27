@@ -26,12 +26,33 @@
 'use client';
 
 import { useState } from 'react';
-import type { ActionEmbed, FunnelStage, PlanStep, StepOwner } from '@octopus/contracts';
+import type {
+  FunnelStage,
+  PlanActionEmbed,
+  PlanStep,
+  StepOwner,
+  TaskRiskTier,
+} from '@octopus/contracts';
 
 const ownerMeta: Record<StepOwner, { cls: string; label: string }> = {
   AI: { cls: 'owner-ai', label: 'AI' },
   HUMAN: { cls: 'owner-human', label: 'Human' },
   YOU: { cls: 'owner-you', label: 'You' },
+};
+
+/**
+ * Only the two tiers that change what happens are shown.
+ *
+ * `reversible` is the ordinary case and covers most of a plan, so a chip on every
+ * step would be a wall of badges that teaches people to stop reading them, which
+ * costs more than it buys on the one surface built for checking. `read_only` is
+ * quieter still. A step with no entry here renders no chip.
+ *
+ * Word plus icon, never colour alone (rule 15).
+ */
+const riskMeta: Partial<Record<TaskRiskTier, { cls: string; label: string; icon: string }>> = {
+  high_risk: { cls: 'risk-high', label: 'Needs your approval', icon: '!' },
+  external: { cls: 'risk-external', label: 'Uses an outside service', icon: '↗' },
 };
 
 const stageLabels: Record<FunnelStage, string> = {
@@ -44,7 +65,11 @@ const stageLabels: Record<FunnelStage, string> = {
 };
 
 interface Props {
-  embed: ActionEmbed;
+  /**
+   * Narrowed to the plan variant rather than taking the union. A card that
+   * renders a plan should not be handed a question and left to re-check.
+   */
+  embed: PlanActionEmbed;
   /** True when the viewer owns the workspace, which is what `requiredRole` means today. */
   canAct: boolean;
   onAct: (embedId: string, action: 'approve' | 'request_changes', note?: string) => Promise<void>;
@@ -52,6 +77,7 @@ interface Props {
 
 function Step({ step, sources }: { step: PlanStep; sources: string[] }) {
   const owner = ownerMeta[step.owner];
+  const risk = riskMeta[step.riskTier];
   // Indices are 1-based and were range-checked server-side, but the lookup still
   // guards: a card is the wrong place to discover a bad index.
   //
@@ -65,6 +91,14 @@ function Step({ step, sources }: { step: PlanStep; sources: string[] }) {
       <div className="stage-title">
         {step.title}
         <span className={`owner ${owner.cls}`}>{owner.label}</span>
+        {risk ? (
+          <span className={`risk ${risk.cls}`}>
+            <span className="risk-icon" aria-hidden>
+              {risk.icon}
+            </span>
+            {risk.label}
+          </span>
+        ) : null}
       </div>
       <div className="stage-detail">{step.detail}</div>
       {cited.length > 0 ? (
@@ -94,16 +128,35 @@ export function PlanCard({ embed, canAct, onAct }: Props) {
    * independent sources when it is one, which overstates how well corroborated
    * the plan is on the very surface meant to let a reader check it.
    *
-   * Grouped by document, keeping each chunk's reference number so a step citing
-   * [2] can still be traced. The numbers stay chunk-level; only the display is
-   * grouped.
+   * Grouped by document, and each one carries **how many excerpts it supplied**
+   * rather than the reference number of each.
+   *
+   * Those numbers used to be printed, justified as keeping a step citing `[2]`
+   * traceable. Nothing ever showed a bare `[2]`: a step renders its sources by
+   * name (see `Step` above), so the numbers were traceable to nothing and were
+   * only ever noise. That stayed invisible while the corpus was internal
+   * playbooks contributing two or three chunks apiece, and stopped being
+   * invisible when crawled pages started contributing sixteen: one document
+   * printed `[1]` through `[14]` across a whole line.
+   *
+   * The count replaces them because it is the thing a reader actually needs.
+   * "Grounded in 3 documents" is true and flattens a plan where one source
+   * supplied 14 of 18 excerpts and another supplied 1, which is the same
+   * overstatement-of-support this grouping already exists to prevent, arriving
+   * from the other direction.
    */
   const sourceDocuments = plan.citations.reduce<
-    { label: string; effectiveDate?: string | null; refs: number[] }[]
-  >((acc, citation, i) => {
+    { label: string; effectiveDate?: string | null; url?: string | null; excerpts: number }[]
+  >((acc, citation) => {
     const existing = acc.find((d) => d.label === citation.label);
-    if (existing) existing.refs.push(i + 1);
-    else acc.push({ label: citation.label, effectiveDate: citation.effectiveDate, refs: [i + 1] });
+    if (existing) existing.excerpts += 1;
+    else
+      acc.push({
+        label: citation.label,
+        effectiveDate: citation.effectiveDate,
+        url: citation.url,
+        excerpts: 1,
+      });
     return acc;
   }, []);
 
@@ -168,16 +221,46 @@ export function PlanCard({ embed, canAct, onAct }: Props) {
           {sourceDocuments.length === 1 ? '1 document' : `${sourceDocuments.length} documents`}
         </div>
         <div className="cites">
-          {sourceDocuments.map((doc) => (
-            <span
-              className="cite"
-              key={doc.label}
-              title={doc.effectiveDate ? `effective ${doc.effectiveDate}` : undefined}
-            >
-              <span className="dot" aria-hidden />
-              <span className="mono">{doc.refs.map((n) => `[${n}]`).join('')}</span> {doc.label}
-            </span>
-          ))}
+          {sourceDocuments.map((doc) => {
+            // Singular at one, because "1 excerpts" on a trust surface reads as
+            // something nobody proofread.
+            const excerpts = (
+              <span className="cite-count">
+                {doc.excerpts === 1 ? '1 excerpt' : `${doc.excerpts} excerpts`}
+              </span>
+            );
+            const dated = doc.effectiveDate ? `read ${doc.effectiveDate}` : undefined;
+
+            /* A source with a URL is rendered as a link, because the entire
+               value of a citation is that the reader can check it and until
+               crawled sources existed there was nothing to check: every
+               document was one only we held. Sources without a URL stay plain
+               text rather than being styled as dead links, since an affordance
+               that does nothing is worse than none. */
+            return doc.url ? (
+              <a
+                className="cite cite-link"
+                key={doc.label}
+                href={doc.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={dated}
+              >
+                <span className="dot" aria-hidden />
+                {doc.label} · {excerpts}
+                {/* Word plus icon, never colour alone (rule 15). */}
+                <span className="cite-external">
+                  <span aria-hidden>↗</span>
+                  <span className="sr-only">opens in a new tab</span>
+                </span>
+              </a>
+            ) : (
+              <span className="cite" key={doc.label} title={dated}>
+                <span className="dot" aria-hidden />
+                {doc.label} · {excerpts}
+              </span>
+            );
+          })}
         </div>
       </div>
 

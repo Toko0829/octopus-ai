@@ -4,6 +4,13 @@ import { ThemeToggle } from './ui';
 interface Props {
   channel: string;
   memberCount: number;
+  onOpenWork: () => void;
+  /**
+   * Steps waiting on the person, across every project in this room. Shown only
+   * when it is non-zero: a badge reading 0 is noise, and the point of the number
+   * is that it asks for something.
+   */
+  waitingOnYou: number;
 }
 
 /**
@@ -11,7 +18,7 @@ interface Props {
  * omitted until projects carry a budget ceiling, because a number on a trust
  * surface has to be real.
  */
-export function TopBar({ channel, memberCount }: Props) {
+export function TopBar({ channel, memberCount, onOpenWork, waitingOnYou }: Props) {
   return (
     <header className="topbar">
       <div className="topbar-chan">
@@ -25,6 +32,15 @@ export function TopBar({ channel, memberCount }: Props) {
         {memberCount} {memberCount === 1 ? 'member' : 'members'}
       </div>
       <div className="topbar-spacer" />
+      <button type="button" className="topbar-work" onClick={onOpenWork}>
+        The work
+        {waitingOnYou > 0 && (
+          <span className="topbar-badge mono">
+            {waitingOnYou}
+            <span className="sr-only"> steps waiting on you</span>
+          </span>
+        )}
+      </button>
       <ThemeToggle />
     </header>
   );

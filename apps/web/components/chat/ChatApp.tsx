@@ -16,6 +16,7 @@ import {
   getChannels,
   getMembers,
   getMessages,
+  getProjects,
   postMessage,
   startAgentRun,
   actOnEmbed,
@@ -28,6 +29,9 @@ import { MessageStream } from './MessageStream';
 import { Composer } from './Composer';
 import { ContextPanel } from './ContextPanel';
 import { CommandPalette } from './CommandPalette';
+import { AddSourcePanel } from './AddSourcePanel';
+import { CreateBusinessPanel } from './CreateBusinessPanel';
+import { ProjectPanel } from './ProjectPanel';
 
 interface Props {
   viewerId: string;
@@ -55,6 +59,13 @@ export function ChatApp({
   const [activeChan, setActiveChan] = useState<string | null>(initialChannels[0]?.id ?? null);
   const [presence, setPresence] = useState<Record<string, Presence>>({});
   const [cmdkOpen, setCmdkOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [workOpen, setWorkOpen] = useState(false);
+  const [waitingOnYou, setWaitingOnYou] = useState(0);
+  // Rooms arrive as a server prop and become state here, because creating one has
+  // to show up without a full page reload and has to move the selection with it.
+  const [roomList, setRoomList] = useState(rooms);
   const [toast, setToast] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
 
@@ -71,7 +82,7 @@ export function ChatApp({
    */
   const embedFetchedRef = useRef<Set<string>>(new Set());
 
-  const businesses = useMemo(() => rooms.map(toBusiness), [rooms]);
+  const businesses = useMemo(() => roomList.map(toBusiness), [roomList]);
   const uiChannels = useMemo(() => channels.map(toChannel), [channels]);
   const uiMembers = useMemo<UiMember[]>(
     () => members.map((m) => toMember(m, viewerId, presence[m.userId] ?? 'offline')),
@@ -225,6 +236,33 @@ export function ChatApp({
     };
   }, [roomId, viewerId, catchUp]);
 
+  /**
+   * How many steps are waiting on this person, for the badge in the top bar.
+   *
+   * Re-read when the room changes and whenever a message lands, because the
+   * things that change this number (a plan approved, a tick routing steps to
+   * `needs_user`) all announce themselves in the room. That is cheaper and more
+   * honest than polling: the badge moves when something actually happened.
+   *
+   * A failure here is deliberately silent. It is a count on a button, not the
+   * work itself, and a banner saying the badge could not load would be louder
+   * than the thing it describes. The panel itself reports its own errors.
+   */
+  const lastMessageId = messages[messages.length - 1]?.id ?? null;
+  useEffect(() => {
+    let live = true;
+    getProjects(roomId)
+      .then((res) => {
+        if (live) setWaitingOnYou(res.projects.reduce((n, p) => n + p.waitingOnYou, 0));
+      })
+      .catch(() => {
+        if (live) setWaitingOnYou(0);
+      });
+    return () => {
+      live = false;
+    };
+  }, [roomId, lastMessageId]);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -309,7 +347,12 @@ export function ChatApp({
 
   return (
     <div className="shell">
-      <GuildRail businesses={businesses} activeId={roomId} onSelect={selectRoom} />
+      <GuildRail
+        businesses={businesses}
+        activeId={roomId}
+        onSelect={selectRoom}
+        onCreate={() => setCreateOpen(true)}
+      />
       <ChannelSidebar
         business={business}
         channels={uiChannels}
@@ -319,7 +362,12 @@ export function ChatApp({
         viewerEmail={viewerEmail}
       />
       <div className="main">
-        <TopBar channel={activeChannel?.name ?? business.name} memberCount={uiMembers.length} />
+        <TopBar
+          channel={activeChannel?.name ?? business.name}
+          memberCount={uiMembers.length}
+          onOpenWork={() => setWorkOpen(true)}
+          waitingOnYou={waitingOnYou}
+        />
         {banner && (
           <div className="banner" role="status">
             {banner}
@@ -332,7 +380,11 @@ export function ChatApp({
           canAct={canAct}
           onEmbedAction={handleEmbedAction}
         />
-        <Composer channelName={activeChannel?.name ?? null} onSend={handleSend} />
+        <Composer
+          channelName={activeChannel?.name ?? null}
+          onSend={handleSend}
+          onAddSource={canAct ? () => setSourceOpen(true) : undefined}
+        />
       </div>
       <ContextPanel members={uiMembers} />
       <CommandPalette
@@ -345,6 +397,25 @@ export function ChatApp({
         }}
         onNotify={flash}
       />
+      {sourceOpen && (
+        <AddSourcePanel
+          roomId={roomId}
+          onClose={() => setSourceOpen(false)}
+          onAccepted={() => flash('Reading that now. I will say what I learned.')}
+        />
+      )}
+      {workOpen && (
+        <ProjectPanel roomId={roomId} canAct={canAct} onClose={() => setWorkOpen(false)} />
+      )}
+      {createOpen && (
+        <CreateBusinessPanel
+          onClose={() => setCreateOpen(false)}
+          onCreated={(room) => {
+            setRoomList((cur) => [...cur, room as (typeof cur)[number]]);
+            selectRoom(room.id);
+          }}
+        />
+      )}
       {toast && (
         <div className="toast">
           <span className="pulse" aria-hidden />

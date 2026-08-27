@@ -69,6 +69,47 @@ pnpm ai:test
 
 ## Running the whole thing
 
+Two ways. Compose if you want it running; three terminals if you want to edit it.
+
+### All three in Docker
+
+```bash
+docker compose up --build
+```
+
+Then <http://localhost:3000>. The API is published on `:3011` and the reasoning
+core on `:8000`, so both can be probed directly while testing. Credentials are
+read from `apps/api/.env`, which is the file that already holds them, so there is
+nothing extra to create.
+
+**Memory is the one setting that decides whether this works.** Measured on the
+running stack rather than inherited from the service's own 8 GB deployment floor:
+`ai` peaks at **5.3 GiB** once the reranker has loaded on first use, `api` and
+`web` take about 130 MiB each, so the whole stack sits near **5.6 GiB**. It runs
+comfortably on a 7.6 GB Docker VM. Below roughly 6.5 GB it will not, and the
+failure is worth recognising because it names nothing: the container is killed
+while warming the embedder, before it ever serves, so it looks like a crash with
+no error of its own. On Docker Desktop the setting is Settings, Resources, Memory.
+
+Note the reranker is **lazy**, so the AI container sits around 3.7 GiB until the
+first goal is planned and then jumps. A stack that looked fine at startup can
+still be too tight for real work.
+
+**The first `up` is slow and then it is not.** The reasoning core's image bakes
+~4.6 GB of model weights, and the web image runs a full `next build`. Afterwards
+the weights layer is cached and only source layers rebuild.
+
+Two things compose does that three terminals do not, both deliberate. `api` waits
+on the reasoning core's **healthcheck** rather than on its process, because that
+service warms its embedder before it serves and "started" and "ready" are minutes
+apart. And `AI_SERVICE_URL` is overridden to `http://ai:8000`, since a service
+name is a fact about that network rather than about your machine.
+
+Compose is for running the thing. It does not hot-reload, so editing is still the
+three-terminal path below.
+
+### Three terminals
+
 Three processes, one per terminal, all from the repo root:
 
 | Terminal | Command                          | Serves                                    |
@@ -218,6 +259,24 @@ uv run --directory services/ai python -m octopus_ai.evaluation --merge shard-*.j
 **A shard deliberately refuses to print a verdict**, and `--shard i/n` with `n > 1` requires `--out` for that reason: recall over three cases is a different statistic from recall over fifteen. Only `--merge` applies the thresholds, and it fails if any golden case is missing rather than scoring what it happens to have. Two halves are scored differently on purpose: positives must surface the expected document (recall ≥ 0.80), and negatives must return **nothing at all** (zero tolerance). A miss is unhelpful; a leak lets the agent ground an answer in text that does not support it.
 
 Run it after any change to chunking, the embedder, the rerank threshold, or the corpus. Add a case whenever you add a document, and add a negative whenever you find a question the agent should refuse.
+
+### The groundedness gate has its own set, and its own run
+
+The rerank threshold **ranks chunks within the corpus. It cannot tell you the corpus does not cover a question**, and those are different questions. Measured: "how do I set up conversion tracking in GA4" scores 0.0211 against a 0.0013 threshold, while the legitimate goal "launch my app and get me to my first 100 customers" tops out at 0.0018. No threshold separates them.
+
+So `scope_negatives` in `golden.json` holds marketing questions, in marketing words, that the corpus does not answer, and they are scored separately:
+
+```bash
+uv run --directory services/ai python -m octopus_ai.evaluation --gate
+```
+
+**Do not move these into `cases`.** Retrieval leaks on them by design, so filing them as ordinary negatives fails the retrieval gate permanently for something retrieval cannot be asked to do.
+
+The pass scores both halves. Scope negatives must be refused (block rate 1.00), and legitimate goals must **not** be (pass rate ≥ 0.80), because a gate measured only on what it should refuse scores perfectly by refusing everything.
+
+> **This one is not in CI, deliberately.** It calls a model, so it bills per run and does not return the same answer every time, which is the same reason the Ragas faithfulness metrics are absent. What CI gates is the gate's _logic_: that a non-boolean `supported` is rejected rather than coerced (`bool("false")` is `True`), that every failure path blocks rather than opens, and that the check runs before generation.
+>
+> `GROUNDEDNESS_CHECK=false` turns it off. That is for measuring the stages separately, not for production: a service with it off answers questions its corpus does not cover, and it logs a warning at startup saying so. Add a scope negative whenever you find a marketing question the corpus cannot answer; that is now a safety task rather than a coverage one.
 
 > **A Cohere trial key allows 10 calls a minute, and the golden set needs far more than that.** With query decomposition on, one positive case is one rerank for the goal plus one per sub-query, up to seven; at 15 cases (11 positive) a full run is up to ~81 rerank calls. Set `COHERE_RERANK_RPM=8` and the run holds itself under the limit, taking ~10 minutes. On a production key leave it unset and the whole set finishes in seconds.
 >

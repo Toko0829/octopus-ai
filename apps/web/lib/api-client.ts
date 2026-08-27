@@ -5,6 +5,8 @@ import type {
   EmbedActionResponse,
   ListMessagesResponse,
   Message,
+  ProjectDetail,
+  ProjectSummary,
   RoomMember,
 } from '@octopus/contracts';
 
@@ -31,9 +33,26 @@ async function bff<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function createRoom(name: string) {
-  return bff<{ id: string; name: string; projectId: string | null }>('/rooms', {
+  // `ownerId` is already sent by the API and was simply not declared here. The
+  // chat shell derives whether the viewer may approve a card from it, so a new
+  // room without it would render as one the creator cannot act in.
+  return bff<{ id: string; name: string; projectId: string | null; ownerId: string | null }>(
+    '/rooms',
+    { method: 'POST', body: JSON.stringify({ name }) },
+  );
+}
+
+/**
+ * Tell Octopus something about this business.
+ *
+ * Accepted rather than completed: the API replies 202 and the outcome arrives in
+ * the room as a message, because reading a page and embedding it takes longer
+ * than a request should be held open for.
+ */
+export function addSource(roomId: string, input: { title?: string; text?: string; url?: string }) {
+  return bff<{ status: string; runId: string }>(`/rooms/${roomId}/sources`, {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(input),
   });
 }
 
@@ -51,6 +70,41 @@ export function startAgentRun(roomId: string, goal: string) {
 
 export function getChannels(roomId: string) {
   return bff<{ channels: Channel[] }>(`/rooms/${roomId}/channels`);
+}
+
+/**
+ * What the approved plans in this room became.
+ *
+ * Resolved server-side through the plan card rather than `rooms.project_id`, so a
+ * room that has had several plans approved lists all of them. Reading that column
+ * would show the first and silently omit the rest.
+ */
+export function getProjects(roomId: string) {
+  return bff<{ projects: ProjectSummary[] }>(`/rooms/${roomId}/projects`);
+}
+
+/**
+ * Unstick a step: record that you did it yourself, or ask for another attempt.
+ *
+ * Targets one task by id, which is the point. Answering through the chat means
+ * the room has to guess whether a sentence was an answer or a new request, and
+ * guessing wrong silently loses whichever one it was. Naming the step removes
+ * the question.
+ */
+export function resolveStep(
+  projectId: string,
+  taskId: string,
+  input: { action: 'answer'; text: string } | { action: 'retry' },
+) {
+  return bff<{ state: string; ranExecutor: boolean }>(
+    `/projects/${projectId}/tasks/${taskId}/resolution`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+/** One project with its steps and everything they produced. */
+export function getProject(projectId: string) {
+  return bff<ProjectDetail>(`/projects/${projectId}`);
 }
 
 export function getMembers(roomId: string) {

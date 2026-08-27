@@ -5,6 +5,13 @@
 
 Re-running is cheap and safe: documents whose content hash is unchanged are
 skipped without re-embedding.
+
+Two directories, one pass. `corpus/` is the internal playbook set; `eval/external/`
+is the checked-in snapshots of crawled pages, which are seeded here so a laptop
+and a CI runner hold the same corpus the golden set was scored against. In
+production those documents arrive from the crawl sweep instead, and the ingestion
+path is identical either way, which is what makes seeding them here honest rather
+than a fixture that flatters the eval.
 """
 
 from __future__ import annotations
@@ -14,7 +21,7 @@ import logging
 import sys
 
 from .config import get_settings
-from .corpus import load_corpus
+from .corpus import EXTERNAL_DIR, load_corpus
 from .db import Database
 from .ingestion import Ingestor
 from .providers import Providers
@@ -29,12 +36,15 @@ async def _run(probe: str | None) -> int:
     providers = Providers(settings)
 
     try:
-        documents = load_corpus()
-        if not documents:
+        internal = load_corpus()
+        if not internal:
             print("no corpus documents found")
             return 1
 
-        print(f"ingesting {len(documents)} documents")
+        external = load_corpus(EXTERNAL_DIR)
+        documents = internal + external
+
+        print(f"ingesting {len(documents)} documents ({len(external)} externally sourced)")
         results = await Ingestor(settings, db, providers).ingest_many(
             [d.as_ingest_kwargs() for d in documents]
         )

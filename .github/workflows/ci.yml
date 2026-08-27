@@ -46,6 +46,14 @@ jobs:
       - name: Lint / format
         run: pnpm run lint
 
+      # The first Node-side tests in the repo. `services/ai` has had pytest since
+      # it existed; the TypeScript half had nothing, which was recorded in the
+      # README as a gap rather than a decision. `packages/core` is what made it
+      # untenable: it decides whether a task runs unsupervised, and "read it
+      # carefully" is not a control.
+      - name: Test
+        run: pnpm run test
+
       - name: Build
         run: pnpm run build
 
@@ -304,3 +312,133 @@ jobs:
         run: |
           ls -l shards/ || true
           uv run python -m octopus_ai.evaluation --merge shards/*.json
+
+  # The reasoning core's container (services/ai/Dockerfile).
+  #
+  # Built on any PR that touches its inputs so a broken Dockerfile is caught
+  # here rather than at deploy time, and published to GHCR from `main` so Fly.io
+  # has something to pull. `infra-devops.md` carries the measured numbers: 6.44GB
+  # of layers, 5.15GB peak RSS with both models resident, ~17s to a warm /health.
+  #
+  # **The eval shards deliberately do NOT run inside this image, and that is a
+  # measurement rather than an oversight.** Rerouting them was the original
+  # motivation: setup is ~90s per shard and five shards make it the floor that
+  # stopped further splitting from helping. But most of that 90s was `uv sync`
+  # pulling the CUDA torch stack, and pinning CPU torch in `uv.lock` already
+  # removed 2,480MB of the 3,179MB of Linux wheels from every install including
+  # this one. What remains is restoring ~4.6GB of weights from the Actions cache,
+  # and a registry pull of an image containing those same weights moves the same
+  # bytes. That trade might win and might not; claiming it without measuring
+  # would be exactly the kind of unmeasured "obvious fix" the three-shard split
+  # already taught this workflow to distrust. Revisit with numbers, not a hunch.
+  ai-image:
+    name: ai · container build
+    runs-on: ubuntu-latest
+    # A cold build downloads ~4.6GB of weights and installs torch. Warm, the
+    # registry cache makes it minutes. Bounded so a pathology is a timeout
+    # rather than an hour of runner time.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout (full history for the input diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # GHCR rejects an uppercase path, and `github.repository_owner` preserves
+      # the account's casing. Lowercased once here rather than at three use
+      # sites, where one of them would eventually be missed.
+      - name: Resolve image reference
+        id: ref
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/$OWNER/octopus-ai" >> "$GITHUB_OUTPUT"
+
+      # Same shape as `eval-scope`, and wider than it looks it needs to be. The
+      # image bakes src, corpus and eval as well as the dependency and weight
+      # layers, so a source-only change still produces a different image. Those
+      # rebuild only the final COPY layers against a warm cache, which is cheap;
+      # skipping them would ship a container whose code does not match the commit
+      # that published it, which is not.
+      - name: Decide whether the image needs building
+        id: scope
+        run: |
+          BASE_SHA="${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+
+          # `main` always builds: it is what gets published, so it must be built
+          # from the commit it claims to be.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # An unknown base means an unusual history, and the safe answer is to
+          # build rather than to assume nothing changed.
+          if [ -z "$BASE_SHA" ] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo "base commit unavailable; building rather than assuming it is unnecessary"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE_SHA" "${{ github.sha }}")
+          if echo "$CHANGED" | grep -qE '^(services/ai/|\.github/workflows/ci\.yml$)'; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Container build skipped::Nothing under services/ai changed, so the image cannot have."
+          fi
+
+      - name: Set up Buildx
+        if: steps.scope.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      # Logged in on pull_request too, not only on push: the layer cache lives in
+      # the registry rather than in the Actions cache, because the weights layer
+      # alone is 4.6GB against a 10GB per-repository cache limit that the uv and
+      # HF caches already share.
+      - name: Log in to GHCR
+        if: steps.scope.outputs.build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `context: services/ai` rather than the repo root, matching the Dockerfile
+      # and DEVELOPMENT.md: the service is outside the pnpm workspace (ADR-0006)
+      # and a root context would send node_modules to the daemon.
+      #
+      # Pushed only from `main`. A PR proves the image builds; it does not get to
+      # publish an artifact something might deploy.
+      - name: Build (and publish from main)
+        if: steps.scope.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: services/ai
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ steps.ref.outputs.image }}:${{ github.sha }}
+            ${{ steps.ref.outputs.image }}:latest
+          cache-from: type=registry,ref=${{ steps.ref.outputs.image }}:buildcache
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}:buildcache,mode=max', steps.ref.outputs.image) || '' }}
+
+      # Proves the thing that a Dockerfile review cannot: that a process which
+      # overrides CMD still inherits the model paths. The first version of this
+      # image resolved them in the CMD's shell, so `docker run <image> python -m
+      # octopus_ai.evaluation` saw an empty path and failed with a repo-id error.
+      # Cheap, offline, and it needs no credentials.
+      - name: Smoke test the built image
+        if: steps.scope.outputs.build == 'true' && github.event_name == 'push'
+        run: |
+          docker run --rm "${{ steps.ref.outputs.image }}:${{ github.sha }}" python -c "
+          import os
+          for k in ('EMBED_LOCAL_PATH', 'RERANK_LOCAL_PATH', 'HF_HUB_OFFLINE'):
+              assert os.environ.get(k), f'{k} is not set in the image'
+              print(k, '=', os.environ[k])
+          assert os.path.isdir(os.environ['EMBED_LOCAL_PATH']), 'embedder weights missing'
+          assert os.path.isdir(os.environ['RERANK_LOCAL_PATH']), 'reranker weights missing'
+          from octopus_ai.evaluation import main
+          print('eval harness importable:', callable(main))
+          "

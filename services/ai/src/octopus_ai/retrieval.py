@@ -73,6 +73,7 @@ class Retriever:
         market: str | None = None,
         business_type: str | None = None,
         project_id: str | None = None,
+        room_id: str | None = None,
         subqueries: list[str] | None = None,
     ) -> RetrievalResult:
         """Retrieve for a query, optionally widened by decomposed sub-queries.
@@ -99,7 +100,11 @@ class Retriever:
 
         # The goal itself is always searched first, and it is the gate.
         base = await self._retrieve_one(
-            query, market=market, business_type=business_type, project_id=project_id
+            query,
+            market=market,
+            business_type=business_type,
+            project_id=project_id,
+            room_id=room_id,
         )
 
         if len(queries) == 1:
@@ -129,7 +134,11 @@ class Retriever:
                 continue
             results.append(
                 await self._retrieve_one(
-                    sub, market=market, business_type=business_type, project_id=project_id
+                    sub,
+                    market=market,
+                    business_type=business_type,
+                    project_id=project_id,
+                    room_id=room_id,
                 )
             )
 
@@ -168,6 +177,7 @@ class Retriever:
         market: str | None = None,
         business_type: str | None = None,
         project_id: str | None = None,
+        room_id: str | None = None,
     ) -> RetrievalResult:
         """One query: embed, hybrid search, rerank, drop below threshold."""
         [query_vector] = await self._providers.embed([query])
@@ -180,6 +190,7 @@ class Retriever:
             candidates=self._s.retrieval_candidates,
             limit=self._s.retrieval_candidates,
             project_id=project_id,
+            room_id=room_id,
         )
 
         if not rows:

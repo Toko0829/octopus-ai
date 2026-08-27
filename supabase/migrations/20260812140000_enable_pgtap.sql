@@ -1,0 +1,25 @@
+-- 20260812140000_enable_pgtap.sql — the extension every RLS suite needs, which
+-- existed only in the database until now.
+--
+-- **Reconstructed from `supabase_migrations.schema_migrations`, not rewritten.**
+-- pgTAP was installed ad hoc through a tool rather than through a file, so the
+-- database had the extension and the repository had no record of it. Everything
+-- in `supabase/tests/` calls `extensions.plan()` and `extensions.is()`, so a
+-- fresh environment built from these migrations alone would have failed every
+-- suite on a missing function, and the fix would have looked like a broken test
+-- rather than a missing install. The body below is byte-for-byte what was
+-- applied; only this header is new.
+--
+-- **Its version is chosen to preserve the real order.** It was applied after
+-- `20260812130000_room_owner_and_feedback.sql` and before
+-- `20260813120000_workflow_dag.sql`, which is where it has to sit: the workflow
+-- suite that came next is the first one that depends on it.
+--
+-- `create extension if not exists` so replaying this against the database that
+-- already has it is a no-op rather than an error.
+
+-- pgTAP for RLS testing (AGENTS.md rule 18). Installed into `extensions` rather
+-- than `public` so its ~200 assertion functions are not published at PostgREST's
+-- RPC surface, which is the same reasoning that moved the membership helper into
+-- `private` in 20260728160000.
+create extension if not exists pgtap with schema extensions;

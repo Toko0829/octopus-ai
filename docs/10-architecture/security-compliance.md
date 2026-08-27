@@ -38,6 +38,18 @@
 
   **Still uncovered:** thread-scoped membership (`room_members.scope`), since threads do not exist yet, and ops/admin access paths.
 
+- **The workflow DAG** is covered by `supabase/tests/rls_workflow.sql` (33 assertions, verified green). Same four actors against `projects` / `tasks` / `task_deps` / `task_runs`, plus the two triggers. Its RLS half runs as a client and its **trigger half runs as `postgres` deliberately**, which is the opposite rule for the opposite reason: RLS must be tested as a client because `postgres` bypasses it, and the state-machine and acyclicity guards must be tested as `postgres` because they are meant to bind trusted server code too. If those ever start passing merely because the caller was privileged, the guard has been lost.
+
+  **Known narrowing:** project visibility is inherited from room membership, which is coarser than the thread-scoped, time-boxed access this document requires of a node. It lands with threads. No node is admitted to any room today.
+
+- **A policy and a read path that answer the same question differently is a defect waiting to be half-fixed.** `private.is_project_member` resolved a project to its room through `rooms.project_id`, which `materialise_plan` writes once, so only the first project approved in a room was visible to anybody. Measured before the fix: **6 projects with 3 reachable, and 47 tasks and 28 of 58 artifacts unreachable by any client, including their owner.** The identical mistake had already been found and fixed in the delivery path (`roomForProject`) two weeks earlier, and nobody carried it into the policy.
+
+  It survived because **it failed as zero rows rather than as an error**: through PostgREST an invisible project and an empty one are the same response, no advisor lints a predicate for asking the wrong question, and a type checker cannot see one. `20260827110000` accepts either link, and neither widens tenancy since both still terminate in a live `room_members` row. Covered by `supabase/tests/project_membership.sql` (13 assertions, verified green), which asserts the outsider and expired-node cases alongside the regression, because a predicate rewritten to simply return true would pass any one-sided version of that suite.
+
+- **Run the Supabase advisors after every migration, not just the tests.** `20260813120000` passed all 33 assertions and still introduced six lints. A test suite asserts the properties somebody thought to assert; the advisor checks the ones everybody forgets.
+
+  The one worth remembering: `task_deps_satisfied` was created in `public` as `SECURITY DEFINER` with `EXECUTE` granted to `authenticated`, publishing the scheduler's READY predicate at `/rest/v1/rpc/`. That is lint 0028/0029, **the same lint `20260728160000_harden_security_definer.sql` exists to clear**, reintroduced by someone who had read that migration. It repeats because it looks like ordinary least privilege, and because in Supabase `public` is the API schema, so granting EXECUTE is also publishing. Fixed in `20260813130000` by moving it to `private` and dropping it to `SECURITY INVOKER`: unlike `is_room_member` it is never evaluated inside a policy, so it never needed to bypass RLS at all.
+
 ## Agent guardrails (layered defense)
 
 Applied fast→smart as pre-checks on inputs and post-checks on every tool output/artifact — never a single LLM self-judgement.

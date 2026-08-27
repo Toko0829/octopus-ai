@@ -82,6 +82,13 @@ mappings:
     owner: 'docs/30-modules/infra-devops.md'
     also_touch: ['docs/10-architecture/observability.md']
 
+  # This file's own rule at the top says every path under packages/** must match
+  # an entry, and this one never did, so the env schema (which is where a new
+  # service knob is declared, and therefore where a deployment-shaped decision is
+  # actually recorded) could change with no doc anywhere obliged to notice.
+  - path: 'packages/config/**'
+    owner: 'docs/30-modules/infra-devops.md'
+
   - path: 'supabase/migrations/**'
     owner: 'docs/10-architecture/data-model.md'
 

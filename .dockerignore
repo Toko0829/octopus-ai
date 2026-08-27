@@ -1,0 +1,32 @@
+# Build context for the Node images, whose context is the REPO ROOT because pnpm
+# workspaces resolve `workspace:*` deps through the root lockfile. That makes the
+# context large by default, so what is excluded here matters more than usual.
+#
+# `services/ai` is not excluded wholesale: it has its own Dockerfile built from
+# its own directory (ADR-0006 keeps it out of the pnpm graph), and nothing here
+# needs it. Its virtualenv and model cache are the two directories that would
+# dominate a context by themselves, so they are named explicitly.
+
+node_modules
+**/node_modules
+
+.git
+.turbo
+**/.turbo
+**/.next
+**/dist
+coverage
+
+services/ai/.venv
+services/ai/.pytest_cache
+**/__pycache__
+
+# Never send local credentials to the daemon. The one deliberate exception is
+# apps/web/.env.local, which Next reads at BUILD time to inline the NEXT_PUBLIC_*
+# values into the browser bundle; that file is documented as public-values-only
+# and the web Dockerfile says so where it copies it.
+.env
+apps/api/.env
+services/ai/.env
+
+Octopus-Project-Plan.xlsx

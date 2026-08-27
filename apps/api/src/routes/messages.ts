@@ -1,10 +1,13 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { PostgrestError } from '@supabase/supabase-js';
 import {
+  ArtifactEmbedPayload,
+  EmbedState,
   ListMessagesQuery,
   Message,
   PlanEmbedPayload,
   PostMessageBody,
+  QuestionEmbedPayload,
   type ListMessagesResponse,
 } from '@octopus/contracts';
 import { z } from 'zod';
@@ -39,15 +42,30 @@ const RoomParams = z.object({ roomId: z.string().uuid() });
  * named. A row that does not parse is dropped and the message renders plainly,
  * which degrades to a normal message instead of breaking the whole stream.
  */
-const EmbedRow = z.object({
+const EmbedRowBase = {
   id: z.string(),
   message_id: z.string(),
-  component: z.literal('plan'),
-  payload: PlanEmbedPayload,
   required_role: z.string(),
-  state: z.enum(['pending', 'approved', 'rejected', 'expired']),
+  state: EmbedState,
   created_at: z.string(),
-});
+};
+
+/**
+ * Discriminated on `component`, so each card's payload is validated against its
+ * own shape. Widening `payload` to accept either would let a plan render from a
+ * question's fields and only fail in the browser.
+ */
+const EmbedRow = z.discriminatedUnion('component', [
+  z.object({ ...EmbedRowBase, component: z.literal('plan'), payload: PlanEmbedPayload }),
+  z.object({ ...EmbedRowBase, component: z.literal('question'), payload: QuestionEmbedPayload }),
+  // Artifacts were missing here while the executor was writing them, so every
+  // artifact embed ever stored failed this parse and `toEmbed` returned null:
+  // the card had never rendered for anybody and only the plain-text body
+  // reached the room. A union that silently drops what it does not recognise is
+  // the right behaviour for a corrupt row and the wrong behaviour for a variant
+  // somebody forgot to add, and nothing distinguished the two.
+  z.object({ ...EmbedRowBase, component: z.literal('artifact'), payload: ArtifactEmbedPayload }),
+]);
 
 /** Database row shape (snake_case) for the columns we select. */
 const MessageRow = z.object({
@@ -77,15 +95,23 @@ function toEmbed(raw: unknown): Message['embed'] {
   const parsed = EmbedRow.safeParse(candidate);
   if (!parsed.success) return null;
 
-  return {
+  const common = {
     id: parsed.data.id,
     messageId: parsed.data.message_id,
-    component: parsed.data.component,
-    payload: parsed.data.payload,
     requiredRole: parsed.data.required_role,
     state: parsed.data.state,
     createdAt: parsed.data.created_at,
   };
+
+  // Rebuilt per variant rather than spread from the parsed row, so the returned
+  // value satisfies the union by construction instead of by assertion.
+  if (parsed.data.component === 'plan') {
+    return { ...common, component: 'plan', payload: parsed.data.payload };
+  }
+  if (parsed.data.component === 'question') {
+    return { ...common, component: 'question', payload: parsed.data.payload };
+  }
+  return { ...common, component: 'artifact', payload: parsed.data.payload };
 }
 
 function toMessage(row: MessageRow): Message {

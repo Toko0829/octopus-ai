@@ -5,6 +5,7 @@ import type { UiMember, UiMessage } from '../../lib/types';
 import { RoleBadge } from './ui';
 import { OctopusMark } from './icons';
 import { PlanCard } from './PlanCard';
+import { ArtifactCard } from './ArtifactCard';
 
 interface Props {
   channelName: string | null;
@@ -127,6 +128,7 @@ export function MessageStream({
               {m.embed?.component === 'plan' && (
                 <PlanCard embed={m.embed} canAct={canAct} onAct={onEmbedAction} />
               )}
+              {m.embed?.component === 'artifact' && <ArtifactCard embed={m.embed} />}
             </div>
           </div>
         );

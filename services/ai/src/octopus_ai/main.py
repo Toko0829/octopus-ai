@@ -20,10 +20,23 @@ from pydantic import BaseModel
 from .config import ConfigError, Settings, get_settings
 from .db import Database
 from .decompose import decompose
-from .planner import plan_grounded, refuse
+from .executor import execute_task
+from .groundedness import assess
+from .ingestion import Ingestor
+from .intake import run_intake
+from .planner import build_sources_block, plan_grounded, refuse
 from .providers import Providers
 from .retrieval import Retriever
-from .schemas import PlanRequest, PlanResponse
+from .schemas import (
+    ExecuteRequest,
+    IngestRequest,
+    IntakeRequest,
+    IntakeResponse,
+    PlanRequest,
+    PlanResponse,
+    SourceRequest,
+    SourceResponse,
+)
 
 logger = logging.getLogger("octopus.ai")
 
@@ -66,11 +79,23 @@ async def lifespan(_: FastAPI):
         logger.info("warming local embedder", extra={"model": settings.active_embed_model})
         await state.providers.embed(["warmup"])
 
+    # A disabled safety gate must be loud, not merely absent from the logs. The
+    # symptom of it being off is the agent confidently answering questions its
+    # corpus does not cover, which looks like working software.
+    if not settings.groundedness_check:
+        logger.warning(
+            "GROUNDEDNESS_CHECK is off. The rerank threshold alone does not decide "
+            "whether the corpus covers a question, so this service will plan from "
+            "sources that may not support the answer (AGENTS.md rule 10)."
+        )
+
     logger.info(
         "ai service ready",
         extra={
             "embed_model": settings.active_embed_model,
             "generation_model": settings.generation_model,
+            "groundedness_check": settings.groundedness_check,
+            "groundedness_model": settings.active_groundedness_model,
         },
     )
     try:
@@ -108,13 +133,58 @@ def health() -> Health:
     return Health(status="ok", service="octopus-ai", version=app.version, configured=configured)
 
 
+@app.post("/intake", response_model=IntakeResponse, tags=["reasoning"])
+async def intake(request: IntakeRequest) -> IntakeResponse:
+    """Work out what the person wants, before anything is retrieved.
+
+    Step 1 of the full-funnel playbook, and the one place in this service that
+    deliberately does NOT touch RAG. What a person sells and who they sell it to
+    is not in the corpus, so retrieving first would shape the questions around
+    what we happen to have written down instead of around what they need.
+
+    Returns scores rather than a decision the caller must trust: `completeness` is
+    counted from a required-slot set that depends on how broad the request is, and
+    `proximity` is measured against the stages the corpus covers. Both are
+    computed in code. The model is asked only what it can actually judge, which is
+    what this person said and which stages it touches.
+
+    Stateless, like every other endpoint here. Node carries the slots between
+    rounds, so making intake multi-turn does not give this service a session or a
+    table it is not supposed to have (ADR-0006).
+    """
+    logger.info(
+        "intake requested",
+        extra={
+            "agent_run_id": request.trace.agent_run_id,
+            "project_id": request.trace.project_id,
+            "room_id": request.room_id,
+            "round": request.round,
+        },
+    )
+
+    assert state.providers and state.settings  # set in lifespan
+
+    return await run_intake(
+        request,
+        state.providers,
+        model=state.settings.generation_model_cheap,
+        min_completeness=state.settings.intake_min_completeness,
+        max_rounds=state.settings.intake_max_rounds,
+    )
+
+
 @app.post("/plan", response_model=PlanResponse, tags=["reasoning"])
 async def plan(request: PlanRequest) -> PlanResponse:
     """Reason about a goal and return proposals for Node to execute.
 
-    Retrieval decides which core answers. Nothing above the relevance threshold
-    means the request is refused rather than answered from parametric knowledge
-    (AGENTS.md rule 10).
+    Two independent checks decide whether anything is written, and they answer
+    different questions. Retrieval asks which chunks rank best and drops the weak
+    ones; the groundedness gate asks whether what survived actually answers the
+    goal. A threshold cannot do the second job, because it ranks within the corpus
+    and every marketing query has a best marketing chunk.
+
+    Failing either one means refusing rather than answering from parametric
+    knowledge (AGENTS.md rule 10).
     """
     logger.info(
         "plan requested",
@@ -131,13 +201,19 @@ async def plan(request: PlanRequest) -> PlanResponse:
         # Decomposition runs before retrieval and degrades to the bare goal on
         # any failure, so a broken optimisation cannot break the request.
         subqueries = (
-            await decompose(
-                request.goal, state.providers, state.settings.generation_model_cheap
-            )
+            await decompose(request.goal, state.providers, state.settings.generation_model_cheap)
             if state.settings.query_decomposition
             else None
         )
-        retrieval = await state.retriever.retrieve(request.goal, subqueries=subqueries)
+        # Scoped to the room, so anything this workspace told us about its own
+        # business is retrieved alongside the shared corpus. Shared rows always
+        # come back; another workspace's never do.
+        retrieval = await state.retriever.retrieve(
+            request.goal,
+            subqueries=subqueries,
+            room_id=request.room_id,
+            project_id=request.trace.project_id,
+        )
     except Exception:
         # A retrieval failure must not become an ungrounded answer. Refusing is
         # the correct degradation: the alternative is inventing a plan.
@@ -150,6 +226,37 @@ async def plan(request: PlanRequest) -> PlanResponse:
     if not retrieval.grounded:
         return refuse(request, retrieval)
 
+    # The groundedness gate (rule 10). Retrieval has told us which chunks rank
+    # best; it has NOT told us whether the corpus answers the question, and it
+    # cannot, because a score ranks within the corpus. An in-vocabulary but
+    # uncovered goal clears the rerank threshold on both providers by a wide
+    # margin, measured. See groundedness.py.
+    #
+    # Runs on the same sources block the planner will receive, so the gate cannot
+    # approve one thing and the planner ground in another.
+    if state.settings.groundedness_check:
+        verdict = await assess(
+            request.goal,
+            build_sources_block(retrieval),
+            state.providers,
+            state.settings.active_groundedness_model,
+        )
+        if not verdict.may_plan:
+            logger.info(
+                "groundedness gate refused",
+                extra={
+                    "agent_run_id": request.trace.agent_run_id,
+                    "outcome": verdict.outcome,
+                    "chunks": len(retrieval.chunks),
+                },
+            )
+            return refuse(
+                request,
+                retrieval,
+                reason="unsupported" if verdict.outcome == "unsupported" else "unverified",
+                detail=verdict.reason,
+            )
+
     try:
         return await plan_grounded(request, retrieval, state.providers, state.settings)
     except Exception:
@@ -158,3 +265,193 @@ async def plan(request: PlanRequest) -> PlanResponse:
             extra={"agent_run_id": request.trace.agent_run_id},
         )
         return refuse(request, retrieval)
+
+
+@app.post("/execute", response_model=PlanResponse, tags=["reasoning"])
+async def execute(request: ExecuteRequest) -> PlanResponse:
+    """Draft the deliverable for one approved task, or refuse.
+
+    Same two gates as `/plan`, applied at the more consequential moment. By the
+    time a step executes the owner has approved the plan, so ungrounded output
+    stops looking like a suggestion and starts looking like delivered work.
+
+    This service still only proposes: the artifact row, the checker, and the
+    task's state are all Node's (ADR-0006).
+    """
+    logger.info(
+        "execute requested",
+        extra={
+            "task_id": request.task_id,
+            "agent_run_id": request.trace.agent_run_id,
+            "project_id": request.trace.project_id,
+        },
+    )
+
+    assert state.retriever and state.providers and state.settings  # set in lifespan
+
+    return await execute_task(request, state.retriever, state.providers, state.settings)
+
+
+@app.post("/sources", response_model=SourceResponse, tags=["knowledge"])
+async def add_source(request: SourceRequest) -> SourceResponse:
+    """Ingest one document a user supplied about their own business.
+
+    **Why this endpoint exists.** The corpus is marketing principles, so the
+    system knew marketing and not the user's product, and every deliverable said
+    so: "product-specific claims could not be included". Ad copy came back about
+    advertising rather than about the thing being advertised. This is how a
+    workspace tells us what it sells.
+
+    **Scoped to the room, and the isolation is enforced here rather than by RLS.**
+    This service holds the secret key, which bypasses row-level security, so
+    `owner_room_id` on the document and `p_room_id` in `hybrid_search` are what
+    keep one customer's business description out of another's ad copy. There is a
+    pgTAP suite (`room_sources.sql`) asserting exactly that, as a client and
+    through the function.
+
+    **One source row per room, and that is not cosmetic.** `find_current_version`
+    keys a document's identity on `(source_id, title)`. A shared source row would
+    make two workspaces that both title something "Our product" supersede each
+    other's documents. The per-room label keeps titles colliding only within the
+    room that owns them, which is exactly the scope where superseding is right.
+
+    **Synchronous, where ADR-0006 says ingestion is job-driven.** One bounded
+    document is a few seconds on a warm embedder, and Node accepts the request
+    with 202 and calls this in the background, so nobody is held waiting. The
+    ADR's concern is the request path, and the request path is Node's.
+
+    SECURITY: `text` is untrusted (rule 8). It is stored and later retrieved into
+    the same delimited SOURCES block the corpus uses; it is never treated as
+    instructions, and its room scope bounds the blast radius to its own author.
+    """
+    logger.info(
+        "source submitted",
+        extra={
+            "room_id": request.room_id,
+            "agent_run_id": request.trace.agent_run_id,
+            "chars": len(request.text),
+            "from_url": request.source_url is not None,
+        },
+    )
+
+    assert state.settings and state.db and state.providers  # set in lifespan
+
+    ingestor = Ingestor(state.settings, state.db, state.providers)
+    result = await ingestor.ingest(
+        text=request.text,
+        title=request.title,
+        # One knowledge_sources row per room. `upsert_source` matches on label,
+        # so the room id is what makes it per-room rather than global.
+        source_label=f"Provided by this workspace ({request.room_id[:8]})",
+        # The business speaking about itself is the vendor case. No new enum
+        # value: `corpus.py` records that an invented citation is worse than
+        # none, and labelling a customer's own words as `official` or `research`
+        # would be exactly that.
+        authority="vendor",
+        doc_type="user-source",
+        # Stored on the document, so a citation drawn from a page the workspace
+        # pointed us at can be opened. It reaches `knowledge_sources.url` for
+        # nobody: `ingest` passes `url=None` to `upsert_source` whenever a room
+        # owns the document, deliberately, because the source row here is the
+        # workspace rather than the page.
+        source_url=request.source_url,
+        owner_room_id=request.room_id,
+    )
+
+    logger.info(
+        "source ingested",
+        extra={
+            "room_id": request.room_id,
+            "document_id": result.document_id,
+            "chunks": result.chunks_written,
+            "skipped": result.skipped_unchanged,
+        },
+    )
+
+    return SourceResponse(
+        document_id=result.document_id,
+        chunks_written=result.chunks_written,
+        skipped_unchanged=result.skipped_unchanged,
+        superseded=result.superseded,
+    )
+
+
+@app.post("/ingest", response_model=SourceResponse, tags=["knowledge"])
+async def ingest_document(request: IngestRequest) -> SourceResponse:
+    """Ingest one crawled page into the shared reference corpus.
+
+    **The gap this closes was written down as a gap.** `README.md` listed the
+    crawlers and the freshness pipeline under "not built, and not claimed", and
+    the consequence it named is the one that matters: the corpus was ten
+    internally-authored documents, so nothing the agent cited could be checked by
+    the person reading it. A citation whose whole value is that a reader can
+    follow it, pointing at a document only we have, is a citation in form only.
+
+    **Node crawls, this ingests.** Outbound HTTP lives in `apps/api`, where the
+    SSRF guard, the size cap, the timeout and the redirect re-vetting already are
+    (`fetch-url.ts`), and where the sweep can hold the ticker's lease. This
+    service reaches Postgres and model providers and nothing else, which is what
+    makes "no database client, no outbound fetcher" a checkable property rather
+    than a convention. So the split is not tidiness: it keeps the reasoning core
+    unable to reach anything a prompt could name.
+
+    **It trusts the caller for metadata and nothing else.** `authority`, `market`
+    and `doc_type` come from a checked-in registry rather than being inferred
+    from the URL, because whether a page is authoritative is an editorial call
+    and deriving it from a hostname is how a vendor blog becomes a regulator. The
+    text itself is untrusted (rule 8) and travels the same delimited SOURCES
+    block as everything else.
+
+    **Unchanged pages are cheap twice over.** Node compares a hash of the fetched
+    text before calling here at all, and if it does call, `Ingestor.ingest`
+    compares its own hash (which folds in the chunker version and the embedding
+    model) and returns without re-embedding. The two exist for different
+    reasons: Node's saves the HTTP round trip and the CPU, ours notices when the
+    page is identical but the way we would index it is not.
+    """
+    logger.info(
+        "crawled document submitted",
+        extra={
+            "agent_run_id": request.trace.agent_run_id,
+            "source_url": request.source_url,
+            "authority": request.authority,
+            "chars": len(request.text),
+        },
+    )
+
+    assert state.settings and state.db and state.providers  # set in lifespan
+
+    ingestor = Ingestor(state.settings, state.db, state.providers)
+    result = await ingestor.ingest(
+        text=request.text,
+        title=request.title,
+        source_label=request.source_label,
+        authority=request.authority,
+        source_url=request.source_url,
+        market=request.market,
+        business_type=request.business_type,
+        doc_type=request.doc_type,
+        effective_date=request.effective_date,
+        lang=request.lang,
+        # Shared corpus. Every room retrieves this, which is the whole point:
+        # what a regulator publishes is not one workspace's private knowledge.
+        owner_room_id=None,
+    )
+
+    logger.info(
+        "crawled document ingested",
+        extra={
+            "source_url": request.source_url,
+            "document_id": result.document_id,
+            "chunks": result.chunks_written,
+            "skipped": result.skipped_unchanged,
+            "superseded": result.superseded,
+        },
+    )
+
+    return SourceResponse(
+        document_id=result.document_id,
+        chunks_written=result.chunks_written,
+        skipped_unchanged=result.skipped_unchanged,
+        superseded=result.superseded,
+    )

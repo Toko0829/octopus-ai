@@ -15,6 +15,20 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
+# The calibrated local rerank threshold, in ONE place.
+#
+# Every other setting in this file writes its default twice, once on the
+# dataclass field and once in `get_settings()`. That is survivable for a model
+# name and it is not survivable here, which was learned by doing it: this
+# threshold was changed, the dataclass default was updated, the unit test that
+# pins it to its measured bounds went green, and the running service kept using
+# the old number because the factory still carried it. A guard that passes while
+# production disagrees with it is worse than no guard, and the twenty-five minute
+# run it wasted reported a failure that had supposedly already been fixed.
+#
+# See the field below for the measured bands this value sits between.
+RERANK_LOCAL_MIN_SCORE_DEFAULT = 0.0013
+
 
 class ConfigError(RuntimeError):
     """Raised when required configuration is absent or unusable."""
@@ -164,7 +178,25 @@ class Settings:
     generation_model: str = "gpt-5.4"
     generation_model_fast: str = "gpt-5.4-mini"
     generation_model_cheap: str = "gpt-5.4-nano"
+    # The budget for a SHORT, classification-shaped call: decomposition, the
+    # groundedness gate. Their outputs are a handful of fields.
     generation_max_tokens: int = 900
+
+    # And the budget for a LONG one: a six-stage plan, or a drafted deliverable.
+    #
+    # These are separate because one number for both silently broke the product's
+    # marquee feature. A plan is six stages of up to three steps, each with a title
+    # and up to 600 characters of detail, and the gpt-5 family counts **reasoning
+    # tokens against this same limit**, so 900 left far too little for the output.
+    # The JSON came back truncated, `parse_plan` rejected it, and `plan_grounded`
+    # degraded to cited prose exactly as designed. Nothing errored, nothing was
+    # logged as broken, and every whole-funnel goal quietly returned no plan card.
+    #
+    # Measured directly rather than inferred: at 900 the response was 4101
+    # characters and failed to parse with "EOF while parsing a string"; at 4000 it
+    # was 4311 characters and validated. Raise this if plans start arriving as
+    # prose again, and treat that symptom as this cause until proven otherwise.
+    generation_max_tokens_long: int = 4000
 
     # Retrieval shape, from rag.md: fuse to 40 candidates, rerank down to 6-8.
     # Query decomposition (rag.md retrieval step 1). Splits a goal into
@@ -180,6 +212,44 @@ class Settings:
     # So decomposition multiplies rerank traffic, and a rate-limited key feels it
     # directly. `rerank_rpm` below is what keeps that survivable.
     query_decomposition: bool = True
+
+    # The groundedness gate (rule 10), between retrieval and generation.
+    #
+    # It exists because the rerank threshold **is not a scope gate and cannot be
+    # made into one**. A rerank score ranks chunks within the corpus; it does not
+    # decide whether the corpus covers the question, and when the query is
+    # marketing and the whole corpus is marketing there is always a best chunk.
+    # Measured: "conversion tracking in GA4" scores 0.0211 locally against a
+    # 0.0013 threshold, while the legitimate broad goal "launch my app and get me
+    # to my first 100 customers" tops out at 0.0018. The bands overlap by 12x, so
+    # no threshold separates them and raising it kills the north-star goal first.
+    #
+    # One cheap-tier call per goal, the tier decomposition already uses.
+    #
+    # DEFAULT ON, and turning it off is a deliberate, logged act. It is selectable
+    # only so the eval can measure retrieval and the gate as separate stages, and
+    # so the cost of the gate is measurable rather than assumed. A deployment that
+    # disables it is answering questions its corpus does not cover.
+    groundedness_check: bool = True
+    # Empty means "use the cheap tier". Kept overridable because this judgement is
+    # harder than decomposition's, so the tier may have to move without dragging
+    # decomposition's tier with it.
+    groundedness_model: str = ""
+
+    # Intake (full-funnel-creator.md step 1), which runs BEFORE retrieval and does
+    # not use it. Both numbers are product decisions rather than measured ones,
+    # and are settings precisely so they can be moved once there is something to
+    # measure them against.
+    #
+    # `intake_max_rounds` is the harder of the two, and it is capped low on
+    # purpose: vision.md makes user-touch-count per result a guardrail to drive
+    # DOWN, and ai-orchestrator.md requires user-only facts to be raised as a
+    # single batched question. An intake that keeps asking is a worse product than
+    # one that plans from four answers out of five, because the plan card renders
+    # unsupported stages empty and a thin plan is visible where an exhausted person
+    # is not.
+    intake_min_completeness: float = 0.75
+    intake_max_rounds: int = 2
 
     # How many RRF survivors reach the reranker. This is a MEASURED setting tied
     # to corpus size, not a constant.
@@ -230,13 +300,30 @@ class Settings:
     # negative ("run payroll and withhold taxes") reaches 0.001007. 0.0013 sits
     # between them and yields recall 1.00, coverage 1.00, zero leaks.
     #
+    # **RAISING THIS WAS TRIED, MEASURED, AND REVERTED.** When crawled sources
+    # took the corpus from 43 chunks to 110, a car-licence negative began
+    # retrieving Meta's advertising standards at 0.008, on a clause about not
+    # requesting driver's license numbers. 0.013 was the obvious answer, since it
+    # sits between that 0.008 and the weakest positive's 0.022. It does not work,
+    # and the reason generalises: **those bands are 2.75x apart on a signal that
+    # moves 3x between identical runs**, because decomposition is a model call and
+    # different sub-queries score differently. One case measured 0.116 and 0.035
+    # on two runs of the same commit. A threshold needing a 2x margin cannot be
+    # set against that, so raising it does not trade a leak for safety, it trades
+    # a leak for a gate that refuses legitimate goals at random.
+    #
+    # So the threshold stays where the positives are safe, and the leak is handled
+    # where scope is decided: the groundedness gate. That is the same division of
+    # labour this file already documents for in-vocabulary questions, arriving for
+    # a lexical collision rather than a topical adjacency.
+    #
     # **That is a 1.76x margin, against roughly 9x on Cohere.** It is the
     # narrowest safety margin in the retrieval path, and a leak is the failure
     # this system least tolerates (rule 10: uncited or unsupported claims must
     # never gate action). Treat any corpus change as a reason to re-measure, and
     # grow the golden set's NEGATIVE half rather than only its positive half,
     # because the negatives are what defend this margin.
-    rerank_local_min_score: float = 0.0013
+    rerank_local_min_score: float = RERANK_LOCAL_MIN_SCORE_DEFAULT
 
     # Client-side ceiling on rerank calls per minute. 0 means unlimited.
     #
@@ -289,6 +376,16 @@ class Settings:
         )
 
     @property
+    def active_groundedness_model(self) -> str:
+        """The tier the groundedness gate runs on, defaulting to the cheap one.
+
+        Resolved here rather than defaulted in the field, so overriding the
+        generation tiers per environment moves the gate with them instead of
+        leaving it pinned to whatever the cheap tier was when this was written.
+        """
+        return self.groundedness_model or self.generation_model_cheap
+
+    @property
     def rerank_local_source(self) -> str:
         """Where to load the local reranker from: an explicit path, else the repo id."""
         return self.rerank_local_path or self.rerank_local_model
@@ -335,12 +432,19 @@ def get_settings() -> Settings:
         rerank_local_model=os.environ.get("RERANK_LOCAL_MODEL", "BAAI/bge-reranker-v2-m3"),
         rerank_local_path=os.environ.get("RERANK_LOCAL_PATH", ""),
         rerank_local_fp16=_bool("RERANK_LOCAL_FP16", True),
-        rerank_local_min_score=_float("RERANK_LOCAL_MIN_SCORE", 0.0013),
+        rerank_local_min_score=_float(
+            "RERANK_LOCAL_MIN_SCORE", RERANK_LOCAL_MIN_SCORE_DEFAULT
+        ),
         generation_model=os.environ.get("GENERATION_MODEL", "gpt-5.4"),
         generation_model_fast=os.environ.get("GENERATION_MODEL_FAST", "gpt-5.4-mini"),
         generation_model_cheap=os.environ.get("GENERATION_MODEL_CHEAP", "gpt-5.4-nano"),
         generation_max_tokens=_int("GENERATION_MAX_TOKENS", 900),
+        generation_max_tokens_long=_int("GENERATION_MAX_TOKENS_LONG", 4000),
         query_decomposition=_bool("QUERY_DECOMPOSITION", True),
+        groundedness_check=_bool("GROUNDEDNESS_CHECK", True),
+        groundedness_model=os.environ.get("GROUNDEDNESS_MODEL", ""),
+        intake_min_completeness=_float("INTAKE_MIN_COMPLETENESS", 0.75),
+        intake_max_rounds=_int("INTAKE_MAX_ROUNDS", 2),
         retrieval_candidates=_int("RETRIEVAL_CANDIDATES", 25),
         rerank_top_n=_int("RERANK_TOP_N", 8),
         rerank_rpm=_int("COHERE_RERANK_RPM", 0),

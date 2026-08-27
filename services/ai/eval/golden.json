@@ -11,6 +11,17 @@
     "Cases are keyed on document TITLE because that is what the ingest pipeline",
     "preserves and what citations render.",
     "",
+    "For a CRAWLED document the title comes from the registry in",
+    "apps/api/src/lib/crawl-registry.ts rather than from the page, and it is identity",
+    "rather than description: a document is (source_id, title), so renaming one there",
+    "does not rename it here, it starts a second lineage beside the first and",
+    "silently breaks whichever case pointed at the old name.",
+    "",
+    "Externally sourced documents are ingested from checked-in snapshots in",
+    "eval/external/ rather than from a live fetch. That is deliberate: scoring",
+    "retrieval against whatever a publisher happened to have live that morning would",
+    "make a regression and an editorial change the same event.",
+    "",
     "Queries are deliberately phrased the way a founder would ask, not in the",
     "wording of the documents. A golden set that echoes the corpus measures string",
     "matching and flatters every retriever that has ever existed.",
@@ -19,9 +30,23 @@
     "system RETURNS NOTHING, which is what forces the agent to refuse instead of",
     "grounding an answer in whatever was nearest. A retriever that scores well on",
     "positives and leaks on negatives is worse than useless here: it produces",
-    "confident, cited, wrong plans."
+    "confident, cited, wrong plans.",
+    "",
+    "The negatives above are BUSINESS-FORMATION topics, far from the corpus in",
+    "vocabulary as well as in subject. That is why they pass, and it is also why",
+    "they hid a real defect for so long: they only ever tested the easy direction.",
+    "`scope_negatives` below is the hard direction, and it is scored separately.",
+    "Measured: 'conversion tracking in GA4' scores 0.0211 against a 0.0013",
+    "threshold, while the legitimate broad goal 'launch my app and get me to my",
+    "first 100 customers' tops out at 0.0018. The bands overlap by 12x.",
+    "",
+    "So these cases do NOT belong in `cases`: putting them there would fail the",
+    "retrieval gate permanently for something retrieval cannot be asked to do.",
+    "They are the groundedness gate's set, scored by `--gate`, which is a",
+    "credentialed, LLM-dependent pass and deliberately NOT the deterministic CI",
+    "gate. Add one whenever you find a marketing question the corpus does not",
+    "cover; that is now a security task, not a coverage one."
   ],
-
   "cases": [
     {
       "id": "cpa-too-high",
@@ -77,7 +102,6 @@
       "query": "is it worth posting on social media myself or should I just run ads",
       "expect_docs": ["Organic social for a founder-led product"]
     },
-
     {
       "id": "broad-first-customers",
       "query": "launch my app and get me to my first 100 customers",
@@ -88,18 +112,31 @@
       ],
       "notes": "The goal shape the product is actually built around, and the one that exposed the gap: a single broad query retrieves whichever stage matches best, so the plan came back covering three stages of six. Listing documents from three different stages is the point. This is the case decomposition exists to serve, and the case the rest of the set could not measure because every other query is narrow."
     },
-
+    {
+      "id": "google-ad-rejected",
+      "query": "why would google reject my ad",
+      "expect_docs": ["Google Ads policies overview"]
+    },
+    {
+      "id": "targeting-restrictions",
+      "query": "am I allowed to target people based on health conditions",
+      "expect_docs": ["Google Ads personalized advertising policy"]
+    },
+    {
+      "id": "rsa-headline-count",
+      "query": "how many headlines should I give a google search ad",
+      "expect_docs": ["Google responsive search ad format spec"]
+    },
+    {
+      "id": "uk-email-consent",
+      "query": "do I need permission before emailing people in the UK",
+      "expect_docs": ["ICO guide to PECR: electronic and telephone marketing"]
+    },
     {
       "id": "neg-liquor-licence",
       "query": "how do I get a restaurant liquor licence in Tbilisi",
       "expect_docs": [],
       "notes": "Regulated act in a jurisdiction with no pack. Must refuse, never approximate."
-    },
-    {
-      "id": "neg-car-licence",
-      "query": "how to get a car licence",
-      "expect_docs": [],
-      "notes": "Not marketing at all. Reported by a real user; the agent correctly refused."
     },
     {
       "id": "neg-incorporation",
@@ -112,6 +149,43 @@
       "query": "how do I run payroll and withhold taxes for my first employee",
       "expect_docs": [],
       "notes": "Adjacent to running a business but outside the marketing wedge entirely."
+    },
+    {
+      "id": "neg-car-licence",
+      "query": "how to get a car licence",
+      "expect_docs": []
+    }
+  ],
+  "scope_negatives": [
+    {
+      "id": "scope-webinar-funnel",
+      "query": "how do I build a webinar funnel that converts",
+      "notes": "Measured leak: 0.0067 local, 0.318 Cohere, both well clear of threshold. Retrieves landing-conversion and content-strategy, neither of which discusses webinars at all. The archetypal case: right field, right vocabulary, wrong question."
+    },
+    {
+      "id": "scope-ga4-tracking",
+      "query": "how do I set up conversion tracking in GA4",
+      "notes": "Measured leak: 0.0211 local, 0.281 Cohere. The strongest leak in the set, and it outscores the legitimate broad goal by 12x. Measurement is the one funnel stage with no dedicated document, and this is what that gap feels like to a user."
+    },
+    {
+      "id": "scope-app-store",
+      "query": "how do I rank higher in the app store",
+      "notes": "Measured leak: 0.0053 local, 0.082 Cohere. ASO shares almost every word with the SEO document and shares none of its mechanics."
+    },
+    {
+      "id": "scope-ad-specs",
+      "query": "what are the character limits for facebook ad headlines",
+      "notes": "Still uncovered, but no longer uncovered on purpose, and the distinction matters. The crawl registry now carries Google's responsive search ad format spec, so SOME platform specifics are in the corpus with a real source and a read date. Facebook's are not: the Meta ads guide builds its spec tables in the browser, so a fetch returns navigation, and one attempt stored a menu localised to the crawler's own IP. A confident answer here is therefore still a fabrication, and this case is the thing that would catch the Google document being stretched to cover a question about Meta."
+    },
+    {
+      "id": "scope-influencer-rates",
+      "query": "how much should I pay an influencer for a sponsored post",
+      "notes": "Deliberately near-miss: ftc-disclosure-basics covers DISCLOSING a paid partnership and says nothing about pricing one. A gate that waves this through is matching on topic rather than on question, which is exactly the failure being tested."
+    },
+    {
+      "id": "scope-affiliate-program",
+      "query": "should I start an affiliate program and how do I structure the commission",
+      "notes": "A recognised acquisition channel the corpus has no document for. Offer-design covers pricing to a buyer, not commission to a partner."
     }
   ]
 }

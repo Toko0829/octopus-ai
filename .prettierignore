@@ -4,3 +4,10 @@ dist
 .turbo
 pnpm-lock.yaml
 coverage
+
+# Crawled page snapshots. These are verbatim text from somebody else's page, kept
+# so the retrieval eval scores against a fixed corpus rather than against whatever
+# a publisher had live that morning. Reformatting them would rewrite the very
+# bytes the ingestion content hash is taken over, so a formatting pass would look
+# to the pipeline like every source had been edited.
+services/ai/eval/external

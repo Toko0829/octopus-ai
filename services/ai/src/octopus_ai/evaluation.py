@@ -21,12 +21,26 @@ drop rather than pad with; this is the check that the drop actually happens.
 
 Because of that asymmetry the gate treats a single negative leak as failure,
 while positives are scored as a rate.
+
+**Two passes live here, and only the first is a CI gate.**
+
+`--shard`/`--merge` (the default) is the retrieval gate above: deterministic
+given a fixed corpus, which is what makes it usable to block a merge.
+
+`--gate` measures the **groundedness gate** over `scope_negatives`: marketing
+questions, in marketing vocabulary, that this corpus does not answer. Retrieval
+leaks on those by design and no threshold can fix it, so they cannot be filed as
+ordinary negatives without failing the retrieval gate forever for a property
+retrieval does not have. That pass calls a model, so it bills per run and is not
+deterministic, and it is deliberately kept out of CI for exactly the reason the
+Ragas faithfulness metrics are.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +56,21 @@ MIN_POSITIVE_RECALL = 0.8
 # Negatives: no tolerance. One out-of-scope query returning chunks is one class
 # of question the agent will answer when it should refuse.
 MAX_NEGATIVE_LEAKS = 0
+
+# --- The groundedness gate's thresholds (`--gate`, not the CI gate) ------------
+#
+# Every in-vocabulary uncovered question must be refused. Same reasoning as
+# MAX_NEGATIVE_LEAKS and the same zero tolerance: one that gets through is one
+# class of question the agent answers from sources that do not support it.
+MIN_GATE_BLOCK_RATE = 1.0
+
+# ...and the gate must not buy that by refusing everything. A gate that blocks
+# every legitimate goal scores a perfect 1.00 above and destroys the product, so
+# the false-refusal side is measured in the same pass and cannot be skipped.
+#
+# 0.8 rather than 1.0, mirroring MIN_POSITIVE_RECALL and for the same reason: a
+# refusal of an answerable question is unhelpful but safe, where a leak is not.
+MIN_GATE_PASS_RATE = 0.8
 
 
 @dataclass(frozen=True)
@@ -273,6 +302,211 @@ def merge_shards(paths: list[Path], cases: list[GoldenCase] | None = None) -> Ev
     return EvalReport(results=results)
 
 
+@dataclass(frozen=True)
+class ScopeCase:
+    """An in-vocabulary but uncovered question, for the groundedness gate.
+
+    Kept apart from `GoldenCase` because it asserts something retrieval cannot
+    deliver. Retrieval leaks on these by design: a rerank score ranks chunks
+    within the corpus and cannot say whether the corpus covers the question, and
+    the measured bands overlap by 12x, so no threshold separates them. Filing
+    these as ordinary negatives would fail the retrieval gate forever for a
+    property retrieval does not have.
+    """
+
+    id: str
+    query: str
+    notes: str | None = None
+
+
+@dataclass
+class GateCaseResult:
+    """One case through retrieval and then the gate.
+
+    `blocked_by` matters as much as `blocked`. A scope negative stopped at
+    retrieval and one stopped at the gate are both correct outcomes, but they say
+    different things about where the safety is actually coming from, and the
+    honest reading of this pass depends on not confusing them.
+    """
+
+    case_id: str
+    query: str
+    expect_block: bool
+    retrieved: int
+    outcome: str  # "supported" | "unsupported" | "unverified" | "not-retrieved"
+    reason: str
+
+    @property
+    def blocked(self) -> bool:
+        return self.outcome != "supported"
+
+    @property
+    def blocked_by(self) -> str:
+        if self.retrieved == 0:
+            return "retrieval"
+        return "gate" if self.blocked else "-"
+
+    @property
+    def correct(self) -> bool:
+        return self.blocked == self.expect_block
+
+
+@dataclass
+class GateReport:
+    results: list[GateCaseResult] = field(default_factory=list)
+
+    @property
+    def scope(self) -> list[GateCaseResult]:
+        return [r for r in self.results if r.expect_block]
+
+    @property
+    def legitimate(self) -> list[GateCaseResult]:
+        return [r for r in self.results if not r.expect_block]
+
+    @property
+    def block_rate(self) -> float:
+        if not self.scope:
+            return 0.0
+        return sum(1 for r in self.scope if r.blocked) / len(self.scope)
+
+    @property
+    def pass_rate(self) -> float:
+        """Share of legitimate goals the gate let through. The false-refusal side."""
+        if not self.legitimate:
+            return 0.0
+        return sum(1 for r in self.legitimate if not r.blocked) / len(self.legitimate)
+
+    @property
+    def unverified(self) -> list[GateCaseResult]:
+        """Cases where the check could not run.
+
+        Reported separately because they are an operational fault, not a
+        measurement. They count as blocks (the gate fails closed) but a run with
+        several of them has measured the provider, not the prompt.
+        """
+        return [r for r in self.results if r.outcome == "unverified"]
+
+    @property
+    def passed(self) -> bool:
+        return self.block_rate >= MIN_GATE_BLOCK_RATE and self.pass_rate >= MIN_GATE_PASS_RATE
+
+    def render(self) -> str:
+        lines: list[str] = []
+        lines.append("SCOPE NEGATIVES (in-vocabulary, uncovered: the gate must refuse)")
+        for r in self.scope:
+            mark = "BLOCK" if r.blocked else "LEAK"
+            lines.append(
+                f"  [{mark:5}] {r.case_id:24} by={r.blocked_by:9} "
+                f"chunks={r.retrieved:2} {r.reason[:60]}"
+            )
+
+        lines.append("")
+        lines.append("LEGITIMATE GOALS (the gate must NOT refuse)")
+        for r in self.legitimate:
+            mark = "PASS" if not r.blocked else "REFUSE"
+            lines.append(
+                f"  [{mark:5}] {r.case_id:24} by={r.blocked_by:9} "
+                f"chunks={r.retrieved:2} {r.reason[:60]}"
+            )
+
+        lines.append("")
+        if self.unverified:
+            # Loud, because a run full of these looks like a strict gate and is
+            # actually a broken provider.
+            lines.append(
+                f"WARNING: {len(self.unverified)} case(s) could not be checked "
+                f"({', '.join(r.case_id for r in self.unverified)}). "
+                "These count as blocks because the gate fails closed, but this run "
+                "measured availability rather than judgement."
+            )
+            lines.append("")
+
+        # ASCII only: this renders in a Windows console, where a middot arrives as
+        # a replacement character and makes the summary look corrupted.
+        lines.append(
+            f"gate blocked {self.block_rate:.2f} of scope negatives "
+            f"(min {MIN_GATE_BLOCK_RATE:.2f}) | "
+            f"passed {self.pass_rate:.2f} of legitimate goals "
+            f"(min {MIN_GATE_PASS_RATE:.2f})"
+        )
+        lines.append("PASS" if self.passed else "FAIL")
+        return "\n".join(lines)
+
+
+def load_scope_negatives(path: Path | None = None) -> list[ScopeCase]:
+    raw = json.loads((path or GOLDEN_PATH).read_text(encoding="utf-8"))
+    return [
+        ScopeCase(id=c["id"], query=c["query"], notes=c.get("notes"))
+        for c in raw.get("scope_negatives", [])
+    ]
+
+
+async def run_gate_eval(
+    retriever: Retriever,
+    gate: Callable[[str, RetrievalResult], Awaitable[tuple[str, str]]],
+    *,
+    scope_cases: list[ScopeCase],
+    positive_cases: list[GoldenCase],
+    decomposer: Callable[[str], Awaitable[list[str]]] | None = None,
+    on_case: Callable[[GateCaseResult], None] | None = None,
+) -> GateReport:
+    """Run retrieval then the gate over both halves.
+
+    `gate` is injected as `(query, retrieval) -> (outcome, reason)` so this
+    function is testable without providers, and so the caller owns how the
+    sources block is built. It must be the same block production builds, or this
+    measures a pipeline nobody runs, which is a mistake this eval has made before.
+
+    Both halves run in one pass on purpose. Measuring only the scope negatives
+    would reward a gate that refuses everything, and that gate would pass.
+
+    `on_case` fires as each case lands. It exists because this pass is minutes of
+    CPU per case and the report only renders at the end, so a run that dies part
+    way through leaves nothing at all behind. That is not hypothetical: a network
+    drop killed a full run and every completed case went with it, since the only
+    evidence they had happened was buffered in a report that never printed.
+    """
+    report = GateReport()
+
+    async def one(case_id: str, query: str, expect_block: bool) -> None:
+        subqueries = await decomposer(query) if decomposer else None
+        retrieval = await retriever.retrieve(query, subqueries=subqueries)
+
+        if not retrieval.chunks:
+            # Retrieval already refused, so the gate never runs in production
+            # either. Recording it as "not-retrieved" keeps the two mechanisms
+            # distinguishable instead of crediting the gate for retrieval's work.
+            result = GateCaseResult(
+                case_id=case_id,
+                query=query,
+                expect_block=expect_block,
+                retrieved=0,
+                outcome="not-retrieved",
+                reason="nothing cleared the rerank threshold",
+            )
+        else:
+            outcome, reason = await gate(query, retrieval)
+            result = GateCaseResult(
+                case_id=case_id,
+                query=query,
+                expect_block=expect_block,
+                retrieved=len(retrieval.chunks),
+                outcome=outcome,
+                reason=reason,
+            )
+
+        report.results.append(result)
+        if on_case:
+            on_case(result)
+
+    for sc in scope_cases:
+        await one(sc.id, sc.query, expect_block=True)
+    for pc in positive_cases:
+        await one(pc.id, pc.query, expect_block=False)
+
+    return report
+
+
 def load_golden(path: Path | None = None) -> list[GoldenCase]:
     raw = json.loads((path or GOLDEN_PATH).read_text(encoding="utf-8"))
     return [
@@ -407,11 +641,178 @@ async def _run(shard: int = 1, shards: int = 1, out: Path | None = None) -> int:
         await providers.aclose()
 
 
+async def _run_gate() -> int:
+    """Measure the groundedness gate. Credentialed and LLM-dependent, by nature.
+
+    Deliberately NOT part of the CI gate, and for the same reason the Ragas
+    faithfulness metrics are not: it calls a model, so it bills per run and
+    returns a different answer sometimes. That is the honest place for it, and
+    stapling it to the deterministic gate would make every merge depend on a
+    provider being up and on a judgement being stable.
+
+    What it is for: catching a regression in the gate's prompt, and knowing the
+    false-refusal rate before that rate is discovered by a user.
+    """
+    from .config import get_settings
+    from .db import Database
+    from .groundedness import assess
+    from .planner import build_sources_block
+    from .providers import Providers
+
+    settings = get_settings()
+    db = Database(settings)
+    providers = Providers(settings)
+    retriever = Retriever(settings, db, providers)
+
+    decomposer = None
+    if settings.query_decomposition:
+        from .decompose import decompose
+
+        async def run_decompose(q: str) -> list[str]:
+            return await decompose(q, providers, settings.generation_model_cheap)
+
+        decomposer = run_decompose
+
+    async def gate(query: str, retrieval: RetrievalResult) -> tuple[str, str]:
+        # The same block the planner receives. Building a different one here
+        # would measure a pipeline nobody runs.
+        verdict = await assess(
+            query,
+            build_sources_block(retrieval),
+            providers,
+            settings.active_groundedness_model,
+        )
+        return verdict.outcome, verdict.reason
+
+    try:
+        print(f"corpus embedded by: {settings.active_embed_model}")
+        print(f"reranker:           {settings.rerank_provider} ({settings.active_rerank_model})")
+        print(f"rerank_min_score:   {settings.active_rerank_min_score}")
+        print(f"gate model:         {settings.active_groundedness_model}")
+        if not settings.groundedness_check:
+            # The gate is measured here regardless of the flag, since the point is
+            # to measure it. Saying so avoids reading a pass as evidence that the
+            # running service is protected, when the flag says it is not.
+            print("NOTE:               GROUNDEDNESS_CHECK is OFF in this environment.")
+            print("                    This pass measures the gate; the service is not using it.")
+        print()
+
+        def progress(r: GateCaseResult) -> None:
+            # Printed as it happens rather than collected. Each case is minutes of
+            # cross-encoder CPU, so a silent run is indistinguishable from a hung
+            # one, and a run that dies leaves the finished cases visible instead of
+            # taking them with it.
+            mark = "BLOCK" if r.blocked else "PASS"
+            want = "block" if r.expect_block else "pass"
+            flag = " " if r.correct else "!"
+            print(
+                f"{flag} [{mark:5}] {r.case_id:24} want={want:5} "
+                f"by={r.blocked_by:9} {r.reason[:60]}"
+            )
+            sys.stdout.flush()
+
+        report = await run_gate_eval(
+            retriever,
+            gate,
+            scope_cases=load_scope_negatives(),
+            positive_cases=[c for c in load_golden() if not c.is_negative],
+            decomposer=decomposer,
+            on_case=progress,
+        )
+        print()
+        print(report.render())
+        return 0 if report.passed else 1
+    finally:
+        await db.aclose()
+        await providers.aclose()
+
+
+async def _run_plan_eval() -> int:
+    """Score the STRUCTURE of the plans the planner produces (`plan_eval.py`).
+
+    Credentialed and LLM-dependent like `--gate`, and kept out of CI for the same
+    reason: it calls a model, so it bills per run. What it checks is nonetheless
+    deterministic given a response, which is why the scoring lives in a module
+    with its own hermetic tests and only the running of it is credentialed.
+
+    Runs the golden POSITIVES only. Negatives and scope negatives are refusals by
+    design, and a harness that counted them would reward a planner for answering
+    everything.
+    """
+    from .config import get_settings
+    from .db import Database
+    from .plan_eval import PlanReport, score_plan
+    from .planner import plan_grounded, refuse
+    from .providers import Providers
+    from .schemas import PlanRequest, TraceContext
+
+    settings = get_settings()
+    db = Database(settings)
+    providers = Providers(settings)
+    retriever = Retriever(settings, db, providers)
+
+    decomposer = None
+    if settings.query_decomposition:
+        from .decompose import decompose
+
+        async def run_decompose(q: str) -> list[str]:
+            return await decompose(q, providers, settings.generation_model_cheap)
+
+        decomposer = run_decompose
+
+    try:
+        print(f"generation model:   {settings.generation_model}")
+        print(f"long token budget:  {settings.generation_max_tokens_long}")
+        print()
+
+        report = PlanReport()
+        for case in [c for c in load_golden() if not c.is_negative]:
+            request = PlanRequest(
+                room_id="eval", goal=case.query, trace=TraceContext(agent_run_id="plan-eval")
+            )
+            subqueries = await decomposer(case.query) if decomposer else None
+            retrieval = await retriever.retrieve(case.query, subqueries=subqueries)
+
+            if not retrieval.grounded:
+                response = refuse(request, retrieval)
+            else:
+                response = await plan_grounded(request, retrieval, providers, settings)
+
+            findings = score_plan(response)
+            report.results.append((case.id, findings))
+            # Printed as each lands: a run is minutes of CPU per case, and a run
+            # that dies part way through must not take the finished cases with it.
+            mark = "ok  " if findings.clean or findings.refused else "FAIL"
+            print(f"  [{mark}] {case.id:24} {findings.render()}")
+            sys.stdout.flush()
+
+        print()
+        print(report.render())
+        return 0 if report.passed else 1
+    finally:
+        await db.aclose()
+        await providers.aclose()
+
+
 def main() -> None:
     import argparse
     import asyncio
 
     parser = argparse.ArgumentParser(prog="octopus_ai.evaluation")
+    parser.add_argument(
+        "--gate",
+        action="store_true",
+        help="measure the groundedness gate against the scope negatives and the "
+        "positives, instead of running the retrieval gate. Calls a model, so this "
+        "is a credentialed pass rather than a CI gate.",
+    )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="score the STRUCTURE of produced plans (did a card come back at all, "
+        "are citations in range, do AI-owned steps carry one). Calls a model, so "
+        "this is a credentialed pass rather than a CI gate.",
+    )
     parser.add_argument(
         "--shard",
         default="1/1",
@@ -428,6 +829,16 @@ def main() -> None:
         "set, and exit non-zero on failure",
     )
     args = parser.parse_args()
+
+    if args.plan:
+        if args.gate or args.merge or args.out or args.shard != "1/1":
+            parser.error("--plan measures a different thing and does not shard or merge")
+        raise SystemExit(asyncio.run(_run_plan_eval()))
+
+    if args.gate:
+        if args.merge or args.out or args.shard != "1/1":
+            parser.error("--gate measures a different thing and does not shard or merge")
+        raise SystemExit(asyncio.run(_run_gate()))
 
     if args.merge:
         report = merge_shards(args.merge)

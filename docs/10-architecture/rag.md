@@ -6,7 +6,11 @@
 >
 > **Implementation status (Phase 1).** Live: the schema (`20260728210000_rag_schema.sql`), hybrid retrieval with RRF fusion in SQL (`public.hybrid_search`), Cohere rerank with a calibrated drop-threshold, structure-first chunking, batched embedding, and content-hash supersession. A four-document internally-authored seed corpus covers paid acquisition, advertising disclosure, lifecycle email and early-stage SEO for US.
 >
-> **Not built yet, in this doc's order:** crawlers and the freshness pipeline (steps 1 to 3 and the `pg_cron` re-crawl), layout-aware parsing and OCR (step 4), **LLM-generated contextual prefixes** (step 7 uses a metadata-derived prefix instead), structured supplier/cost-benchmark rows (step 10), the query-transformation stage (self-query, multi-query/HyDE, decomposition, routing), and the whole **evaluation section** — `eval_golden_set` exists as an empty table and no Ragas/DeepEval gate runs. Treat the rest of this document as specification, not description.
+> **Steps 1 to 3 are now live, and step 4 is why the corpus is smaller than the registry.** A checked-in source registry, a guarded fetcher, content-hash change detection and a scheduled re-crawl sweep all exist; the corpus holds four externally-sourced, dated, openable documents alongside the ten internally-authored ones. The scheduling is **not** `pg_cron` as specified below: pg_cron runs SQL, SQL cannot make an outbound HTTP request, so it could only ever have signalled something that could. That something is the ticker `apps/api` already runs for the DAG ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)), and the sweep rides its pass. See [rag-knowledge.md](../30-modules/rag-knowledge.md) for the registry, what each page produced, and the two source families that remain uncovered.
+>
+> **Not built yet, in this doc's order:** layout-aware parsing and OCR (step 4), **LLM-generated contextual prefixes** (step 7 uses a metadata-derived prefix instead), structured supplier/cost-benchmark rows (step 10), and the remaining query transformations (self-query, multi-query/HyDE, routing). **Decomposition and the groundedness gate are live.** Of the evaluation section, the **retrieval** gate is live and runs in CI; the Ragas/DeepEval **generation** metrics are not, and `eval_golden_set` remains an empty table (the golden set is a file). Treat the rest of this document as specification, not description.
+>
+> Step 4 is the one whose absence is now load-bearing rather than merely outstanding. `htmlToText` is a hand-rolled tag stripper, so it returns a page's navigation along with its prose, and on a page that is _only_ navigation it returns navigation and nothing else. Three of the first nine registered sources were dropped for exactly that, and a fourth was dropped later on retrieval quality rather than on parsing. A registry entry is therefore verified by reading what it stored, not by its status code.
 
 ## Why RAG is load-bearing here
 
@@ -41,7 +45,7 @@ Reassess (Qdrant / pgvectorscale StreamingDiskANN) only past tens of millions of
 ## Ingestion pipeline (12 steps)
 
 1. **Registry** — `knowledge_sources` declares each source, authority, and crawl cadence.
-2. **Crawl** — per-source crawlers (Supabase Edge Functions / Fastify workers) via `pg_cron`.
+2. **Crawl** — one guarded fetcher in `apps/api`, driven by the ticker's sweep rather than by `pg_cron`, over a checked-in registry of sources. Outbound HTTP stays in Node so `services/ai` keeps reaching Postgres and providers and nothing else.
 3. **Change-detect** — content hash; skip unchanged docs; supersede changed ones.
 4. **Parse** — layout-aware (LlamaParse / Unstructured / Docling), OCR for scanned PDFs.
 5. **Normalize** — clean, language-tag, extract structured fields.
@@ -69,7 +73,9 @@ Heavy ingestion runs as background jobs (pg-boss / Trigger.dev), **never in the 
 
    Two properties of this step are measured rather than assumed, and both are easy to get wrong. **Candidate depth is tied to corpus size**, not fixed at 40: against the current 43-chunk corpus RRF already places the expected document at rank 1-3, so depth beyond ~25 bought nothing and cost linear cross-encoder time. Raise it as the corpus grows. And **the threshold is per provider**, because the two score distributions are not comparable: 0.05 for Cohere, 0.0013 for bge. Applying one to the other measured recall 0.45.
 
-   **The threshold is not a scope gate**, and cannot be made into one. It ranks chunks within the corpus; it does not decide whether the corpus covers the question. An in-vocabulary but uncovered question ("how do I run a webinar funnel") therefore clears it on **both** providers. See the measured bands in [rag-knowledge.md](../30-modules/rag-knowledge.md); a real groundedness check is still outstanding.
+   **The threshold is not a scope gate**, and cannot be made into one. It ranks chunks within the corpus; it does not decide whether the corpus covers the question. An in-vocabulary but uncovered question ("how do I run a webinar funnel") therefore clears it on **both** providers. See the measured bands in [rag-knowledge.md](../30-modules/rag-knowledge.md). That question is answered by step 6 instead.
+
+6. **Groundedness gate** — one cheap-tier model call asking whether the surviving sources actually **answer** the goal, rather than how well they rank. Fails closed, judges the same sources block the planner receives, and runs before generation. This is the check the "Guarded generation" section below has always specified; until it existed, the drop-threshold was standing in for it and could not do the job. Spec and measurement in [rag-knowledge.md](../30-modules/rag-knowledge.md).
 
 ## Two corpora: reference knowledge + real outcomes
 
@@ -88,14 +94,17 @@ The knowledge base has two layers on the same pgvector infrastructure:
 
 ## Freshness (a first-order feature)
 
-- `pg_cron` re-crawls per source (daily for fee/registry pages; weekly/monthly for statutes).
+- **Re-crawls run on the `apps/api` ticker, not `pg_cron`.** Each `knowledge_sources` row carries a `crawl_cadence`, and a sweep inside the ticker's pass re-reads whatever is past it. The original `pg_cron` design could not have worked as written: pg_cron executes SQL and SQL cannot fetch a URL, so the schedule and the fetcher have to live where outbound HTTP is allowed, which is Node ([ADR-0010](../40-adr/0010-postgres-durable-runner.md) put the scheduler there for the DAG already).
+- **Two hashes, two questions.** `knowledge_sources.content_hash` is a hash of the fetched page text and answers "did the page change", cheaply, before any embedding is paid for. `documents.content_hash` folds in the chunker version and the embedding model and answers "would we index this differently now". Keeping both is what makes an unchanged page nearly free while still re-embedding when our own pipeline moves. Known gap, recorded rather than discovered later: a page that is unchanged while the _embedder_ changes is skipped by the first hash and never reaches the second, and the remedy is to null out `knowledge_sources.content_hash` and let every source look new.
+- **`last_crawled` is the last ATTEMPT, not the last success.** A page that is blocked or gone is retried on its cadence rather than on every pass, because a 404 retried every thirty seconds is a small denial of service aimed at somebody who has done nothing wrong.
 - Content-hash **supersession**; `valid_from`/`valid_to` effective-dating so retrieval filters to **in-force** rules.
-- Surface **"last verified"** dates to the user; route **high-stakes stale data** to a human node for re-verification.
+- Surface **"last verified"** dates to the user; route **high-stakes stale data** to a human node for re-verification. A crawled document's `effective_date` is **the day we read the page**, which is the only date we can vouch for: it is not the publisher's own revision date, which is usually absent from the HTML and which we will not infer.
+- **The crawler identifies itself and asks for English.** Both are ordinary politeness with a measured consequence. Asking for English is not cosmetic: the first run stored a Meta page as a menu in Georgian, because a large site picks a language from the requesting IP when nothing says otherwise, and the row would still have claimed `lang: english` and built its sparse index with the English configuration on top of it.
 
 ## Guarded generation
 
 - **Mandatory citations** on legal/tax/permit output, each with an **effective date**.
-- **Groundedness gate:** claims not supported by retrieved, in-date sources (or below similarity threshold) are flagged `unverified` and **cannot gate a legal action** — they escalate to a human node.
+- **Groundedness gate (live):** claims not supported by retrieved, in-date sources are flagged `unverified` and **cannot gate a legal action** — they escalate to a human node. Note the parenthetical this line used to carry, "or below similarity threshold", was wrong as a definition of the gate rather than merely incomplete: a similarity threshold ranks within the corpus and cannot tell you the corpus does not cover the question. That conflation is what let an in-vocabulary uncovered question through. Retrieval step 6 is the real check.
 - **Injection quarantine:** all retrieved content is untrusted **data**, never instructions.
 - **Multi-tenant isolation:** retrieval respects RLS; no cross-tenant leakage.
 
@@ -111,16 +120,16 @@ RAG — ingestion **and** query-time retrieval — is implemented in the **Pytho
 
 ## Risk register
 
-| Risk                                    | Mitigation                                                                                        |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Hallucination on legal/financial claims | Groundedness gate + mandatory citations + escalate-on-unverified                                  |
-| Stale regulations/fees                  | `pg_cron` re-crawl, content-hash supersession, effective-dating, "last verified", human re-verify |
-| Jurisdiction bleed                      | Unambiguous pack keys, hard filters via self-query, never generalize across borders               |
-| OCR/parse errors                        | Layout-aware parsing, validation step, parse-failure alerting                                     |
-| Multilingual gaps                       | One strong multilingual embedder; per-language `tsvector` configs                                 |
-| Prompt injection via sources            | Quarantine retrieved content as data; separate instruction channel                                |
-| Tenant leakage                          | RLS on `doc_chunks`; retrieval scoped by policy                                                   |
+| Risk                                    | Mitigation                                                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Hallucination on legal/financial claims | Groundedness gate + mandatory citations + escalate-on-unverified                                              |
+| Stale regulations/fees                  | cadence re-crawl on the ticker, content-hash supersession, effective-dating, "last verified", human re-verify |
+| Jurisdiction bleed                      | Unambiguous pack keys, hard filters via self-query, never generalize across borders                           |
+| OCR/parse errors                        | Layout-aware parsing, validation step, parse-failure alerting                                                 |
+| Multilingual gaps                       | One strong multilingual embedder; per-language `tsvector` configs                                             |
+| Prompt injection via sources            | Quarantine retrieved content as data; separate instruction channel                                            |
+| Tenant leakage                          | RLS on `doc_chunks`; retrieval scoped by policy                                                               |
 
 ## Libraries
 
-`pgvector` · Supabase (`pg_cron`, Edge Functions, Storage, Realtime) · LlamaIndex (TS + Python) · LlamaParse/Unstructured/Docling · OpenAI SDK (embeddings, contextualization, query transform, grounded generation) · Cohere SDK (rerank) · Ragas · DeepEval · Langfuse · tiktoken. Optional in-Postgres upgrades: ParadeDB `pg_search`, `pgvectorscale`.
+`pgvector` · Supabase (Edge Functions, Storage, Realtime) · LlamaIndex (TS + Python) · LlamaParse/Unstructured/Docling · OpenAI SDK (embeddings, contextualization, query transform, grounded generation) · Cohere SDK (rerank) · Ragas · DeepEval · Langfuse · tiktoken. Optional in-Postgres upgrades: ParadeDB `pg_search`, `pgvectorscale`.

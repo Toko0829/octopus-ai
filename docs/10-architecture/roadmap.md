@@ -29,7 +29,7 @@
 
 - ✅ Discord-style chat shell (5 regions, roles/badges, presence, inline messages) on Supabase Realtime.
 - 🟡 `rag-knowledge` for **marketing**: pgvector schema, hybrid retrieval + RRF + rerank **done**, with embedding and rerank both running **in-process** so retrieval depends on no paid provider ([ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md), [ADR-0009](../40-adr/0009-local-reranker.md)); ten-document corpus covering all six funnel stages; **retrieval eval gate live** (golden set, positives + negatives, wired into CI, running the production reranker). Ingestion is still from a hand-authored corpus rather than crawled sources, and the **generation** eval (Ragas/DeepEval faithfulness) is deliberately absent.
-- ✅ Orchestrator **planning pass**: a creator goal returns a **structured full-funnel plan** on a plan card, cited per step, and refuses when nothing clears the relevance threshold.
+- ✅ Orchestrator **planning pass**: a creator goal returns a **structured full-funnel plan** on a plan card, cited per step, and refuses when nothing clears the relevance threshold **or when what did clear it does not answer the goal** (the groundedness gate, rule 10).
 - ✅ AI participates **inline**; **no side effects** (no publishing, no spend).
 - ✅ `design-system-frontend` tokens + core components (editorial house style, no slop).
 - ✅ **Flywheel v0:** approve / request-changes on a plan is captured in `feedback_events` as the first labelled data.
@@ -45,18 +45,20 @@
 >
 > Also worth carrying into Phase 2 rather than pretending it is finished:
 >
-> - The corpus is internally authored, so **nothing is externally cited yet**.
+> - ~~The corpus is internally authored, so nothing is externally cited yet.~~ **Closed.** A source registry, a guarded fetcher, page-hash change detection and a cadence re-crawl sweep put four externally-sourced documents beside the ten internal ones, each with a publisher, a URL and the date it was read. Recorded rather than glossed: three of the nine pages first registered answered `200` and stored site navigation rather than guidance, so the registry is hand-verified by reading what each entry stored, and two source families (US disclosure guidance, the EU) remain uncovered for reasons named in [rag-knowledge.md](../30-modules/rag-knowledge.md).
 > - The golden set is **15 cases**, which is small enough that its derived metrics (coverage, MRR) are indicative rather than precise, and whose four negatives are all business-formation topics far from the corpus in vocabulary. The retrieval threshold's safety margin is defended by those negatives, so growing them is a security task rather than a coverage one ([rag-knowledge.md](../30-modules/rag-knowledge.md), [ADR-0009](../40-adr/0009-local-reranker.md)).
 > - Plan latency now scales with the cores the AI service is given, since reranking runs in-process. Sizing that instance is a Phase 2 deployment decision, not an open question about whether it works.
 >
 > **Closed since this was written:** pgTAP RLS coverage now exists (`supabase/tests/rls_membership.sql`, 22 assertions, including that an expired node sees nothing at all), so rule 18's zero-coverage debt is paid for room-scoped membership. Thread-scoped membership and ops/admin paths remain uncovered, and threads do not exist yet.
+>
+> **Also closed, and it was the one item blocking Phase 2:** the **groundedness gate**. `rag-knowledge.md` recorded, as measured rather than suspected, that the rerank threshold ranks chunks within the corpus and cannot decide whether the corpus covers a question, so an in-vocabulary but uncovered goal cleared it on both providers by up to 12x. While Phase 1 is read-only that produces a bad answer; the moment a plan can spend money or publish, it produces a bad action. A cheap-tier check now sits between retrieval and generation, fails closed, and refuses with a reason distinct from "nothing retrieved". Its own set (`scope_negatives`) is scored by `--gate`, which is a credentialed pass rather than a CI gate, and which scores the false-refusal rate alongside the block rate so a gate cannot pass by refusing everything. **Measured 1.00 / 1.00** after a first run that scored 1.00 / 0.64 and refused the north-star goal, which is exactly what the two-sided measurement exists to catch.
 
 ## Phase 2 — Execution + Channels + Creative + Marketplace + Escrow
 
 **Goal:** Octopus actually _does_ the marketing, humans plug in, and it goes live.
 
 - Durable orchestration with human-in-the-loop waitpoints; idempotent/replay-safe steps; pg-boss utility jobs.
-- `business-projects-workflow`: task state machine, scheduler, router (AI/HUMAN/USER), replan-by-diff, maker-checker.
+- 🟡 `business-projects-workflow`: task state machine, scheduler, router (AI/HUMAN/USER), replan-by-diff, maker-checker. **Schema and guards are live** (`20260813120000`): `projects` / `tasks` / `task_deps` / `task_runs` / `events`, with the state machine and the DAG's acyclicity enforced by trigger rather than by the runner. Sequenced first on purpose, because both candidate durable runners drive this structure and neither defines it. Still to build: the scheduler and router themselves, and the step that turns an approved plan card into task rows.
 - `marketing-growth-engine`: **channel integrations** (paid ads incl. Meta/Google, social publishing, email, analytics) + **creative generation** (image/video/copy) as typed tools, all behind approval + spend guardrails.
 - `human-nodes-marketplace`: expert-marketer onboarding + KYC, skill/trust graph (creative, ads, SEO, video, outreach), ranked matching, offers with expiry/cascade.
 - `payments-billing`: escrow-equivalent holds, Connect Express payouts, double-entry ledger, spend caps in tool code; managed-ad-spend accounting.
