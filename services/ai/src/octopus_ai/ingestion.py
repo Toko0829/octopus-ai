@@ -188,8 +188,16 @@ class Ingestor:
         lang: str = "english",
         owner_room_id: str | None = None,
     ) -> IngestResult:
+        # The url is handed to `upsert_source` only for the shared corpus, where
+        # one source IS one page. A room's source row is the workspace, holding
+        # many documents under one label, so passing a url there would match a
+        # crawl row by address and let a workspace supersede a regulator's text
+        # by titling its own document the same thing. The document keeps the url
+        # either way, so a citation stays openable in both regimes.
         source_id = await self._db.upsert_source(
-            label=source_label, authority=authority, url=source_url
+            label=source_label,
+            authority=authority,
+            url=source_url if owner_room_id is None else None,
         )
 
         digest = content_hash(text, self._s.active_embed_model)
@@ -225,6 +233,12 @@ class Ingestor:
                 "effective_date": effective_date,
                 "content_hash": digest,
                 "version": version,
+                # The page THIS version was read from. On the document rather
+                # than only on the source, because one source row can hold many
+                # documents (every room source does), and a citation that
+                # borrowed a sibling's address would be a false one on the
+                # surface built for checking.
+                "source_url": source_url,
                 # Which workspace this belongs to, or None for the shared corpus.
                 # The chunk rows below deliberately do NOT carry it: the
                 # `doc_chunks_owner_sync` trigger copies it down, so a chunk can

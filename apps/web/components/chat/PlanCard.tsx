@@ -128,16 +128,35 @@ export function PlanCard({ embed, canAct, onAct }: Props) {
    * independent sources when it is one, which overstates how well corroborated
    * the plan is on the very surface meant to let a reader check it.
    *
-   * Grouped by document, keeping each chunk's reference number so a step citing
-   * [2] can still be traced. The numbers stay chunk-level; only the display is
-   * grouped.
+   * Grouped by document, and each one carries **how many excerpts it supplied**
+   * rather than the reference number of each.
+   *
+   * Those numbers used to be printed, justified as keeping a step citing `[2]`
+   * traceable. Nothing ever showed a bare `[2]`: a step renders its sources by
+   * name (see `Step` above), so the numbers were traceable to nothing and were
+   * only ever noise. That stayed invisible while the corpus was internal
+   * playbooks contributing two or three chunks apiece, and stopped being
+   * invisible when crawled pages started contributing sixteen: one document
+   * printed `[1]` through `[14]` across a whole line.
+   *
+   * The count replaces them because it is the thing a reader actually needs.
+   * "Grounded in 3 documents" is true and flattens a plan where one source
+   * supplied 14 of 18 excerpts and another supplied 1, which is the same
+   * overstatement-of-support this grouping already exists to prevent, arriving
+   * from the other direction.
    */
   const sourceDocuments = plan.citations.reduce<
-    { label: string; effectiveDate?: string | null; refs: number[] }[]
-  >((acc, citation, i) => {
+    { label: string; effectiveDate?: string | null; url?: string | null; excerpts: number }[]
+  >((acc, citation) => {
     const existing = acc.find((d) => d.label === citation.label);
-    if (existing) existing.refs.push(i + 1);
-    else acc.push({ label: citation.label, effectiveDate: citation.effectiveDate, refs: [i + 1] });
+    if (existing) existing.excerpts += 1;
+    else
+      acc.push({
+        label: citation.label,
+        effectiveDate: citation.effectiveDate,
+        url: citation.url,
+        excerpts: 1,
+      });
     return acc;
   }, []);
 
@@ -202,16 +221,46 @@ export function PlanCard({ embed, canAct, onAct }: Props) {
           {sourceDocuments.length === 1 ? '1 document' : `${sourceDocuments.length} documents`}
         </div>
         <div className="cites">
-          {sourceDocuments.map((doc) => (
-            <span
-              className="cite"
-              key={doc.label}
-              title={doc.effectiveDate ? `effective ${doc.effectiveDate}` : undefined}
-            >
-              <span className="dot" aria-hidden />
-              <span className="mono">{doc.refs.map((n) => `[${n}]`).join('')}</span> {doc.label}
-            </span>
-          ))}
+          {sourceDocuments.map((doc) => {
+            // Singular at one, because "1 excerpts" on a trust surface reads as
+            // something nobody proofread.
+            const excerpts = (
+              <span className="cite-count">
+                {doc.excerpts === 1 ? '1 excerpt' : `${doc.excerpts} excerpts`}
+              </span>
+            );
+            const dated = doc.effectiveDate ? `read ${doc.effectiveDate}` : undefined;
+
+            /* A source with a URL is rendered as a link, because the entire
+               value of a citation is that the reader can check it and until
+               crawled sources existed there was nothing to check: every
+               document was one only we held. Sources without a URL stay plain
+               text rather than being styled as dead links, since an affordance
+               that does nothing is worse than none. */
+            return doc.url ? (
+              <a
+                className="cite cite-link"
+                key={doc.label}
+                href={doc.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={dated}
+              >
+                <span className="dot" aria-hidden />
+                {doc.label} · {excerpts}
+                {/* Word plus icon, never colour alone (rule 15). */}
+                <span className="cite-external">
+                  <span aria-hidden>↗</span>
+                  <span className="sr-only">opens in a new tab</span>
+                </span>
+              </a>
+            ) : (
+              <span className="cite" key={doc.label} title={dated}>
+                <span className="dot" aria-hidden />
+                {doc.label} · {excerpts}
+              </span>
+            );
+          })}
         </div>
       </div>
 

@@ -5,7 +5,7 @@ violation is silent: a chunk that loses text, a boundary that splits mid-word, o
 a corpus document missing the metadata retrieval filters on.
 """
 
-from octopus_ai.corpus import load_corpus
+from octopus_ai.corpus import EXTERNAL_DIR, load_corpus
 from octopus_ai.ingestion import (
     MIN_CHARS,
     TARGET_CHARS,
@@ -133,6 +133,49 @@ class TestSeedCorpus:
 
     def test_seed_corpus_claims_no_external_authority(self):
         """These are internally authored. Attributing them to a regulator would
-        fabricate a citation, which is worse than having none."""
+        fabricate a citation, which is worse than having none.
+
+        Crawled pages are the other kind and live in `eval/external/`, asserted
+        below. Keeping them out of `corpus/` is what keeps this rule true rather
+        than something that had to be relaxed the first time a real source
+        arrived."""
         for doc in load_corpus():
             assert doc.authority == "internal", f"{doc.title} claims {doc.authority}"
+
+    def test_seed_corpus_carries_no_source_url(self):
+        """An internal playbook has no page to point at, and inventing one would
+        be the same fabrication from the other direction."""
+        for doc in load_corpus():
+            assert doc.source_url is None, f"{doc.title} claims to come from a page"
+
+
+class TestExternalSnapshots:
+    """Checked-in snapshots of crawled pages, seeded so the eval is deterministic.
+
+    In production these documents arrive from the crawl sweep. The ingestion path
+    is identical, which is what makes seeding them here honest rather than a
+    fixture that flatters the gate. What the files must not do is drift from the
+    registry, because document identity is `(source_id, title)` and the golden
+    set matches on title.
+    """
+
+    def test_every_snapshot_is_externally_attributed(self):
+        for doc in load_corpus(EXTERNAL_DIR):
+            assert doc.authority != "internal", f"{doc.title} is filed as our own writing"
+            assert doc.source_url, f"{doc.title} has no url, so its citation cannot be opened"
+            assert doc.source_url.startswith("https://"), f"{doc.title} has a non-https url"
+
+    def test_every_snapshot_records_when_it_was_read(self):
+        """The honest claim is when we saw the page, not when its publisher wrote
+        it, and a stale crawl should be visible rather than undated."""
+        for doc in load_corpus(EXTERNAL_DIR):
+            assert doc.effective_date, f"{doc.title} has no effective_date"
+
+    def test_every_snapshot_carries_retrieval_filters(self):
+        for doc in load_corpus(EXTERNAL_DIR):
+            assert doc.market, f"{doc.title} has no market"
+            assert doc.doc_type, f"{doc.title} has no doc_type"
+
+    def test_snapshots_chunk_into_something_retrievable(self):
+        for doc in load_corpus(EXTERNAL_DIR):
+            assert chunk_document(doc.body), f"{doc.title} produced no chunks"

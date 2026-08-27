@@ -447,6 +447,146 @@ export type RoomMember = z.infer<typeof RoomMember>;
 
 const RoomParams = z.object({ roomId: z.string().uuid() });
 
+/* --------------------------------------------------------------- workflow */
+
+/**
+ * What a plan became once it was approved: a project, its tasks, and what those
+ * tasks produced. These mirror the enums in `supabase/migrations/20260813120000_workflow_dag.sql`
+ * and `20260813160000_artifacts.sql` rather than restating a subset, because a
+ * client that silently drops a state it does not recognise shows a person a
+ * shorter project than they have.
+ */
+export const ProjectStatus = z.enum([
+  'draft',
+  'planning',
+  'active',
+  'paused',
+  'completed',
+  'cancelled',
+]);
+export type ProjectStatus = z.infer<typeof ProjectStatus>;
+
+export const TaskOwnerType = z.enum(['ai', 'human', 'user']);
+export type TaskOwnerType = z.infer<typeof TaskOwnerType>;
+
+/**
+ * The full per-task machine from business-projects-workflow.md, marketplace half
+ * included. Those states have no code behind them yet and are listed anyway: the
+ * machine is specified in full, and a union that omits them would reject a row
+ * the database can legally produce the day the matcher lands.
+ */
+export const TaskState = z.enum([
+  'pending',
+  'ready',
+  'routing',
+  'ai_running',
+  'ai_self_check',
+  'escalated',
+  'needs_user',
+  'matching',
+  'offered',
+  'claimed',
+  'escrow_funded',
+  'in_progress',
+  'proof_submitted',
+  'in_review',
+  'approved',
+  'payout_pending',
+  'paid',
+  'done',
+  'rejected',
+  'disputed',
+  'failed',
+  'cancelled',
+  'blocked',
+]);
+export type TaskState = z.infer<typeof TaskState>;
+
+export const ArtifactKind = z.enum(['draft', 'analysis', 'asset', 'proof', 'answer']);
+export type ArtifactKind = z.infer<typeof ArtifactKind>;
+
+/**
+ * What a task produced. `body` is inline text and `storagePath` is a file; a row
+ * always has one of the two, enforced by a check constraint, because an artifact
+ * with neither is a task that reported success and produced nothing.
+ *
+ * `citations` are document titles resolved at write time, not indices, so the
+ * checker can catch a source the maker was never given. An empty list is
+ * meaningful and is rendered as such: rule 10 says uncited work cannot pass as
+ * grounded.
+ */
+export const Artifact = z.object({
+  id: z.string().uuid(),
+  taskId: z.string().uuid(),
+  kind: ArtifactKind,
+  title: z.string().nullable(),
+  body: z.string().nullable(),
+  storagePath: z.string().nullable(),
+  citations: z.array(z.string()),
+  createdBy: AuthorKind,
+  createdAt: z.string(),
+});
+export type Artifact = z.infer<typeof Artifact>;
+
+/**
+ * One step of an approved plan. `ownerType` is what the planner proposed;
+ * `state` is where the router and the scheduler actually put it, and the two
+ * disagreeing is information rather than a bug (rule 1 of the router outranks
+ * `ownerType` for high-risk work).
+ */
+export const Task = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  title: z.string(),
+  detail: z.string().nullable(),
+  stage: z.string().nullable(),
+  ownerType: TaskOwnerType,
+  state: TaskState,
+  riskTier: TaskRiskTier,
+  position: z.number().int(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  /** What this step delivered. Empty while it has not run or has not passed review. */
+  artifacts: z.array(Artifact).default([]),
+});
+export type Task = z.infer<typeof Task>;
+
+/**
+ * A project as the list view needs it: enough to say what it is and how far it
+ * has got, without shipping every task body to render a row.
+ *
+ * `waitingOnYou` and `escalated` are counted out separately rather than left
+ * inside `states`, because they are the only two numbers that ask the reader to
+ * do something, and burying them in a map of twenty-three states is how a
+ * summary stops summarising.
+ */
+export const ProjectSummary = z.object({
+  id: z.string().uuid(),
+  goal: z.string(),
+  status: ProjectStatus,
+  createdAt: z.string(),
+  taskCount: z.number().int(),
+  /** Tasks in a terminal-good state (`approved`, `done`, `paid`). */
+  doneCount: z.number().int(),
+  waitingOnYou: z.number().int(),
+  escalated: z.number().int(),
+  artifactCount: z.number().int(),
+});
+export type ProjectSummary = z.infer<typeof ProjectSummary>;
+
+export const ProjectDetail = z.object({
+  id: z.string().uuid(),
+  goal: z.string(),
+  status: ProjectStatus,
+  createdAt: z.string(),
+  /** The room the project's plan card was posted in. Null only for legacy rows. */
+  roomId: z.string().uuid().nullable(),
+  tasks: z.array(Task),
+});
+export type ProjectDetail = z.infer<typeof ProjectDetail>;
+
+const ProjectParams = z.object({ projectId: z.string().uuid() });
+
 export const contract = c.router(
   {
     health: {
@@ -517,6 +657,30 @@ export const contract = c.router(
         404: ApiError,
       },
       summary: 'Current members of a room, with profile basics',
+    },
+
+    listProjects: {
+      method: 'GET',
+      path: '/rooms/:roomId/projects',
+      pathParams: RoomParams,
+      responses: {
+        200: z.object({ projects: z.array(ProjectSummary) }),
+        401: ApiError,
+        404: ApiError,
+      },
+      summary: 'Projects approved in a room, newest first, with progress counts',
+    },
+
+    getProject: {
+      method: 'GET',
+      path: '/projects/:projectId',
+      pathParams: ProjectParams,
+      responses: {
+        200: ProjectDetail,
+        401: ApiError,
+        404: ApiError,
+      },
+      summary: 'One project with its tasks and everything they produced',
     },
 
     listMessages: {

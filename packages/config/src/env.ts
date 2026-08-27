@@ -51,6 +51,30 @@ const EnvSchema = z.object({
    */
   TICK_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
 
+  /**
+   * Whether this deployment crawls the external source registry.
+   *
+   * **Off by default, and that default is the point.** The registry names real
+   * public pages at regulators and ad platforms. Every developer running the API
+   * locally would otherwise start requesting them on boot and again on every
+   * interval, which is a burst of pointless traffic aimed at somebody else's
+   * servers from an address that has no reason to be asking. One deployment
+   * crawls; laptops read what it ingested.
+   */
+  CRAWL_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
+  /**
+   * How many due sources one pass may fetch.
+   *
+   * Small on purpose. A pass already shares its lease with the DAG walk, and a
+   * sweep that fetched twenty pages would hold it while doing so. Sources come
+   * due on a cadence measured in days, so two per pass drains any backlog within
+   * minutes while never making this the slow part of a tick.
+   */
+  CRAWL_MAX_PER_TICK: z.coerce.number().int().positive().default(2),
+
   // Services.
   API_PORT: z.coerce.number().int().positive().default(3001),
   API_HOST: z.string().default('0.0.0.0'),

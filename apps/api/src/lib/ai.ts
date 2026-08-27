@@ -469,3 +469,90 @@ export async function requestSource(
     clearTimeout(timer);
   }
 }
+
+export interface IngestInput {
+  title: string;
+  text: string;
+  sourceLabel: string;
+  sourceUrl: string;
+  authority: 'official' | 'vendor' | 'research' | 'internal';
+  market?: string | null;
+  businessType?: string | null;
+  docType?: string | null;
+  /** ISO date. The day the page was read, which is the only date we can vouch for. */
+  effectiveDate?: string | null;
+  lang?: string;
+  agentRunId: string;
+}
+
+/**
+ * Hand the reasoning core a crawled page for the shared corpus.
+ *
+ * Deliberately a separate call from `requestSource` rather than a flag on it.
+ * That one is room-scoped and its metadata is fixed by the endpoint, because
+ * everything arriving there is somebody describing their own business. This one
+ * carries provenance the registry stated, and a body whose meaning depended on
+ * which optional fields happened to be set would be the worse of the two designs.
+ *
+ * Same budget as a room source and for the same reason: the cost is embedding
+ * work proportional to page length, and it runs inside the ticker's pass where
+ * nobody is watching a spinner.
+ */
+export async function requestIngest(
+  baseUrl: string,
+  input: IngestInput,
+  timeoutMs = DEFAULT_SOURCE_TIMEOUT_MS,
+): Promise<SourceResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${baseUrl}/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        title: input.title,
+        text: input.text,
+        source_label: input.sourceLabel,
+        source_url: input.sourceUrl,
+        authority: input.authority,
+        market: input.market ?? null,
+        business_type: input.businessType ?? null,
+        doc_type: input.docType ?? null,
+        effective_date: input.effectiveDate ?? null,
+        lang: input.lang ?? 'english',
+        trace: {
+          agent_run_id: input.agentRunId,
+          project_id: null,
+          // Shared corpus: no room owns a regulator's guidance, and sending one
+          // here would scope the document to whichever workspace happened to be
+          // in the log line.
+          room_id: null,
+        },
+      }),
+    });
+
+    if (!res.ok) throw new AiServiceError(`AI service returned ${res.status}`, 'status');
+
+    const parsed = SourceResponse.safeParse(await res.json());
+    if (!parsed.success) {
+      throw new AiServiceError(
+        `AI service response did not match the contract: ${parsed.error}`,
+        'contract',
+      );
+    }
+    return parsed.data;
+  } catch (err) {
+    if (err instanceof AiServiceError) throw err;
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new AiServiceError(`AI service timed out after ${timeoutMs}ms`, 'timeout');
+    }
+    throw new AiServiceError(
+      err instanceof Error ? err.message : 'AI service unreachable',
+      'unreachable',
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}

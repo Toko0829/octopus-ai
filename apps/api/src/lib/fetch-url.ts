@@ -132,6 +132,18 @@ export interface FetchedPage {
   url: string;
 }
 
+export interface FetchPageOptions {
+  /**
+   * Identify the crawler to the site being read.
+   *
+   * Only the scheduled sweep sets this. A page a person pasted is one request
+   * they asked for, and announcing ourselves there says nothing useful; a sweep
+   * returning to the same host on a cadence is a crawler, and a crawler that
+   * will not say who it is is one an operator can only block.
+   */
+  userAgent?: string;
+}
+
 const MAX_BYTES = 2_000_000;
 const TIMEOUT_MS = 15_000;
 
@@ -143,7 +155,10 @@ const TIMEOUT_MS = 15_000;
  * rather than from `content-length`, because a server is free to lie about that
  * or omit it.
  */
-export async function fetchPageText(raw: string): Promise<FetchedPage> {
+export async function fetchPageText(
+  raw: string,
+  options: FetchPageOptions = {},
+): Promise<FetchedPage> {
   const url = assertSafeUrl(raw);
 
   const controller = new AbortController();
@@ -155,7 +170,18 @@ export async function fetchPageText(raw: string): Promise<FetchedPage> {
       // No credentials, and a redirect chain is followed by fetch but every hop
       // lands back here as the final URL, which is re-vetted below.
       redirect: 'follow',
-      headers: { accept: 'text/html,text/plain' },
+      headers: {
+        accept: 'text/html,text/plain',
+        // Ask for English. Not cosmetic: a large site picks a language from the
+        // requesting IP when nothing says otherwise, and the first crawl stored a
+        // Facebook page as a menu in Georgian because that is where the machine
+        // running it happened to be. A corpus whose language depends on where the
+        // crawler sits is a corpus nobody can reason about, and the row would
+        // still have claimed `lang: english`, so the sparse index would have been
+        // built with the wrong text-search configuration on top of it.
+        'accept-language': 'en',
+        ...(options.userAgent ? { 'user-agent': options.userAgent } : {}),
+      },
     });
 
     if (!res.ok) {

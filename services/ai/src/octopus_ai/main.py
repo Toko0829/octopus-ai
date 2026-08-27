@@ -29,6 +29,7 @@ from .providers import Providers
 from .retrieval import Retriever
 from .schemas import (
     ExecuteRequest,
+    IngestRequest,
     IntakeRequest,
     IntakeResponse,
     PlanRequest,
@@ -348,7 +349,12 @@ async def add_source(request: SourceRequest) -> SourceResponse:
         # would be exactly that.
         authority="vendor",
         doc_type="user-source",
-        source_url=None,
+        # Stored on the document, so a citation drawn from a page the workspace
+        # pointed us at can be opened. It reaches `knowledge_sources.url` for
+        # nobody: `ingest` passes `url=None` to `upsert_source` whenever a room
+        # owns the document, deliberately, because the source row here is the
+        # workspace rather than the page.
+        source_url=request.source_url,
         owner_room_id=request.room_id,
     )
 
@@ -359,6 +365,87 @@ async def add_source(request: SourceRequest) -> SourceResponse:
             "document_id": result.document_id,
             "chunks": result.chunks_written,
             "skipped": result.skipped_unchanged,
+        },
+    )
+
+    return SourceResponse(
+        document_id=result.document_id,
+        chunks_written=result.chunks_written,
+        skipped_unchanged=result.skipped_unchanged,
+        superseded=result.superseded,
+    )
+
+
+@app.post("/ingest", response_model=SourceResponse, tags=["knowledge"])
+async def ingest_document(request: IngestRequest) -> SourceResponse:
+    """Ingest one crawled page into the shared reference corpus.
+
+    **The gap this closes was written down as a gap.** `README.md` listed the
+    crawlers and the freshness pipeline under "not built, and not claimed", and
+    the consequence it named is the one that matters: the corpus was ten
+    internally-authored documents, so nothing the agent cited could be checked by
+    the person reading it. A citation whose whole value is that a reader can
+    follow it, pointing at a document only we have, is a citation in form only.
+
+    **Node crawls, this ingests.** Outbound HTTP lives in `apps/api`, where the
+    SSRF guard, the size cap, the timeout and the redirect re-vetting already are
+    (`fetch-url.ts`), and where the sweep can hold the ticker's lease. This
+    service reaches Postgres and model providers and nothing else, which is what
+    makes "no database client, no outbound fetcher" a checkable property rather
+    than a convention. So the split is not tidiness: it keeps the reasoning core
+    unable to reach anything a prompt could name.
+
+    **It trusts the caller for metadata and nothing else.** `authority`, `market`
+    and `doc_type` come from a checked-in registry rather than being inferred
+    from the URL, because whether a page is authoritative is an editorial call
+    and deriving it from a hostname is how a vendor blog becomes a regulator. The
+    text itself is untrusted (rule 8) and travels the same delimited SOURCES
+    block as everything else.
+
+    **Unchanged pages are cheap twice over.** Node compares a hash of the fetched
+    text before calling here at all, and if it does call, `Ingestor.ingest`
+    compares its own hash (which folds in the chunker version and the embedding
+    model) and returns without re-embedding. The two exist for different
+    reasons: Node's saves the HTTP round trip and the CPU, ours notices when the
+    page is identical but the way we would index it is not.
+    """
+    logger.info(
+        "crawled document submitted",
+        extra={
+            "agent_run_id": request.trace.agent_run_id,
+            "source_url": request.source_url,
+            "authority": request.authority,
+            "chars": len(request.text),
+        },
+    )
+
+    assert state.settings and state.db and state.providers  # set in lifespan
+
+    ingestor = Ingestor(state.settings, state.db, state.providers)
+    result = await ingestor.ingest(
+        text=request.text,
+        title=request.title,
+        source_label=request.source_label,
+        authority=request.authority,
+        source_url=request.source_url,
+        market=request.market,
+        business_type=request.business_type,
+        doc_type=request.doc_type,
+        effective_date=request.effective_date,
+        lang=request.lang,
+        # Shared corpus. Every room retrieves this, which is the whole point:
+        # what a regulator publishes is not one workspace's private knowledge.
+        owner_room_id=None,
+    )
+
+    logger.info(
+        "crawled document ingested",
+        extra={
+            "source_url": request.source_url,
+            "document_id": result.document_id,
+            "chunks": result.chunks_written,
+            "skipped": result.skipped_unchanged,
+            "superseded": result.superseded,
         },
     )
 

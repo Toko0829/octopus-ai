@@ -45,7 +45,7 @@
 >
 > Also worth carrying into Phase 2 rather than pretending it is finished:
 >
-> - The corpus is internally authored, so **nothing is externally cited yet**.
+> - ~~The corpus is internally authored, so nothing is externally cited yet.~~ **Closed.** A source registry, a guarded fetcher, page-hash change detection and a cadence re-crawl sweep put four externally-sourced documents beside the ten internal ones, each with a publisher, a URL and the date it was read. Recorded rather than glossed: three of the nine pages first registered answered `200` and stored site navigation rather than guidance, so the registry is hand-verified by reading what each entry stored, and two source families (US disclosure guidance, the EU) remain uncovered for reasons named in [rag-knowledge.md](../30-modules/rag-knowledge.md).
 > - The golden set is **15 cases**, which is small enough that its derived metrics (coverage, MRR) are indicative rather than precise, and whose four negatives are all business-formation topics far from the corpus in vocabulary. The retrieval threshold's safety margin is defended by those negatives, so growing them is a security task rather than a coverage one ([rag-knowledge.md](../30-modules/rag-knowledge.md), [ADR-0009](../40-adr/0009-local-reranker.md)).
 > - Plan latency now scales with the cores the AI service is given, since reranking runs in-process. Sizing that instance is a Phase 2 deployment decision, not an open question about whether it works.
 >

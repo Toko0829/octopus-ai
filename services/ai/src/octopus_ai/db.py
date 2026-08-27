@@ -175,9 +175,33 @@ class Database:
     # ------------------------------------------------------------- ingestion --
 
     async def upsert_source(self, *, label: str, authority: str, url: str | None = None) -> str:
-        existing = await self._request(
-            "GET", "/rest/v1/knowledge_sources", params={"select": "id", "label": f"eq.{label}"}
+        """Find or create the source row a document hangs off.
+
+        **Matched by url when there is one, by label otherwise, and the two are
+        not interchangeable.** `knowledge_sources_url_idx` is unique on url, so a
+        crawled page is one row and matching it by label would try to insert a
+        second and hit that index. Room sources are the opposite case: one row
+        per workspace holding many documents, deliberately, because document
+        identity is `(source_id, title)` and a shared row would let two
+        workspaces that both title something "Our product" supersede each other.
+
+        The caller decides which regime it is in by passing a url or not.
+        `Ingestor.ingest` passes one only when nothing owns the document, so a
+        person pasting a regulator's URL into their own workspace cannot attach
+        their document to the crawl source row and start superseding the
+        regulator's text.
+
+        **An existing row is returned, never updated.** The crawl sweep in Node
+        owns `authority`, `crawl_cadence`, `last_crawled` and `content_hash` on
+        these rows; a second writer here would mean two components disagreeing
+        about the freshness state of the same source.
+        """
+        params = (
+            {"select": "id", "url": f"eq.{url}"}
+            if url
+            else {"select": "id", "label": f"eq.{label}"}
         )
+        existing = await self._request("GET", "/rest/v1/knowledge_sources", params=params)
         if existing:
             return existing[0]["id"]
         created = await self._request(

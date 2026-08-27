@@ -6,7 +6,7 @@
 >
 > Update on any change to the monorepo layout, deployment, CI/CD, secrets, or the doc-drift check.
 >
-> **Implementation status (Phase 0):** scaffolded — Turborepo + pnpm workspaces, `.github/workflows/ci.yml`, and the working `scripts/check-docs.mjs` doc-drift check. See [DEVELOPMENT.md](../../DEVELOPMENT.md).
+> **Implementation status (Phase 2, in progress):** Turborepo + pnpm workspaces, `.github/workflows/ci.yml`, and the working `scripts/check-docs.mjs` doc-drift check, all from Phase 0. Since then: a `test` step (vitest in `packages/core` and `apps/api`) alongside the Python `ai` job, the retrieval `eval` job sharded five ways behind a scope check, an `ai-image` job publishing the reasoning core to GHCR, Dockerfiles for all three services and a root `docker-compose.yml`. Not built: review apps per PR, OpenAPI + ts-rest client regeneration, and the Ragas/DeepEval generation gate. See [DEVELOPMENT.md](../../DEVELOPMENT.md).
 
 ## Monorepo layout
 
@@ -38,6 +38,53 @@ supabase/       migrations, RLS policies, seed, edge functions
 - Trigger.dev → Cloud first, self-host on Fly.io later.
 - Supabase → managed cloud.
 - **Region co-location** near the launch cohort to minimize Postgres/Realtime latency.
+
+### All three services run under one compose file
+
+`docker-compose.yml` at the repo root stands up `web`, `api` and `ai` on one
+network: `docker compose up --build`, then <http://localhost:3000>. Postgres is
+absent on purpose, since Supabase is managed and every service reaches it over
+the internet, so there is nothing local to stand up.
+
+**The two Node images build from the repo root and the Python one does not**,
+which looks inconsistent and is the same rule applied twice. `apps/web` and
+`apps/api` depend on workspace packages through `workspace:*`, and pnpm resolves
+those through the root lockfile, so a narrower context cannot install them.
+`services/ai` is outside the pnpm graph by [ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)
+and needs nothing from it, so its context is its own directory and a root context
+would ship `node_modules` to the daemon for no reason. A root `.dockerignore`
+keeps the Node context from carrying `node_modules`, `.git` and the AI service's
+2.5 GB virtualenv.
+
+**Credentials come from `apps/api/.env`, read rather than copied**, so there is
+no second file holding a service key. The `ai` service is deliberately given that
+file and **not** `services/ai/.env`: the API file holds credentials, which is all
+the container lacks, while the AI file holds `EMBED_LOCAL_PATH` and
+`RERANK_LOCAL_PATH` pointing at a developer's Hugging Face cache, and passing
+those in would override the image's own baked paths with directories that do not
+exist inside it. Same identity-versus-location split [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)
+draws, reaching a different surface.
+
+**`api` waits on the reasoning core's healthcheck, not on its process.** That
+service warms its embedder before it serves, so "started" and "ready" are minutes
+apart, and an agent run into that gap fails in a way that reads as a broken
+service rather than a cold one.
+
+**Memory is the constraint that decides whether this works at all.** Measured on
+the running stack: `ai` peaks at **5.3 GiB** with both models resident, `api` and
+`web` take about 130 MiB each, so the three together sit near **5.6 GiB** and run
+on a 7.6 GB Docker VM with headroom. That is below the 8 GB deployment floor
+recorded for the service on its own, which is not a contradiction: the floor is
+sized for a production instance rather than for the smallest VM that will boot
+it. Below roughly 6.5 GB the container is killed while warming the embedder,
+before it ever serves, with no error of its own. The reranker loads lazily, so
+the container sits near 3.7 GiB until the first goal is planned and then jumps,
+which means a stack that looks fine at startup can still be too tight for work. Two things worth knowing at build time:
+`next build` needs `apps/web/.env.local` present, because `NEXT_PUBLIC_*` values
+are inlined into the browser bundle then rather than read at run time, which is
+the exact opposite of what CI wants and both are correct for what they test; and
+both Node images copy `tsconfig.base.json` alongside the manifests, since both
+apps' tsconfigs extend it and its absence fails as `TS5083` during `next build`.
 
 ### `services/ai` has a container, and it is sized by measurement rather than guess
 
@@ -83,6 +130,25 @@ Supabase CLI; one concern per migration; RLS policy + pgTAP test land **with** t
 ## Secrets & env
 
 Doppler/Infisical; **Zod-validated env schema** (`packages/config`); no secrets in the repo or client bundle; `service_role` server-only.
+
+`packages/config/**` finally has a `.docmeta.yml` mapping, owned by this doc. The
+file's own rule at the top says every path under `packages/**` must match an
+entry, and this one never did, so the env schema could change with no doc
+obliged to notice. That matters more than a tidy-up: a new key there is usually a
+deployment decision, and `CRAWL_ENABLED` is the case that proved it.
+
+### Only one deployment crawls
+
+`CRAWL_ENABLED` (default **off**) and `CRAWL_MAX_PER_TICK` (default 2) control the
+external-source sweep the ticker runs. Off by default because the registry names
+real public pages at regulators and ad platforms: a dozen developers each running
+the API locally would otherwise fetch them on boot and again on every interval,
+which is a burst of pointless traffic aimed at somebody else's servers from
+addresses that have no reason to be asking. One deployment crawls; everything
+else reads what it ingested. The cap is small because the sweep shares the
+ticker's claim with the DAG walk, and sources come due on a cadence measured in
+days, so two per pass drains a backlog within minutes without ever making this
+the slow part of a tick.
 
 ## Durable-orchestration deployment
 

@@ -46,6 +46,44 @@
 >
 > **Durable, and on Postgres rather than on a vendor** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md), amending ADR-0001). Trigger.dev was the Phase 0 pin and stayed blocked on credentials for the length of the project, while two later decisions quietly removed the problem it solves: ADR-0006 left **no continuation to preserve**, since the reasoning core is stateless and Node commits each step, and `20260813120000` put the state machine under trigger enforcement in the database. A run's progress is rows, so a crash loses a worker rather than a run. What was actually missing was narrow and is now built: a lease on `task_runs` so a dead worker is distinguishable from a slow one, a reclaim sweep, and a ticker holding a single claim. **A human waitpoint needed nothing at all**: a task in `escalated` or `needs_user` waits in a row at zero compute for as long as it takes, which is the property a durable engine sells and this architecture gets by construction. Verified: 11 API assertions plus a Realtime probe confirming the agent's message is broadcast to a subscribed member.
 
+## Crawled sources (`POST /ingest`)
+
+The shared-corpus counterpart to `/sources`. `apps/api` fetches a registered page
+and hands over the text; this service chunks, embeds and supersedes it exactly as
+it does anything else. Four external documents are live and the corpus now carries
+a real publisher, a real URL and a read date on 42 of its 85 chunks.
+
+**Why the split is a second endpoint rather than a flag.** `/sources` is
+room-scoped and fixes its own label, authority and doc type, because everything
+arriving there is a person describing their own business. A crawled regulator page
+is a different trust claim with different metadata, and a request body whose
+meaning depends on which optional fields are set is how two trust models end up
+tangled in one handler.
+
+**It trusts the caller for provenance and for nothing else.** `authority`,
+`market` and `doc_type` come from a checked-in registry rather than being derived
+from the URL, because whether a page is authoritative is an editorial judgement
+and inferring it from a hostname is how a vendor blog becomes a regulator. The
+text itself is untrusted (rule 8) and travels the same delimited SOURCES block as
+the rest of the corpus. Unlike a room source there is no per-room blast radius,
+which is exactly why the registry is an allow-list nobody can add to at runtime.
+
+**`upsert_source` keys on url here and on label there**, and that asymmetry is
+load-bearing. `knowledge_sources` is unique on url, so a crawled page is one row.
+A workspace is one row holding many documents, so if its row were keyed by url,
+somebody pasting a regulator's URL into their workspace would attach their
+document to the regulator's source and, since identity is `(source_id, title)`,
+supersede the regulator's text by reusing the title. `Ingestor.ingest` passes a
+url to `upsert_source` only when nothing owns the document. The document keeps
+its url in both regimes, so a citation stays openable either way.
+
+**Fetching is not here, and that is the property rather than the arrangement.**
+This service holds the secret key and reaches Postgres and model providers and
+nothing else. A general-purpose fetcher inside it would widen exactly the
+component that must not be reachable from a prompt. The guard, the size cap, the
+timeout and the redirect re-vetting all live in `apps/api/src/lib/fetch-url.ts`
+alongside the sweep that schedules them.
+
 ## Sources a workspace supplies (`POST /sources`)
 
 `services/ai` ingests one document about the user's own business, scoped to their room, and `/plan` and `/execute` now pass that room into retrieval so it is blended with the shared corpus.
@@ -111,6 +149,26 @@ Both are arithmetic in code. The model is asked only for per-item judgements: wh
 `COVERED_STAGES` is imported from `decompose.py` rather than restated, because a second list of which stages have documents would drift the first time one is ingested.
 
 **Requirements scale with breadth, and a narrow request requires nothing.** That is the important half: "my CPA on paid social is too high" is already answerable, and interrogating someone who asked a precise question is how an intake step becomes the reason people stop using the product. The breadth test is the one decomposition already uses and which was measured there. A whole-funnel request requires ICP, offer, target metric and budget band; timeline is collected when offered and never blocks.
+
+**An empty stage list meant two opposite things, and telling a customer the wrong one is a false statement about what this product does.** Found by driving the product: "audit my websites SEO" came back `out_of_domain`, told the person it sat outside what we have sources for, and the corpus holds a document on early-stage SEO. "improve my SEO" scored proximity 0.75 against the same corpus and planned. One diagnostic verb was the whole difference.
+
+`proximity` divides covered stages by touched stages and returns 0.0 when nothing is touched, so `near == 0.0` was true both when the model named stages of which none are covered, which is a finding about the request, and when it named no stage at all, which is the model failing to classify. Only the first says anything about the domain.
+
+**Third occurrence in this module of absent being read as zero**, after "the model returned no questions" being read as "nothing left to ask", and after `is_request` had to be split from scope on exactly this argument. So the split is the same one again: `in_domain` is asked as its own per-item question, and the three answers are distinct. Not a request. A request from another field. A marketing request the stage judgement failed on, which **degrades to the path that existed before intake** rather than declining, because passing through grants nothing and the groundedness gate is the check qualified to answer whether the corpus supports it.
+
+The prompt was the other half. Its `touched` rule ended "do not stretch to find a marketing reading of it", added to stop "help me open a cafe" marking every stage, and all three worked examples were about whether a **venture** eventually needs marketing. None covered diagnosing a channel the person already has, so an audit read as a technical job. It now says plainly that auditing, reviewing, checking or fixing an existing marketing surface is work in that surface's stage.
+
+Measured against the live service, both directions, because a fix that only loosens is not a fix:
+
+| goal                            | before          | after                             |
+| ------------------------------- | --------------- | --------------------------------- |
+| audit my websites SEO           | `out_of_domain` | `ready`, channels, proximity 1.00 |
+| review my landing page          | not measured    | `ready`, conversion               |
+| why are my ads not converting   | not measured    | `ready`, 2 stages                 |
+| help me open a cafe in Austin   | `out_of_domain` | `out_of_domain`                   |
+| fix the bug in my python script | not measured    | `out_of_domain`                   |
+
+**What it does not fix, and this is the honest half.** With intake out of the way, `audit SEO for my website` reaches the groundedness gate and is refused as `refusing-ungrounded-v1`, while `get more organic search traffic` returns a full cited plan. That is the gate working, not a second bug: the corpus teaches how to **do** early-stage SEO and contains nothing about auditing an existing site, and a workspace source describing the business is not the same as having crawled its pages. The refusal is now specific and correct where it used to be a false claim about scope.
 
 **Four outcomes, because two were not enough and the shortfall was visible on the first surface anyone touches.** The first version had a single `out_of_scope`, and "Hello" came back as "what you have described sits outside full-funnel digital marketing". A greeting is not a request that is out of scope. It is not a request.
 

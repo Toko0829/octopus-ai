@@ -58,10 +58,12 @@ def _payload(
     questions: list[dict] | None = None,
     refined: str = "",
     is_request: bool = True,
+    in_domain: bool = True,
 ) -> str:
     return json.dumps(
         {
             "is_request": is_request,
+            "in_domain": in_domain,
             "slots": slots or [],
             "stages": [{"stage": s, "touched": s in (touched or [])} for s in ALL_STAGES],
             "questions": questions or [],
@@ -253,8 +255,12 @@ async def test_a_real_request_from_another_field_is_out_of_domain_not_small_talk
 
     Kept apart from `not_a_request` because the reply differs: this one has to name
     what is not on offer, where a greeting only needs a question.
+
+    **`in_domain` is what carries this, not the empty stage list.** Until it
+    existed the two were one branch, and the branch was wrong: see the SEO case
+    below, where an empty stage list meant the opposite thing.
     """
-    providers = StubProviders(_payload(touched=[], is_request=True))
+    providers = StubProviders(_payload(touched=[], is_request=True, in_domain=False))
     out = await run_intake(_request("help me open a cafe in Austin"), providers)
 
     assert out.outcome == "out_of_domain"
@@ -262,6 +268,55 @@ async def test_a_real_request_from_another_field_is_out_of_domain_not_small_talk
     assert out.questions == []
     assert out.proximity == 0.0
     assert out.core == "intake-out-of-domain-v1"
+
+
+async def test_a_marketing_request_with_no_stage_named_proceeds_rather_than_declining():
+    """An empty stage list means two opposite things, and only `in_domain` separates them.
+
+    Found by driving the product. "audit my websites SEO" came back with zero
+    stages and was told it sat outside what we have sources for, while "improve my
+    SEO" scored proximity 0.75 and planned, **against the same corpus**, which
+    holds a document on early-stage SEO. One diagnostic verb was the whole
+    difference, and the reply was a false statement to a customer about what this
+    product covers.
+
+    Proceeding is the safe direction rather than the lenient one: the groundedness
+    gate still runs on the plan path, and it is the check with measured numbers
+    behind it. Declining here is the only irrecoverable answer.
+
+    Third occurrence in this module of absent being read as zero, after "no
+    questions returned" being read as "nothing left to ask".
+    """
+    providers = StubProviders(_payload(touched=[], is_request=True, in_domain=True))
+    out = await run_intake(_request("audit my websites SEO"), providers)
+
+    assert out.outcome == "ready"
+    assert out.ready is True
+    assert out.questions == []
+    # Passthrough carries the person's own words, since the model named no stage
+    # to refine against.
+    assert out.refined_goal == "audit my websites SEO"
+
+
+async def test_a_missing_in_domain_is_read_as_in_domain():
+    """A schema slip is not a finding about the customer's request.
+
+    Same direction `is_request` defaults in, and for the same reason: the model
+    omitting a field must not be the thing that tells somebody we do not cover
+    their question.
+    """
+    raw = json.dumps(
+        {
+            "is_request": True,
+            "slots": [],
+            "stages": [{"stage": s, "touched": False} for s in ALL_STAGES],
+            "questions": [],
+            "refined_goal": "",
+        }
+    )
+    out = await run_intake(_request("audit my websites SEO"), StubProviders(raw))
+
+    assert out.outcome == "ready"
 
 
 async def test_a_narrow_goal_goes_straight_through_without_questions():

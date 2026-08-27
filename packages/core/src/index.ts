@@ -38,6 +38,8 @@ export {
 export {
   tick,
   summarise,
+  dispatchRouted,
+  retryTask,
   type SchedulerPorts,
   type TickOutcome,
   type TickReport,

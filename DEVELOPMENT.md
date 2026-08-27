@@ -69,6 +69,47 @@ pnpm ai:test
 
 ## Running the whole thing
 
+Two ways. Compose if you want it running; three terminals if you want to edit it.
+
+### All three in Docker
+
+```bash
+docker compose up --build
+```
+
+Then <http://localhost:3000>. The API is published on `:3011` and the reasoning
+core on `:8000`, so both can be probed directly while testing. Credentials are
+read from `apps/api/.env`, which is the file that already holds them, so there is
+nothing extra to create.
+
+**Memory is the one setting that decides whether this works.** Measured on the
+running stack rather than inherited from the service's own 8 GB deployment floor:
+`ai` peaks at **5.3 GiB** once the reranker has loaded on first use, `api` and
+`web` take about 130 MiB each, so the whole stack sits near **5.6 GiB**. It runs
+comfortably on a 7.6 GB Docker VM. Below roughly 6.5 GB it will not, and the
+failure is worth recognising because it names nothing: the container is killed
+while warming the embedder, before it ever serves, so it looks like a crash with
+no error of its own. On Docker Desktop the setting is Settings, Resources, Memory.
+
+Note the reranker is **lazy**, so the AI container sits around 3.7 GiB until the
+first goal is planned and then jumps. A stack that looked fine at startup can
+still be too tight for real work.
+
+**The first `up` is slow and then it is not.** The reasoning core's image bakes
+~4.6 GB of model weights, and the web image runs a full `next build`. Afterwards
+the weights layer is cached and only source layers rebuild.
+
+Two things compose does that three terminals do not, both deliberate. `api` waits
+on the reasoning core's **healthcheck** rather than on its process, because that
+service warms its embedder before it serves and "started" and "ready" are minutes
+apart. And `AI_SERVICE_URL` is overridden to `http://ai:8000`, since a service
+name is a fact about that network rather than about your machine.
+
+Compose is for running the thing. It does not hot-reload, so editing is still the
+three-terminal path below.
+
+### Three terminals
+
 Three processes, one per terminal, all from the repo root:
 
 | Terminal | Command                          | Serves                                    |

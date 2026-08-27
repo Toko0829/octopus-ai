@@ -96,6 +96,7 @@ give advice.
 
 Return JSON:
 {"is_request": bool,
+ "in_domain": bool,
  "slots": [{"key": str, "value": str, "source": "stated"|"inferred"}],
  "stages": [{"stage": str, "touched": bool}],
  "questions": [{"slot": str, "question": str}],
@@ -116,6 +117,30 @@ what we can serve is decided from the stages below, not here.
 
 When `is_request` is false, return empty `slots`, empty `questions`, every stage
 false, and `refined_goal` "". There is nothing yet to extract.
+
+IN_DOMAIN. Is this request about marketing or growth at all?
+
+This is a separate question from which stages it touches, and it is asked
+separately because the two failures look identical and are not. A request from
+another field touches no stage because it is not marketing. A marketing request
+can also come back touching no stage because the stages were judged too
+strictly, and those must not produce the same answer: telling somebody their
+marketing question is outside what we cover is a false statement.
+
+Set it FALSE only when the request is genuinely about something else: opening a
+business, hiring staff, permits and premises, bookkeeping, writing software,
+personal matters. "Help me open a cafe in Austin" is false.
+
+Set it TRUE for anything about finding, reaching, convincing or keeping
+customers, and for anything about a marketing surface the person already has.
+**Diagnosing counts as marketing work.** "Audit my SEO", "review my landing
+page", "why are my ads not converting", "check my email list" are all TRUE: they
+are asking for work on a marketing channel, not for a technical inspection of
+something unrelated.
+
+When in doubt, TRUE. Being wrong here costs one poorly-scoped plan, which the
+groundedness gate downstream will refuse if the corpus cannot support it. Being
+wrong the other way tells a customer we do not cover something we do.
 
 SLOTS. Fill only these keys, and only when there is something to fill:
 - icp: who the product is for
@@ -145,8 +170,15 @@ for my cafe" is asking for marketing, and touches most of the funnel.
 - A request naming only an OUTCOME ("get my first 100 customers", "launch my app")
   touches every stage that could plausibly contribute, because they are asking for
   the whole plan rather than one fix.
+- A request to AUDIT, REVIEW, CHECK, FIX or IMPROVE an existing marketing
+  surface touches the stage that surface lives in. "Audit my SEO" is asking for
+  work on organic search, so it touches channels. "Review my landing page"
+  touches conversion. Diagnosing a channel is work in that channel, and treating
+  it as a technical job outside marketing is the mistake this line exists to
+  stop.
 - A request that is not about marketing at all touches NOTHING. Mark every stage
-  false. Do not stretch to find a marketing reading of it.
+  false. That is the `in_domain: false` case above, and it is the only reason to
+  return no stages for a real request.
 
 QUESTIONS. Write one question for each slot you could NOT fill. Write it as a
 question, short, plain, and answerable in a sentence. Do not ask for anything
@@ -257,6 +289,7 @@ def select_questions(
 @dataclass(frozen=True)
 class ParsedIntake:
     is_request: bool
+    in_domain: bool
     slots: list[IntakeSlot]
     stages: list[str]
     questions: list[IntakeQuestion]
@@ -480,8 +513,17 @@ def parse_intake(raw: str) -> ParsedIntake:
     raw_is_request = data.get("is_request")
     is_request = raw_is_request if isinstance(raw_is_request, bool) else True
 
+    # Absent means in domain, which is the permissive direction on purpose and
+    # for the same reason `is_request` defaults to true: a missing field is the
+    # model departing from the schema, and a schema slip must not be read as a
+    # finding about the customer's request. Passing through grants nothing, since
+    # the groundedness gate still refuses what the corpus cannot support.
+    raw_in_domain = data.get("in_domain")
+    in_domain = raw_in_domain if isinstance(raw_in_domain, bool) else True
+
     return ParsedIntake(
         is_request=is_request,
+        in_domain=in_domain,
         slots=slots,
         stages=stages,
         questions=questions,
@@ -607,6 +649,33 @@ async def run_intake(
     # not on offer BEFORE asking what else there might be. Asking first and
     # declining later would be keeping someone talking.
     #
+    # **No stage named, but the request IS about marketing.** These were one
+    # branch, and collapsing them shipped a false statement: "audit my websites
+    # SEO" came back with zero stages and was told it sat outside what we have
+    # sources for, while "improve my SEO" scored 0.75 and planned, against the same
+    # corpus, which holds a document on early-stage SEO. One diagnostic verb was
+    # the whole difference.
+    #
+    # `proximity` returns 0.0 for two unrelated things: stages named of which none
+    # are covered, which is a finding about the request, and no stage named at all,
+    # which is the model failing to classify. Only `in_domain` can tell them apart,
+    # which is why it is asked as its own per-item question rather than inferred
+    # from the stage list.
+    #
+    # **Third time this module has confused absent with zero**, after "no questions
+    # returned" being read as "nothing left to ask", and after `is_request` had to
+    # be split from scope for exactly this shape of reason. So it degrades the way
+    # every other intake failure degrades, to the path that existed before intake.
+    # Nothing is granted by it: the groundedness gate still runs on the plan path
+    # and is the check qualified to answer whether the corpus can support this.
+    if not touched and parsed.in_domain:
+        logger.warning(
+            "intake named no funnel stage for an in-domain request; proceeding "
+            "rather than declining. goal=%r",
+            " ".join(request.goal.split())[:120],
+        )
+        return _passthrough(request, "in domain, but the model named no funnel stage")
+
     # This blocks and never authorises. Non-zero proximity says only that a request
     # is in the right field, which is exactly the property the measured leaks in
     # `rag-knowledge.md` also have, so it cannot stand in for the groundedness gate

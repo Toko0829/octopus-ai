@@ -408,7 +408,12 @@ class SourceRequest(BaseModel):
     text: str = Field(min_length=1, max_length=120_000)
     source_url: str | None = Field(
         default=None,
-        description="Where the text came from, when it was fetched from a page. Display only.",
+        description=(
+            "Where the text came from, when it was fetched from a page. Stored on the "
+            "document and returned with every citation drawn from it, so a reader can "
+            "open the thing being cited. It was accepted and discarded until "
+            "20260827101000 gave documents a URL of their own."
+        ),
     )
     trace: TraceContext
 
@@ -429,3 +434,69 @@ class SourceResponse(BaseModel):
             "it while the audit trail keeps it."
         )
     )
+
+
+class IngestRequest(BaseModel):
+    """Ingest one crawled document into the SHARED reference corpus.
+
+    The caller is the crawl sweep in `apps/api`, which owns outbound HTTP because
+    this service talks to Postgres and to model providers and to nothing else
+    (architecture.md). Node fetches, guards the URL, and decides the page changed;
+    this endpoint does the part that needs the embedder.
+
+    **Deliberately not `/sources`.** That one is room-scoped and hardcodes its
+    label, authority and doc type, because everything arriving there is a person
+    describing their own business. A crawled regulator page is a different trust
+    claim with different metadata, and overloading one endpoint would mean a
+    request body whose meaning depends on which fields happen to be set.
+
+    SECURITY: `text` is whatever a page said. It is DATA, not instructions
+    (rule 8), and it reaches a prompt only inside the delimited SOURCES block the
+    rest of the corpus travels in. Unlike a room source it is *shared*, so there
+    is no per-room blast radius here: the registry in `crawl-registry.ts` is the
+    control, and it is a checked-in allow-list rather than anything a user names.
+    """
+
+    title: str = Field(
+        min_length=1,
+        max_length=200,
+        description=(
+            "Stable across re-crawls. Document identity is (source_id, title), so a "
+            "title that drifts orphans the previous version as still-in-force instead "
+            "of superseding it. It is also the key the eval golden set matches on."
+        ),
+    )
+    text: str = Field(min_length=1, max_length=200_000)
+    source_label: str = Field(min_length=1, max_length=200)
+    source_url: str = Field(
+        min_length=1,
+        max_length=2_000,
+        description=(
+            "Required here, unlike on a room source. A crawled document exists "
+            "because a page does, and a citation nobody can open is the thing this "
+            "whole path was built to stop."
+        ),
+    )
+    authority: Literal["official", "vendor", "research", "internal"] = Field(
+        description=(
+            "Mirrors public.source_authority. Stated by the registry rather than "
+            "inferred from the URL: whether a page is authoritative is an editorial "
+            "judgement, and guessing it from a hostname is how a vendor blog becomes "
+            "a regulator."
+        )
+    )
+    market: str | None = Field(
+        default=None,
+        description="Unambiguous key, e.g. 'US', 'UK', 'EU'. Never generalised across borders.",
+    )
+    business_type: str | None = None
+    doc_type: str | None = None
+    effective_date: str | None = Field(
+        default=None,
+        description=(
+            "ISO date. The day this version was read from the page, which is the "
+            "honest claim: we know when we saw it, not when its publisher wrote it."
+        ),
+    )
+    lang: str = "english"
+    trace: TraceContext

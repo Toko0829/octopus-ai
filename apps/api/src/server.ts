@@ -3,6 +3,8 @@ import cors from '@fastify/cors';
 import { loadServerEnv } from '@octopus/config';
 import { healthRoutes } from './routes/health';
 import { messageRoutes } from './routes/messages';
+import { projectRoutes } from './routes/projects';
+import { taskActionRoutes } from './routes/task-actions';
 import { roomRoutes } from './routes/rooms';
 import { agentRunRoutes } from './routes/agent-runs';
 import { embedRoutes } from './routes/embeds';
@@ -41,6 +43,17 @@ export async function buildServer(): Promise<FastifyInstance> {
   const verify = createAuthVerifier(env.SUPABASE_JWKS_URL, env.SUPABASE_JWT_ISSUER);
 
   await app.register(roomRoutes, { verify, supabase });
+  await app.register(projectRoutes, { verify, supabase });
+
+  // Resolving a stuck step from the project panel. A retry re-routes and can
+  // dispatch to the executor, so it needs the same reasoning-core wiring the
+  // approval tick does.
+  await app.register(taskActionRoutes, {
+    verify,
+    supabase,
+    aiServiceUrl: env.AI_SERVICE_URL,
+    aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+  });
   await app.register(messageRoutes, { verify, supabase });
   await app.register(agentRunRoutes, {
     verify,
@@ -84,6 +97,17 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
     stepBudgetMs: env.AI_REQUEST_TIMEOUT_MS,
     intervalMs: env.TICK_INTERVAL_MS,
+    // The freshness pipeline rides the same pass, and only where it is turned on.
+    // One deployment crawls the registry; every laptop reads what it ingested,
+    // because the alternative is a dozen developers pointing repeated requests at
+    // ftc.gov for no benefit to anyone.
+    crawl: env.CRAWL_ENABLED
+      ? {
+          aiServiceUrl: env.AI_SERVICE_URL,
+          aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+          maxPerPass: env.CRAWL_MAX_PER_TICK,
+        }
+      : undefined,
     log: app.log,
   });
   app.addHook('onClose', async () => stopTicker());

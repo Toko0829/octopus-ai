@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { decideRecovery, summarise, tick, type ReclaimedRun } from '@octopus/core';
 import { randomUUID } from 'node:crypto';
 import { createSchedulerPorts } from './scheduler';
+import { crawlSweep } from './crawl';
 import { notifyWaiting } from './waiting';
 import type { ExecutorDeps } from './executor';
 
@@ -34,6 +35,13 @@ export interface TickerOptions {
   /** Bound on one Node/Python step, used to size the lease. */
   stepBudgetMs: number;
   intervalMs?: number;
+  /**
+   * Re-read the external source registry on a cadence. Absent means this
+   * deployment does not crawl, which is the default: the registry names real
+   * public pages, and every developer's laptop requesting them on boot would be
+   * pointless traffic aimed at somebody else's servers.
+   */
+  crawl?: { aiServiceUrl: string; aiTimeoutMs?: number; maxPerPass: number };
   log: {
     info: (obj: unknown, msg: string) => void;
     warn: (obj: unknown, msg: string) => void;
@@ -181,6 +189,25 @@ export function startTicker(opts: TickerOptions): () => void {
           await notifyWaiting(opts.admin, report, opts.log);
         } catch (err) {
           opts.log.error({ err, projectId: project.id }, 'tick failed for a project');
+        }
+      }
+
+      // The freshness pipeline, after the graph rather than before it. Walking
+      // the DAG is what a person is waiting on; re-reading a regulator's page is
+      // not, and it can involve a slow or hanging remote host. Its own try/catch
+      // for the same reason each project has one: a sweep that throws must not
+      // take the tick with it (ADR-0010, rule 16).
+      if (opts.crawl) {
+        try {
+          await crawlSweep({
+            admin: opts.admin,
+            aiServiceUrl: opts.crawl.aiServiceUrl,
+            aiTimeoutMs: opts.crawl.aiTimeoutMs,
+            maxPerPass: opts.crawl.maxPerPass,
+            log: opts.log,
+          });
+        } catch (err) {
+          opts.log.error({ err, worker }, 'crawl sweep failed');
         }
       }
 

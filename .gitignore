@@ -37,3 +37,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+
+# Planning artefacts kept deliberately out of the repository. The xlsx is the
+# source the separate tracker app seeds itself from, and it is re-exported
+# rather than edited here, so a committed copy would be a second version of it.
+Octopus-Project-Plan.xlsx

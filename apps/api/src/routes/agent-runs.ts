@@ -69,6 +69,27 @@ const DEFAULT_INTAKE_MAX_ROUNDS = 2;
 const MAX_INTAKE_STALLS = 2;
 
 /**
+ * How long an open question card may claim the room's next message.
+ *
+ * While one is pending, `decideIntakeTurn` reads EVERY message from the owner as
+ * a reply to it. That is right for a conversation and wrong for a mode: the card
+ * had no expiry at all, so two of them were found holding rooms for nearly two
+ * days, and one had already swallowed a request its author meant as a new goal.
+ * Nothing failed and nothing said so.
+ *
+ * **Two hours, chosen from the asymmetry rather than from taste.** Expiring too
+ * early means an answer is read as a new goal while the step it answered still
+ * sits in `needs_user`, visible and answerable in the project panel: annoying,
+ * and recoverable. Expiring too late means a real request disappears into a step
+ * it was never about, with no trace. The cheap direction is short.
+ *
+ * That asymmetry is the reverse of the one `decideIntakeTurn` was written under,
+ * when losing an answer was the expensive direction because steps had no surface.
+ * The panel changed which way it points, and this number follows it.
+ */
+const QUESTION_TTL_MS = 2 * 60 * 60 * 1000;
+
+/**
  * What a failed run says in the room, and why it distinguishes the cases.
  *
  * `architecture.md` requires that "a timeout is reported as a timeout", because
@@ -305,15 +326,34 @@ export async function agentRunRoutes(
    * Read as `service_role` rather than as the caller: this runs inside the agent
    * step, which has no request and no token, and it reads a row the caller can
    * already see through room membership anyway.
+   *
+   * **A card past `expires_at` is not open.** While one is pending it claims every
+   * message the owner writes, so a card that never expires puts the room into a
+   * mode that outlives the conversation that opened it. Two were found holding
+   * rooms for nearly two days, one having already swallowed a request the person
+   * meant as a new goal, and nothing anywhere said so.
+   *
+   * The trade is asymmetric and that is what decides the direction. Expiring too
+   * early means an answer is read as a new goal, and the step it answered is still
+   * sitting in `needs_user`, visible and answerable in the project panel: annoying
+   * and recoverable. Expiring too late means a real request vanishes into a step
+   * it was never about, with no trace and no error. **The recoverable direction is
+   * only recoverable because the panel now exists**, which is why this expiry
+   * lands after it rather than before.
+   *
+   * Filtered here rather than by sweeping the table, because a row that expired is
+   * still the record of a question that was asked and the audit trail should keep
+   * it. Nothing rewrites history to make a read simpler.
    */
   async function loadPendingIntake(roomId: string): Promise<PendingIntake | null> {
     const admin = createServiceClient(opts.supabase);
     const { data, error } = await admin
       .from('action_embeds')
-      .select('id, payload')
+      .select('id, payload, expires_at')
       .eq('room_id', roomId)
       .eq('component', 'question')
       .eq('state', 'pending')
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -419,6 +459,10 @@ export async function agentRunRoutes(
       // this is checked. `decideIntakeTurn` is the enforcement.
       required_role: 'owner',
       state: 'pending',
+      // The column has existed since `20260812120000` and nothing had ever written
+      // it. See `loadPendingIntake` for why an unbounded one is a defect rather
+      // than a missing nicety.
+      expires_at: new Date(Date.now() + QUESTION_TTL_MS).toISOString(),
     });
     if (embedError && embedError.code !== '23505') throw embedError;
   }

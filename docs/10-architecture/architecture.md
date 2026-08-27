@@ -2,7 +2,7 @@
 
 > The authoritative description of how the two-layer brain, the services, the durable orchestration, and Postgres-as-source-of-truth fit together. Read this before touching cross-service behavior. Update it when the topology, service boundaries, or the sync/async contract changes.
 >
-> **Implementation status (Phase 1):** the **chat write path is live**. `apps/api` implements `POST /api/rooms/:roomId/messages` (JWKS `preHandler` → RLS membership → `INSERT` → Postgres trigger broadcasts) and `GET /api/rooms/:roomId/messages` (since-cursor catch-up), both typed from `packages/contracts`. Verified end-to-end against Supabase: 24 assertions covering auth, idempotent replay, RLS refusal for non-members, and confirmed Realtime delivery to a live subscriber. `apps/web` consumes the API for real: Server Components read through `lib/api-server.ts`, the browser goes through the thin BFF at `/api/bff/*`, and there is **no mock data left in the app**. Also live: `GET /api/rooms`, `POST /api/rooms`, `GET /api/rooms/:roomId/channels`, `GET /api/rooms/:roomId/members`. The **Node-to-Python seam is live**: `POST /api/rooms/:roomId/agent-runs` returns `202 + runId`, calls `services/ai` for proposals, and executes them by posting to chat as the agent. Not yet wired: `fastify-type-provider-zod` + `@fastify/swagger` (routes validate with the contract's Zod schemas directly, so there is still one source of truth, but the OpenAPI document is not generated yet), TS client generation from the Python service's OpenAPI (`apps/api/src/lib/ai.ts` is hand-maintained meanwhile), and durability for agent runs. See [DEVELOPMENT.md](../../DEVELOPMENT.md).
+> **Implementation status (Phase 1):** the **chat write path is live**. `apps/api` implements `POST /api/rooms/:roomId/messages` (JWKS `preHandler` → RLS membership → `INSERT` → Postgres trigger broadcasts) and `GET /api/rooms/:roomId/messages` (since-cursor catch-up), both typed from `packages/contracts`. Verified end-to-end against Supabase: 24 assertions covering auth, idempotent replay, RLS refusal for non-members, and confirmed Realtime delivery to a live subscriber. `apps/web` consumes the API for real: Server Components read through `lib/api-server.ts`, the browser goes through the thin BFF at `/api/bff/*`, and there is **no mock data left in the app**. Also live: `GET /api/rooms`, `POST /api/rooms`, `GET /api/rooms/:roomId/channels`, `GET /api/rooms/:roomId/members`. The **Node-to-Python seam is live**: `POST /api/rooms/:roomId/agent-runs` returns `202 + runId`, calls `services/ai` for proposals, and executes them by posting to chat as the agent. Not yet wired: `fastify-type-provider-zod` + `@fastify/swagger` (routes validate with the contract's Zod schemas directly, so there is still one source of truth, but the OpenAPI document is not generated yet), TS client generation from the Python service's OpenAPI (`apps/api/src/lib/ai.ts` is hand-maintained meanwhile), and durability for the **planning** run, which still executes in-process. Task execution is durable ([ADR-0010](../40-adr/0010-postgres-durable-runner.md): a lease on `task_runs`, a reclaim sweep and the ticker), so a crash there loses a worker rather than a run; a crash inside `POST /agent-runs` before the plan is posted still loses the turn, and the person's message stays in the room to be retried. See [DEVELOPMENT.md](../../DEVELOPMENT.md).
 
 ## System topology
 
@@ -61,11 +61,89 @@ That mattered because delivery resolved the room by asking `rooms` which project
 
 A union that ignores what it does not recognise is right for a corrupt row and wrong for a variant somebody forgot to add, and nothing distinguished the two. Both are closed, and a stored artifact now round-trips.
 
+### `GET /api/rooms/:roomId/projects` and `GET /api/projects/:projectId`
+
+What an approved plan became: the project, its steps, and what those steps
+produced. Read-only, as the caller, so RLS decides what exists.
+
+Until these existed the workflow engine had **no surface at all**. A person
+approved a plan, the scheduler routed its steps, the executor wrote artifacts, and
+the only evidence was a handful of cards scattered through a chat stream that
+keeps scrolling. The artifact card answers "did this one step deliver something";
+these answer "where is the whole thing up to", which is the question people
+actually ask.
+
+**The room resolves to its projects through the plan card, never through
+`rooms.project_id`**, for the reason `roomForProject` already records and
+`20260827110000` has now applied to the RLS predicate as well: that column is
+claimed by the first project approved in a room. Reading it here would list one
+project and silently omit the rest.
+
+Three details the list route depends on:
+
+- **The room is confirmed before an empty list is returned.** A room the caller
+  cannot see and a room with no projects otherwise produce the same response, and
+  telling those apart is most of why this surface exists.
+- **Two plain reads merged in the service, not one `.or()` filter string.** Same
+  reasoning as `roomForProject`: a hand-built PostgREST filter fails silently when
+  it is wrong, and silently returning fewer projects than exist is the defect
+  being removed.
+- **A project the caller cannot see returns 404, not 403**, the same idiom rooms
+  use. The API does not confirm the existence of a project it will not show you.
+
+Counting lives in `apps/api/src/lib/project-progress.ts`, pure and tested, because
+a miscount does not throw, does not fail a type check, and renders as a perfectly
+plausible progress figure. A step counts as done at `approved` rather than `done`,
+matching `private.task_deps_satisfied`, so the number a person reads and the
+number the scheduler acts on cannot disagree about what finished means.
+
+### `POST /api/projects/:projectId/tasks/:taskId/resolution`
+
+Unsticking one step: `answer` records that the owner did it and completes the
+step, `retry` sends it back through the router.
+
+**It names the step, and that is the design rather than a detail.** The other way
+to answer is a chat message, and a question card claims _every_ message the owner
+writes until it is dealt with, so a new request typed while steps are waiting is
+silently filed as an answer to those steps. Two such cards had been holding rooms
+for nearly two days. Answering a task by id removes the ambiguity at the source:
+nothing has to guess what a sentence was for.
+
+**Owner only, checked here.** Resolving a step either records the owner's own work
+as a deliverable or spends compute retrying, and a human node in the room must do
+neither. The check reads the room through the project's plan card as the caller,
+so a room the caller cannot see yields no owner and it fails closed; a null owner
+means nobody, never anybody, matching what `rooms.owner_id` already does for
+approvals.
+
+**The completion is a conditional update** on the state that was read, so two
+clicks racing cannot both complete one step, and a step that moved underneath the
+person is reported as exactly that rather than as an error.
+
 ### `POST /api/rooms/:roomId/sources`
 
 Owner-only, membership by RLS as the caller with the 404-not-403 idiom, and exactly one of `text` or `url`. Replies **202** and does the work in a background continuation, posting the outcome into the room: what was recorded, that it was unchanged, or why it failed. Nothing is silent (rule 16).
 
 URL fetching lives here rather than in `services/ai`, which talks to Postgres and to providers and to nothing else. It is the first outbound call either service makes on a user's instruction, so it is guarded on protocol, host, size, time and content type, with the redirect target re-vetted. DNS rebinding is explicitly not defended against and is recorded as a known limit in the module rather than left to be assumed.
+
+### The ticker crawls as well as walking the graph
+
+The same pass that walks the task DAG ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)) now also re-reads the external source registry, under the claim it already holds. Off by default (`CRAWL_ENABLED`), because the registry names real public pages and a dozen developers fetching them on boot is traffic aimed at somebody else's servers for no benefit.
+
+Four properties this depends on, and the second is the one that made the first run worth doing:
+
+- **It runs after the graph, not before.** Walking the DAG is what a person is waiting on; re-reading a regulator's page is not, and it involves a remote host that may be slow or hanging. Its own try/catch for the same reason each project has one: a sweep that throws must not take the tick with it.
+- **A page's status code is not evidence it is a document.** Three of the first nine sources answered `200` and stored site navigation, one of them localised to the crawler's own IP. The fetcher is a tag stripper, not a parser, so verification means reading what was stored. Recorded in [rag-knowledge.md](../30-modules/rag-knowledge.md) with what each page produced.
+- **`last_crawled` records the attempt, not the success.** A blocked or missing page is retried on its cadence rather than every thirty seconds, which is the difference between a crawler and a nuisance.
+- **The page hash is stored only after the ingest succeeds.** Storing it first would make a failed ingest look unchanged forever afterwards, which is the quietest possible way for a source to stop updating.
+
+**Scheduling is here rather than in `pg_cron`, which [rag.md](rag.md) originally specified.** pg_cron runs SQL and SQL cannot make an outbound request, so it could only ever have signalled something that could; that something is this ticker. Outbound HTTP stays in Node for the same reason `POST /sources` does, and `services/ai` keeps its property of reaching Postgres and providers and nothing else.
+
+### `POST /ingest` on the reasoning service
+
+The shared-corpus counterpart to `/sources`, called by the sweep. Deliberately a second endpoint rather than a flag: `/sources` is room-scoped and fixes its own label, authority and doc type because everything arriving there is a person describing their business, while this one carries provenance the registry stated. A request body whose meaning depends on which optional fields happen to be set is the worse of the two designs.
+
+`authority`, `market` and `doc_type` are stated by the registry and passed through unchanged. Inferring authority from a hostname is how a vendor blog becomes a regulator, so it is an editorial claim reviewed in a diff, not a derivation.
 
 ## Service map
 
@@ -144,6 +222,24 @@ Four properties this path depends on:
 - **The card is consumed with a conditional update**, `eq('state','pending')` in the same statement, so two runs racing on one answer cannot both proceed. Same guard the approve path uses.
 - **It is consumed after the intake call, not before.** Marking first would mean a failed or timed-out intake silently swallows what the person typed. This way the card stays pending and the next message tries again.
 - **Intake failing plans anyway.** Any error falls through to planning on the original message, which is the behaviour that existed before intake. It improves a query; it is not a precondition for answering. Nothing is granted by passing through, because the groundedness gate still runs inside `/plan`.
+
+**An open question card now has a window, and it never had one.** While one is
+pending it claims every message the owner writes, which is right for a
+conversation and wrong for a mode. `expires_at` has existed on `action_embeds`
+since `20260812120000` and nothing ever wrote it, so cards were found holding
+rooms for **nearly two days**, one having already swallowed a request its author
+meant as a new goal. Nothing failed and nothing said so.
+
+Two hours, chosen from the asymmetry rather than from taste. Expiring early means
+an answer is read as a new goal while the step it answered still sits in
+`needs_user`, visible and answerable in the project panel: annoying, recoverable.
+Expiring late means a real request disappears into a step it was never about, with
+no trace. **That asymmetry is the reverse of the one `decideIntakeTurn` was
+written under**, when losing an answer was the expensive direction because steps
+had no surface at all. The panel changed which way it points.
+
+Filtered on read rather than swept from the table, because an expired card is
+still the record of a question that was asked and the audit trail keeps it.
 
 `answered` was added to `embed_state` rather than reusing `approved`. The four original states describe a verdict and a question has none, so recording an answered question as approved would put an untrue sentence in the audit trail and hand `feedback_events` a labelled example of a person approving something they were never shown.
 

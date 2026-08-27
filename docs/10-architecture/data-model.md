@@ -4,11 +4,103 @@
 >
 > **Implementation status (Phase 2, in progress):** `20260813120000_workflow_dag.sql` adds `projects`, `tasks`, `task_deps`, `task_runs` and the append-only `events` log, with the per-task **state machine enforced by trigger** and the DAG's acyclicity enforced by trigger. It also finally gives `rooms.project_id` the foreign key it has been missing since `20260728120000`, when there was no table to point at. `20260813130000_harden_workflow_functions.sql` follows it, for the reason recorded below. **Applied and verified against the live database: `supabase/tests/rls_workflow.sql`, 33/33.** See "Workflow schema" below.
 >
-> **Implementation status (Phase 1):** ten migrations applied. `20260812120000_action_embeds.sql` adds the interactive-card table (first component: `plan`) and `20260812120100_revoke_default_privileges.sql` closes the default grants described below. `20260724000000_init.sql` creates `profiles` + the `user_role` enum with RLS (own-row read/update) and a new-user trigger. `20260728120000_chat.sql` adds `rooms` / `channels` / `room_members` / `messages` — membership RLS, unique `idempotency_key`, identity `seq`, the `realtime.broadcast_changes()` insert trigger, and the Realtime subscribe policy on `realtime.messages`. `20260728160000_harden_security_definer.sql` relocates the policy helper to the `private` schema. `20260728170000_grant_table_privileges.sql` adds the table-level grants both earlier migrations omitted. `20260728190000_profile_co_member_visibility.sql` lets room members read each other's profile basics (own-row-only made the member list impossible). `20260728200000_realtime_presence_policy.sql` adds the `realtime.messages` INSERT policy that `channel.track()` needs. `20260728210000_rag_schema.sql` creates the RAG corpus (`knowledge_sources`, `documents`, `doc_chunks`, `eval_golden_set`) with `halfvec(1024)` + HNSW + generated `tsvector`, and `20260728220000_hybrid_search.sql` adds the RRF fusion function. Everything else below is still design-only.
+> **Implementation status (Phase 1), kept as the record of what landed then:** ten migrations. `20260812120000_action_embeds.sql` adds the interactive-card table (first component: `plan`) and `20260812120100_revoke_default_privileges.sql` closes the default grants described below. `20260724000000_init.sql` creates `profiles` + the `user_role` enum with RLS (own-row read/update) and a new-user trigger. `20260728120000_chat.sql` adds `rooms` / `channels` / `room_members` / `messages` — membership RLS, unique `idempotency_key`, identity `seq`, the `realtime.broadcast_changes()` insert trigger, and the Realtime subscribe policy on `realtime.messages`. `20260728160000_harden_security_definer.sql` relocates the policy helper to the `private` schema. `20260728170000_grant_table_privileges.sql` adds the table-level grants both earlier migrations omitted. `20260728190000_profile_co_member_visibility.sql` lets room members read each other's profile basics (own-row-only made the member list impossible). `20260728200000_realtime_presence_policy.sql` adds the `realtime.messages` INSERT policy that `channel.track()` needs. `20260728210000_rag_schema.sql` creates the RAG corpus (`knowledge_sources`, `documents`, `doc_chunks`, `eval_golden_set`) with `halfvec(1024)` + HNSW + generated `tsvector`, and `20260728220000_hybrid_search.sql` adds the RRF fusion function. Everything below that these two blocks do not name was still design-only at that point; **29 migrations are applied now**, and `supabase/README.md` carries the audit that catches a recorded version drifting from its filename.
 >
 > **`20260812140000_enable_pgtap.sql` was reconstructed from the database rather than written.** pgTAP had been installed ad hoc through a tool instead of through a file, so the extension existed and the repository had no record of it. Every suite in `supabase/tests/` calls `extensions.plan()`, so an environment built from these migrations alone would have failed all four on a missing function, and the symptom would have read as a broken test rather than a missing install. The body is byte-for-byte what was applied, recovered from `schema_migrations.statements`; only the header is new, and its version places it where it actually ran.
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
+
+### An escalated step can be resolved by its owner (`20260827120000`)
+
+`private.task_transition_allowed` let `ESCALATED` go only to `MATCHING`, which is
+the marketplace's first state and has no code behind it. So a step the router
+escalated could never move: **17 of them on the live database**, twelve routed
+there because the plan gave the work to a human and five escalated by the executor
+refusing to produce ungrounded output.
+
+Two arcs added, mirroring the ones `20260815220000` gave `NEEDS_USER`, and for the
+same reason: `ESCALATED -> APPROVED` (the owner did the work, so the step is done
+and its dependents may move) and `ESCALATED -> ROUTING` (another attempt). The
+whole function is restated rather than patched, as that migration established,
+because `create or replace` rewrites the body and the diagram in
+[business-projects-workflow.md](../30-modules/business-projects-workflow.md)
+remains the specification it is derived from.
+
+`MATCHING` is untouched. This gives an owner a way to unstick their own project;
+it does not anticipate the matcher.
+
+### Project membership resolved through the plan card (`20260827110000`)
+
+`private.is_project_member` asked whether a room the caller belongs to points at
+the project. `materialise_plan` writes `rooms.project_id` under `where ... and
+project_id is null`, so the **first** plan approved in a room claims that column
+permanently and every project after it has no room pointing at it. The predicate
+therefore returned false for all of them, for everybody, including the person who
+approved the plan and owns the work.
+
+**Measured on the live database before the fix: 6 projects of which 3 were
+reachable by any client, with 47 tasks and 28 of 58 artifacts unreachable.** One
+workspace had produced four projects and could see one.
+
+It is the same wrong question as the delivery defect in
+[architecture.md](architecture.md), where 8 approved tasks and 8 stored artifacts
+never reached the chat. That path was corrected in `apps/api/src/lib/room-for-project.ts`
+by resolving through `projects.source_embed_id`; the RLS predicate was not, so the
+security layer kept asking it for another two weeks. **A read path and a policy
+that answer the same question in different ways is a defect waiting for somebody
+to fix only one of them.**
+
+The predicate now accepts either link: the room the project's plan card was posted
+in (`projects.source_embed_id`, unique, set at creation, never changed), or
+`rooms.project_id` for projects that predate that column. Neither widens tenancy,
+because both terminate in a `room_members` row for `auth.uid()` with the same
+time-box check, so an expired node still sees nothing at all.
+
+**Why it survived: it failed as zero rows, never as an error.** Through PostgREST
+an invisible project and an empty one are the same response. Nothing raised,
+nothing logged, and no advisor lints a predicate for asking the wrong question.
+
+Covered by `supabase/tests/project_membership.sql`, **13 assertions against the
+live database**, asserting both directions: the second project in a room is
+visible to its members, and an outsider, an expired node and a member of a
+different room still see none of it.
+
+### Crawled sources, and a citation you can open (`20260827100000`, `20260827101000`)
+
+Two migrations, one concern each, both in service of the corpus finally holding
+documents somebody other than us wrote.
+
+**`documents.source_url` (`20260827101000`).** The whole wire for this existed
+and every value on it was null. `hybrid_search` already returned `source_url`,
+`retrieval.py` already carried it onto each chunk, `Citation` already had a `url`
+field and `packages/contracts` already shipped it to the browser; the only writer
+of `knowledge_sources.url` was a code path that hardcoded `None`. The column goes
+on the **document** rather than being fixed only upstream because one source row
+can legitimately hold many documents: the room path keeps one row per workspace
+by design, since document identity is `(source_id, title)` and per-URL rows there
+would let two workspaces supersede each other. So a workspace's source row cannot
+carry a URL that means anything and each of its documents can. `hybrid_search`
+reads `coalesce(d.source_url, ks.url)`, so a crawled page uses its own address, a
+document with none shows none, and nothing borrows a sibling's.
+
+**`documents_source_hash_idx` narrowed to in-force rows (`20260827100000`).** The
+original index was unique on `(source_id, content_hash)` across all history, which
+is right for a document ingested once from a file somebody edits forward and wrong
+for anything re-read on a schedule. Supersession keeps the old row, so every
+version a source ever had stays in the index, and the constraint therefore meant
+"this source has never had a document with this body". A page that is edited and
+then reverted, which happens constantly on policy pages, produces a body an older
+superseded version already had, and the insert failed with a unique violation:
+the document froze at whatever version we happened to hold, and the only way out
+would have been deleting audit history. Scoped to `valid_to is null` it now says
+what it always meant, that one source cannot hold two **current** documents with
+the same body, and a genuine double-ingest is still refused.
+
+Covered by `supabase/tests/document_supersession.sql`, **9 assertions against the
+live database**, asserting both directions: the revert now succeeds, and the
+duplicate still fails. It also exercises `knowledge_sources.crawl_cadence`,
+`last_crawled` and `content_hash`, which have existed unwritten since
+`20260728210000` and whose first writer is the crawl sweep in `apps/api`.
 
 ### A workspace can hold its own knowledge (`20260817120000_room_sources.sql`)
 
@@ -73,7 +165,7 @@ Audit         events (append-only, event-sourced)   notifications   delivery_log
 | `escalations`       | `id`, `task_id`, `trigger`, `target` (HUMAN/USER), `created_at`, `resolved_at`                                                                                                                              |
 | `artifacts`         | `id`, `task_id`, `storage_path`, `kind`, `checksum`, `created_by`                                                                                                                                           |
 
-**Live as of `20260813120000`:** `projects`, `tasks`, `task_deps`, `task_runs`, and the append-only `events` log. `playbook_versions`, `agent_steps`, `tool_invocations`, `escalations` and `artifacts` remain design-only.
+**Live:** `projects`, `tasks`, `task_deps`, `task_runs` and the append-only `events` log (`20260813120000`), plus `artifacts` (`20260813160000`, described below). `playbook_versions`, `agent_steps`, `tool_invocations` and `escalations` remain design-only.
 
 **`20260813160000` adds `artifacts`:** what a task produced, and the evidence the checker judges. Inline text in `body`, files in `storage_path`, and a **check constraint refusing a row with neither**, because an artifact with no content is a task that reported success and produced nothing. Deliberately not Storage-only yet: the sketch above has artifacts carrying a `storage_path`, which is right for a video edit and wrong for the only thing the AI produces today, and putting a paragraph of copy in object storage would mean a fetch to read it plus a bucket policy to get right. `task_runs` gains its purpose here too, since **each execution attempt is its own row** and a retry that overwrote the previous one would erase why the first failed.
 

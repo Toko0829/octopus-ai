@@ -15,6 +15,20 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
+# The calibrated local rerank threshold, in ONE place.
+#
+# Every other setting in this file writes its default twice, once on the
+# dataclass field and once in `get_settings()`. That is survivable for a model
+# name and it is not survivable here, which was learned by doing it: this
+# threshold was changed, the dataclass default was updated, the unit test that
+# pins it to its measured bounds went green, and the running service kept using
+# the old number because the factory still carried it. A guard that passes while
+# production disagrees with it is worse than no guard, and the twenty-five minute
+# run it wasted reported a failure that had supposedly already been fixed.
+#
+# See the field below for the measured bands this value sits between.
+RERANK_LOCAL_MIN_SCORE_DEFAULT = 0.0013
+
 
 class ConfigError(RuntimeError):
     """Raised when required configuration is absent or unusable."""
@@ -286,13 +300,30 @@ class Settings:
     # negative ("run payroll and withhold taxes") reaches 0.001007. 0.0013 sits
     # between them and yields recall 1.00, coverage 1.00, zero leaks.
     #
+    # **RAISING THIS WAS TRIED, MEASURED, AND REVERTED.** When crawled sources
+    # took the corpus from 43 chunks to 110, a car-licence negative began
+    # retrieving Meta's advertising standards at 0.008, on a clause about not
+    # requesting driver's license numbers. 0.013 was the obvious answer, since it
+    # sits between that 0.008 and the weakest positive's 0.022. It does not work,
+    # and the reason generalises: **those bands are 2.75x apart on a signal that
+    # moves 3x between identical runs**, because decomposition is a model call and
+    # different sub-queries score differently. One case measured 0.116 and 0.035
+    # on two runs of the same commit. A threshold needing a 2x margin cannot be
+    # set against that, so raising it does not trade a leak for safety, it trades
+    # a leak for a gate that refuses legitimate goals at random.
+    #
+    # So the threshold stays where the positives are safe, and the leak is handled
+    # where scope is decided: the groundedness gate. That is the same division of
+    # labour this file already documents for in-vocabulary questions, arriving for
+    # a lexical collision rather than a topical adjacency.
+    #
     # **That is a 1.76x margin, against roughly 9x on Cohere.** It is the
     # narrowest safety margin in the retrieval path, and a leak is the failure
     # this system least tolerates (rule 10: uncited or unsupported claims must
     # never gate action). Treat any corpus change as a reason to re-measure, and
     # grow the golden set's NEGATIVE half rather than only its positive half,
     # because the negatives are what defend this margin.
-    rerank_local_min_score: float = 0.0013
+    rerank_local_min_score: float = RERANK_LOCAL_MIN_SCORE_DEFAULT
 
     # Client-side ceiling on rerank calls per minute. 0 means unlimited.
     #
@@ -401,7 +432,9 @@ def get_settings() -> Settings:
         rerank_local_model=os.environ.get("RERANK_LOCAL_MODEL", "BAAI/bge-reranker-v2-m3"),
         rerank_local_path=os.environ.get("RERANK_LOCAL_PATH", ""),
         rerank_local_fp16=_bool("RERANK_LOCAL_FP16", True),
-        rerank_local_min_score=_float("RERANK_LOCAL_MIN_SCORE", 0.0013),
+        rerank_local_min_score=_float(
+            "RERANK_LOCAL_MIN_SCORE", RERANK_LOCAL_MIN_SCORE_DEFAULT
+        ),
         generation_model=os.environ.get("GENERATION_MODEL", "gpt-5.4"),
         generation_model_fast=os.environ.get("GENERATION_MODEL_FAST", "gpt-5.4-mini"),
         generation_model_cheap=os.environ.get("GENERATION_MODEL_CHEAP", "gpt-5.4-nano"),

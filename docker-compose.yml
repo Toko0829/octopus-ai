@@ -1,0 +1,92 @@
+# The three processes DEVELOPMENT.md tells you to run in three terminals, as one
+# network. Postgres is not here: Supabase is managed and the services reach it
+# over the internet, so there is nothing to stand up locally.
+#
+#   docker compose up --build
+#
+# Then http://localhost:3000. The API is on :3011 and the reasoning core on
+# :8000, both published so they can be probed directly while testing.
+#
+# **Sizing, because one of these is not like the others.** `services/ai` holds
+# bge-m3 and bge-reranker-v2-m3 resident and measures ~5.15 GB peak RSS
+# (infra-devops.md), so Docker Desktop needs a memory limit above that or the
+# container is killed during startup, while it is warming the embedder, which
+# looks like a crash with no error. 8 GB is the recorded floor for the service
+# alone; give the VM more than that with the other two alongside.
+
+services:
+  # The reasoning core. Its image is built from its own directory, not from the
+  # repo root, because ADR-0006 keeps it out of the pnpm workspace and it needs
+  # nothing from it.
+  ai:
+    build:
+      context: ./services/ai
+    image: octopus-ai:latest
+    env_file:
+      # `apps/api/.env`, NOT `services/ai/.env`, and the choice is the
+      # identity-versus-location split ADR-0008 draws rather than convenience.
+      # The API file holds credentials, which is all this service is missing.
+      # The AI file holds `EMBED_LOCAL_PATH` and `RERANK_LOCAL_PATH` pointing at
+      # a developer's Hugging Face cache, and passing those in would override the
+      # image's own baked paths with directories that do not exist inside it. The
+      # container already knows where its models are; it only needs to be told
+      # how to reach Postgres and OpenAI.
+      - apps/api/.env
+    environment:
+      # Model identity, location and the offline pin all come from the image
+      # (see its Dockerfile) and are deliberately not restated here.
+      PYTHONUNBUFFERED: '1'
+    ports:
+      - '8000:8000'
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: octopus-api:latest
+    env_file:
+      # The one place the secrets already live. Read rather than copied, so there
+      # is no second copy of a service key to drift or to commit by accident.
+      - apps/api/.env
+    environment:
+      # Overrides whatever apps/api/.env says, because these two are facts about
+      # THIS network rather than about a developer's machine. `env_file` loses to
+      # `environment` in compose, which is what makes that work.
+      AI_SERVICE_URL: http://ai:8000
+      API_HOST: 0.0.0.0
+      API_PORT: '3011'
+      WEB_URL: http://localhost:3000
+      # Crawling stays off, matching the default and for the same reason: the
+      # registry names real public pages, and a container restarting on a laptop
+      # should not be re-requesting them. Turn it on deliberately, in one place.
+      CRAWL_ENABLED: 'false'
+    ports:
+      - '3011:3011'
+    depends_on:
+      ai:
+        # Waits for the healthcheck rather than for the process to exist. The
+        # reasoning core warms its embedder before it serves, so "started" and
+        # "ready" are minutes apart here and an agent run against the gap fails
+        # in a way that reads as the service being broken.
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: octopus-web:latest
+    environment:
+      # Server-side only: the browser talks to the BFF at /api/bff/*, and the BFF
+      # talks to the API. So this is a service name and never needs to resolve
+      # from the host. Supabase Realtime is the exception the browser does reach
+      # directly, and that is a public URL baked in at build time.
+      API_URL: http://api:3011
+      NODE_ENV: production
+    ports:
+      - '3000:3000'
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

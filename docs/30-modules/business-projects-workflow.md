@@ -24,6 +24,56 @@
 
 **A waiting task now says so.** A tick that leaves steps in `NEEDS_USER` or `ESCALATED` posts one digest into the project's room, batched rather than one message per task, because `ai-orchestrator.md` requires digests and `vision.md` counts user touches as a guardrail to drive down. The two are **not merged**: only one is actionable, and a task waiting on an expert is waiting on a marketplace that does not exist, so the copy says that plainly instead of implying somebody is on their way.
 
+## A step that stopped can be dealt with
+
+`ESCALATED` meant "an expert should do this", and its only arc was `MATCHING`, the
+first state of a marketplace that does not exist. Every step routed there was
+**permanently stuck**: the other two exits, `CANCELLED` and `BLOCKED`, both say the
+work will not happen rather than that somebody else will do it. Measured on the
+live database: **17 steps across four projects that nobody could move, ever.**
+
+That was survivable while nothing displayed it. The panel above now shows a person
+"Needs an expert" beside work they are perfectly capable of doing, with no way to
+act, so `20260827120000` gives `ESCALATED` the two arcs `NEEDS_USER` already had.
+The argument is `20260815220000`'s, transferred: the plan gave the work to an
+expert who cannot be brought in, so the owner taking it on **is** doing the step,
+and `APPROVED` is what satisfies dependents. Their write-up is stored as an
+artifact `created_by: 'user'` with no citations, because a person's own work rests
+on no retrieved source.
+
+**Retrying needed more than an arc.** A tick selects only `PENDING` tasks, so a
+step parked in `ROUTING` is invisible to it and `ESCALATED -> ROUTING` on its own
+would have swapped one dead end for another. `retryTask` in `@octopus/core` drives
+the same path a tick drives, sharing `dispatchRouted` with it so there is one
+definition of what happens after routing rather than two that drift.
+
+**Retrying changes nothing by itself, and the copy says so.** The router applies
+the same rules to the same task, so a step escalated for want of citations
+escalates again. It is worth taking when something else changed, typically a
+source the corpus was missing, which `POST /sources` exists to supply.
+
+**This is not the marketplace.** `MATCHING` is untouched and nothing here presumes
+what the matcher will do. It gives an owner a way to unstick their own project,
+and the copy never implies an expert is on the way.
+
+## The work is now visible
+
+`GET /api/rooms/:roomId/projects` and `GET /api/projects/:projectId` expose the
+DAG, and `ProjectPanel.tsx` renders it. Everything in this document, the states,
+the router's verdicts, the artifacts, existed only as rows a developer with SQL
+could reach; a person who approved a plan saw a digest and then a scrolling chat.
+
+Two properties of the view are decisions rather than presentation:
+
+- **Waiting and escalated are never added together.** A step in `NEEDS_USER` is
+  something the person can act on. A step in `ESCALATED` is waiting on a
+  marketplace that does not exist, so the copy says that plainly rather than
+  implying somebody is on their way, which is the rule the waiting digest already
+  follows.
+- **Progress counts `APPROVED` as done**, matching `task_deps_satisfied` rather
+  than waiting for `PAID`. If the number a person reads disagreed with the one the
+  scheduler acts on, one of them would be lying.
+
 ## Project lifecycle
 
 `DRAFT → PLANNING → ACTIVE → (PAUSED) → COMPLETED | CANCELLED`
@@ -60,6 +110,8 @@ Each task declares: `owner_type` (AI/HUMAN/USER), `inputs`, `expected_artifact`,
 PENDING → READY → ROUTING → { AI_RUNNING → AI_SELF_CHECK | ESCALATED | NEEDS_USER }
 NEEDS_USER → APPROVED (the person answered, and their answer is the deliverable)
            → ROUTING  (the answer changes what should happen next)
+ESCALATED  → APPROVED (the owner did it themselves; their write-up is the deliverable)
+           → ROUTING  (another attempt, worth taking when something changed)
 ESCALATED → MATCHING → OFFERED → CLAIMED → ESCROW_FUNDED → IN_PROGRESS
           → PROOF_SUBMITTED → IN_REVIEW → APPROVED → PAYOUT_PENDING → PAID → DONE
 REJECTED → IN_PROGRESS (bounded re-do)   DISPUTED → ops review
