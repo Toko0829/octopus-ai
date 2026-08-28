@@ -196,9 +196,16 @@ jobs:
     # of real compute rather than a rate limiter holding. Bounded so a pathology
     # (an unbatched loop, a model that failed to cache) surfaces as a timeout
     # instead of burning an hour of runner time.
-    # A shard is ~5 minutes of eval plus ~90s of setup. 20 leaves room for a
-    # slow runner without letting a hang burn three quarters of an hour.
-    timeout-minutes: 20
+    # Measured 2026-08-28, on the 35-case set over the grown corpus: the two
+    # shards that finished took 13m54s and 19m14s, and the previous bound of 20
+    # killed the other three at exactly 20m16s each. The old "~5 minutes of
+    # eval" number predates the corpus growth and `measurement` joining
+    # COVERED_STAGES, which gives every broad goal a sixth sub-query and every
+    # sub-query is another cross-encoder pass (rag-knowledge.md records the
+    # same slowdown arriving locally). 40 fits the measured worst shard with
+    # the same 2x headroom the old bound intended, while still cutting off a
+    # genuine hang well short of an hour.
+    timeout-minutes: 40
     needs: eval-scope
     if: needs.eval-scope.outputs.retrieval == 'true'
     strategy:
