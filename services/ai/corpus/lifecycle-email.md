@@ -21,6 +21,12 @@ matters more than optimising it early.
 deliver whatever was promised at capture, set expectations for frequency, and
 get the reader to a first meaningful action in the product.
 
+The trigger is whatever the person just did, and it is worth naming precisely,
+because the promise to honour differs. A registration on a waitlist earns news
+about the launch. A booked call earns the details of the call. An enquiry earns
+an answer. Sending the same welcome to all of them wastes the one moment when
+attention is guaranteed.
+
 **Activation.** For trials and freemium, the goal is one specific action that
 correlates with sticking around. Identify the behaviour that separates retained
 users from churned ones, then build the sequence around producing that behaviour
@@ -33,6 +39,10 @@ first, because it trains the audience to wait for discounts.
 **Winback.** A bounded sequence for lapsed users, with a clear stop. Repeatedly
 mailing people who have disengaged damages deliverability and costs more in
 reputation than the recovered revenue is worth.
+
+For a membership or community product the same sequence runs against members who
+have stopped showing up, and the honest version asks what changed rather than
+announcing a discount.
 
 ## Deliverability is a prerequisite, not an optimisation
 

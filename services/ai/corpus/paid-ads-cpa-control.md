@@ -15,11 +15,21 @@ An early campaign's job is to buy information, not customers. Set a fixed test
 budget you are willing to lose entirely and treat it as research spend. Scaling
 decisions come after you have a signal, not before.
 
+Decide first what event the cost is being counted against, and write that down
+too. For one product the acquisition is a purchase, for another it is a signup, a
+qualified lead, a booked call or an app install. A CPA quoted without naming its
+event is not comparable to anything, including your own figure from last month,
+and the cheapest-looking channel is usually the one counting the easiest event.
+
 Set a CPA ceiling before launch, derived from unit economics rather than from
 what feels affordable. If a customer is worth 40 units of margin over the period
 you are willing to wait for payback, a CPA above that is a loss you are choosing
 to repeat. Write the ceiling down; it becomes the guardrail that pauses the
 campaign automatically.
+
+Where the counted event sits earlier in the funnel than the payment, the ceiling
+has to carry the conversion rate between them. Paying 5 units for a lead that
+becomes a customer one time in ten is paying 50 units for the customer.
 
 ## Test hooks, not audiences, first
 

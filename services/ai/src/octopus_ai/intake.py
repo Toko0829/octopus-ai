@@ -484,10 +484,15 @@ def parse_intake(raw: str) -> ParsedIntake:
         if not isinstance(item, dict) or not item.get("touched"):
             continue
         stage = str(item.get("stage", "")).strip().lower()
-        # Checked against the full six rather than the covered five. Which stages
-        # exist and which have documents are different facts, and collapsing them
-        # here would make `proximity` compute 1.00 for a measurement-only request
-        # by silently discarding the very stage that makes it uncovered.
+        # Checked against the full six funnel stages rather than against
+        # COVERED_STAGES. Which stages EXIST and which have documents are
+        # different facts, and collapsing them here would make `proximity`
+        # meaningless: an uncovered stage would be discarded before it could be
+        # counted, so every request would score 1.00 by construction.
+        #
+        # Measurement was the worked example of that until it gained a document,
+        # which is exactly why the two lists must stay separate. The next stage to
+        # be named-but-uncovered needs this to still be the full six.
         if stage in ("strategy", "content", "creative", "channels", "conversion", "measurement"):
             if stage not in stages:
                 stages.append(stage)

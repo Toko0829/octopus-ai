@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Octopus — the AI that runs your business. Monorepo root.",
+  "description": "Octopus \u2014 the AI that runs your business. Monorepo root.",
   "packageManager": "pnpm@10.30.0",
   "engines": {
     "node": ">=20"
@@ -16,11 +16,13 @@
     "lint": "prettier --check .",
     "format": "prettier --write .",
     "check:docs": "node scripts/check-docs.mjs",
+    "art:hero": "blender --background --python tools/art/landing-art.py -- --shot hero  --out tools/art/out/hero-deep.png  --webp --webp-dir apps/web/public",
     "clean": "turbo run clean && rimraf node_modules",
     "ai:install": "uv sync --extra dev --directory services/ai",
     "ai:dev": "uv run --directory services/ai uvicorn octopus_ai.main:app --reload --port 8000",
     "ai:lint": "uv run --directory services/ai ruff check .",
-    "ai:test": "uv run --directory services/ai pytest -q"
+    "ai:test": "uv run --directory services/ai pytest -q",
+    "art:reach": "blender --background --python tools/art/landing-art.py -- --shot reach --out tools/art/out/node-reach.png --webp --webp-dir apps/web/public"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

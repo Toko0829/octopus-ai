@@ -18,7 +18,11 @@
 >
 > **The ticker is live** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)): a periodic pass reclaims runs whose worker died and walks every active project's graph, holding a lease so only one instance ticks. Approving a plan still ticks inline, so the interactive path never waits on the interval.
 >
-> **Not built yet:** `playbook_versions`, `escalations`, replan-by-diff, and `task_deps` (the planner emits stages and steps, not dependencies). **Consuming the question before the work succeeds is what makes a race safe and a failure silent.** The card is closed first so a second message cannot answer the same steps twice. The first live answer then hit an invalid enum value, every task failed, the failure was logged per task, and the room said **nothing at all**: the person had answered, the question had vanished, and no step had moved. The card is now **reopened** when nothing completes, so their next message is still read as an answer, and the run says so plainly. Losing a reply is bad; losing it without saying so is worse.
+> **The graph has edges now** (`20260828120000`). The planner states which steps consume which other steps' output, and `materialise_plan` writes them as `hard` `task_deps` rows, so `task_deps_satisfied` and `private.tasks_ready` are enforcing a real graph rather than an empty set for the first time. See "Where the edges come from" below.
+>
+> **Replan-by-diff is live** (`20260828130000`, `20260828140000`). An owner can ask for a running plan to be changed, and gets a card of add / cancel / modify ops to approve. See "Changing a plan that is already running" below.
+>
+> **Not built yet:** `playbook_versions` and `escalations`. **Consuming the question before the work succeeds is what makes a race safe and a failure silent.** The card is closed first so a second message cannot answer the same steps twice. The first live answer then hit an invalid enum value, every task failed, the failure was logged per task, and the room said **nothing at all**: the person had answered, the question had vanished, and no step had moved. The card is now **reopened** when nothing completes, so their next message is still read as an answer, and the run says so plainly. Losing a reply is bad; losing it without saying so is worse.
 
 **An answered step is a finished step, and the machine had to say so.** The only arc out of `NEEDS_USER` was back to `ROUTING`, where the router applies rule 2 to a `user`-owned task and returns it to `NEEDS_USER`: the answer had nowhere to land and the loop had no end. Nothing failed, the task simply waited forever. `20260815220000` adds `NEEDS_USER → APPROVED`, and the semantics are the point rather than a convenience: the plan gave that person work only they could do, so answering **is** doing it, and `APPROVED` is the state that satisfies dependents. The answer is stored as an artifact `created_by: 'user'` with **no citations**, deliberately, since a person's own decision rests on no retrieved source and attaching one would attribute their judgement to the corpus. The checker never sees it: a human answering is not a maker to be checked.
 
@@ -74,6 +78,58 @@ Two properties of the view are decisions rather than presentation:
   than waiting for `PAID`. If the number a person reads disagreed with the one the
   scheduler acts on, one of them would be lying.
 
+## Changing a plan that is already running
+
+`ai-orchestrator.md` has specified "replan by diff, not regeneration, preserving
+completed work and audit history" since Phase 0, and nothing produced one,
+because there was no way to ask for it. The gap became visible the moment the
+project panel did: a person could see fifteen steps, disagree with three, and
+have no move available short of abandoning the project and posting a new goal,
+which throws away every deliverable already produced.
+
+**Owner-initiated and owner-approved.** `POST /api/projects/:projectId/replan`
+takes a reason in the person's own words and returns `202`; the core answers with
+a diff; the diff is posted as a `replan` card; approving it runs
+`public.apply_plan_diff`, through the ordinary embed-action route. So a change to
+a running project crosses the same authorisation boundary the original plan did.
+**Automatic replanning after each task is deliberately out of scope**, and the
+argument is the one that put plan approval behind a card in the first place: a
+model proposing something is not the same as somebody agreeing to it.
+
+**Three ops, and the set is small on purpose.** Everything an owner wants is work
+added, work called off, or work whose description was wrong, and each is
+separately reviewable on a card. Capped at ten, because a card nobody reads is
+not an authorisation.
+
+**`modify_task` cannot change state, owner or risk tier, and that is the safety
+property.** Changing who runs a step, or what it is permitted to touch, is a
+different piece of work and goes through cancel plus add so the person sees both
+halves. Routing an authorisation decision through the op that looks least like
+one is exactly what rules 7 and 11 forbid. It is enforced by `apply_plan_diff`
+naming three columns rather than accepting a payload, so there is no flag anybody
+can pass to widen it, and asserted directly: the pgTAP suite approves a card that
+asks for all three and checks the row did not move.
+
+**A stale diff fails rather than half-applying.** The card was written against
+the project as it was; by the time it is approved a step may have been approved,
+failed or cancelled. An op naming such a step raises and the whole transaction
+rolls back, including the ops that had already succeeded. Skipping the impossible
+ones would apply a diff nobody reviewed.
+
+**Cancelling a step does not release what depends on it.**
+`task_deps_satisfied` counts a dependency satisfied at `approved` or later, and
+`cancelled` is neither, so a dependent stays blocked. That is correct rather than
+an oversight: work planned to consume an output that will now never exist should
+not quietly proceed as though it had one. The prompt tells the model to deal with
+dependents in the same diff, the card says so in as many words, and the pgTAP
+suite asserts it so nobody later "fixes" it into auto-unblocking.
+
+**A diff cannot reach another room's project.** The card is posted in a room and
+names a project in its payload; `apply_plan_diff` checks the project resolves,
+through its own plan card, to that same room. Nothing else on the path does: the
+action route verifies the caller's membership of the card's room, which says
+nothing about the project the payload names.
+
 ## Project lifecycle
 
 `DRAFT → PLANNING → ACTIVE → (PAUSED) → COMPLETED | CANCELLED`
@@ -103,6 +159,56 @@ Each task declares: `owner_type` (AI/HUMAN/USER), `inputs`, `expected_artifact`,
 ## Dependency model
 
 `task_deps` edges are **hard** (must complete first), **soft** (preferred order), or **resource** (shared constraint). The scheduler parallelizes independent branches (the octopus's eight arms).
+
+## Where the edges come from
+
+For two weeks this table existed, was indexed, was guarded against cycles and
+cross-project edges, and **held no rows**. `materialise_plan` said why, and the
+reason was right at the time: the planner emitted stages and steps, so the only
+edges available would have been inferred from stage order, and "strategy must
+finish before content" is a constraint nobody stated. The consequence was that
+every plan was flat and one tick dispatched all of it at once.
+
+`PlanStep` now carries an `id` and a `depends_on`, and three rules govern them.
+
+**The planner states edges; nothing infers them.** Stage order is still
+presentation. A step depends on another only when it consumes that step's output,
+which is the one relationship the planner is asked about, and the prompt tells it
+to leave the edge out when unsure. `materialise_plan` writes exactly what the card
+says and derives nothing.
+
+**Every edge is `hard`.** That is what "consumes the output of" means, and it is
+the only kind the scheduler consults anyway. `soft` and `resource` stay in the
+enum for orderings and shared constraints nothing produces yet; picking between
+them here would mean guessing which the model meant.
+
+**A bad edge never costs a plan, and a bad edge never reaches the table.** Those
+are two different layers doing opposite things on purpose. In `services/ai`,
+`plan_graph.sanitise_dependencies` drops a reference that resolves to nothing and
+flattens the graph entirely on a cycle or a duplicate id, because a plan is worth
+far more than its edges and a flat plan is exactly what shipped before this
+existed. In Postgres, `materialise_plan` **raises** on an unresolvable reference
+or a duplicate id, and the acyclicity trigger raises on a cycle. The layering is
+the same one the risk tier uses: the model proposes, code repairs what is safe to
+repair, and the database refuses to guess about anything that still reaches it,
+because a card can also arrive from an older service, a replay or a hand edit.
+Every repair is logged, since the recurring defect in this repository is never the
+drop itself but the silence around it.
+
+**Nothing ticks when a task is approved, and that is a decision.** Approving a
+task now unblocks its dependents, so the obvious move is for the executor to run a
+tick when the critic passes. It does not. The executor's contract is to finish the
+task it was given, and the 30-second ticker already walks every active project, so
+correctness is covered; what an inline tick would buy is latency, against a step
+that costs roughly 70 seconds of reranking anyway. It would also race the ticker
+into logging refused transitions that are not failures. The cost is that a chain
+of N dependent steps takes up to N ticker intervals longer than it used to, which
+is recorded here rather than left for somebody to measure and call a regression.
+
+**Also not built, and named rather than implied:** the project panel shows a
+blocked step as `pending` with no indication of what it is waiting for. That is
+accurate and uninformative, and fixing it needs the API to return each task's
+dependencies, which is a wider change than this one.
 
 ## Per-task state machine
 
@@ -189,7 +295,16 @@ It cannot tell you whether the positioning advice is good. It can tell you the m
 
 `fabricated_citation` never retries: asking the same maker again is how you get a second invented source, so it escalates immediately. Everything else gets one bounded re-do, because "produced nothing" is the kind of failure a retry plausibly fixes. **Each attempt is its own `task_runs` row**, so a retry never erases why the previous one failed.
 
-Artifacts are inline text (`body`) rather than Storage for now: the only thing the AI produces today is prose, and putting a paragraph in object storage would mean a fetch to read it and a bucket policy to get right. `storage_path` arrives with the first artifact that is genuinely a file. A database constraint refuses a row with neither, because an artifact with no content is a task that reported success and produced nothing.
+Artifacts are inline text (`body`) when what a step produced is prose, which is everything the AI writes today, and a file in Storage when it is genuinely a file. A database constraint refuses a row with neither, because an artifact with no content is a task that reported success and produced nothing.
+
+**The file half became real in `20260829124000`, and it had been half-built for two weeks.** `storage_path` existed, `Artifact.storagePath` was on the wire, the project route selected it, and the panel had an arm that said "This one is a file rather than text." There was no bucket, no policy, no reader and no writer, so that arm was reachable only by a row nobody could create. What exists now:
+
+- **A private bucket**, path `<project_id>/<artifact_id>/<filename>`. The first segment is the tenant and the `storage.objects` select policy reads it, so a file written anywhere else in the bucket is visible to nobody.
+- **`GET /api/projects/:projectId/artifacts/:artifactId/file-url`**, which reads the artifact row **as the caller** (RLS row visibility is the authorization) and then mints a ten-minute signed URL with the service key. The URL is a bearer capability: minted per click, never stored, never logged.
+- **`writeFileArtifact`** in `apps/api/src/lib/artifact-files.ts`, which uploads the object and writes the row together and **removes the object if the row fails**. Postgres has no transaction across object storage, so the compensation is explicit. Row-first would be worse: it satisfies the check constraint while pointing at nothing, and the panel would list a delivered artifact that 404s on download.
+- **A Download control** in the project panel, where the sentence used to be.
+
+**Uploads are Node-initiated only.** The Python service has no storage keys by design ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) and never handles bytes, so `WriteArtifactProposal` and `ArtifactEmbedPayload` are unchanged and there is **no file-producing proposal kind**. A wire shape designed before its first producer is a guess, and unknown kinds already fail loudly; that seam changes when a byte-producer exists.
 
 ## What else lives in `packages/core`
 

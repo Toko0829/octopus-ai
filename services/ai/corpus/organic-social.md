@@ -61,6 +61,11 @@ influence falls. The signals worth tracking are how many people saw the material
 who do not already follow, how many took the offered next step, and how many
 moved to a channel you control.
 
+An account with a few thousand followers that produces subscribers, enquiries and
+paying customers every week is worth more than one with ten times the following
+and no next step. Follower count is the number other people judge an account by,
+which is not the same as the number worth managing it against.
+
 ## Move attention to something you own
 
 Social audiences are rented. Reach depends on ranking decisions that change

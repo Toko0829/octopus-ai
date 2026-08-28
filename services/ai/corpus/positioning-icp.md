@@ -29,6 +29,11 @@ Content earns traffic but not signups. The topic attracts readers who were never
 going to buy, which usually means the content was chosen for reach rather than
 for the problem the product solves.
 
+The service version of the same symptom is a steady trickle of enquiries from
+people who cannot afford the work, or clients who arrive expecting something
+adjacent to what is sold. That is not a sales problem to be handled better at the
+call, it is the positioning selecting the wrong people before the call.
+
 In both cases more budget makes the loss larger, not smaller.
 
 ## Narrow converts better than broad

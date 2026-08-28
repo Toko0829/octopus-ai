@@ -4,11 +4,222 @@
 >
 > **Implementation status (Phase 2, in progress):** `20260813120000_workflow_dag.sql` adds `projects`, `tasks`, `task_deps`, `task_runs` and the append-only `events` log, with the per-task **state machine enforced by trigger** and the DAG's acyclicity enforced by trigger. It also finally gives `rooms.project_id` the foreign key it has been missing since `20260728120000`, when there was no table to point at. `20260813130000_harden_workflow_functions.sql` follows it, for the reason recorded below. **Applied and verified against the live database: `supabase/tests/rls_workflow.sql`, 33/33.** See "Workflow schema" below.
 >
-> **Implementation status (Phase 1), kept as the record of what landed then:** ten migrations. `20260812120000_action_embeds.sql` adds the interactive-card table (first component: `plan`) and `20260812120100_revoke_default_privileges.sql` closes the default grants described below. `20260724000000_init.sql` creates `profiles` + the `user_role` enum with RLS (own-row read/update) and a new-user trigger. `20260728120000_chat.sql` adds `rooms` / `channels` / `room_members` / `messages` — membership RLS, unique `idempotency_key`, identity `seq`, the `realtime.broadcast_changes()` insert trigger, and the Realtime subscribe policy on `realtime.messages`. `20260728160000_harden_security_definer.sql` relocates the policy helper to the `private` schema. `20260728170000_grant_table_privileges.sql` adds the table-level grants both earlier migrations omitted. `20260728190000_profile_co_member_visibility.sql` lets room members read each other's profile basics (own-row-only made the member list impossible). `20260728200000_realtime_presence_policy.sql` adds the `realtime.messages` INSERT policy that `channel.track()` needs. `20260728210000_rag_schema.sql` creates the RAG corpus (`knowledge_sources`, `documents`, `doc_chunks`, `eval_golden_set`) with `halfvec(1024)` + HNSW + generated `tsvector`, and `20260728220000_hybrid_search.sql` adds the RRF fusion function. Everything below that these two blocks do not name was still design-only at that point; **29 migrations are applied now**, and `supabase/README.md` carries the audit that catches a recorded version drifting from its filename.
+> **Implementation status (Phase 1), kept as the record of what landed then:** ten migrations. `20260812120000_action_embeds.sql` adds the interactive-card table (first component: `plan`) and `20260812120100_revoke_default_privileges.sql` closes the default grants described below. `20260724000000_init.sql` creates `profiles` + the `user_role` enum with RLS (own-row read/update) and a new-user trigger. `20260728120000_chat.sql` adds `rooms` / `channels` / `room_members` / `messages` — membership RLS, unique `idempotency_key`, identity `seq`, the `realtime.broadcast_changes()` insert trigger, and the Realtime subscribe policy on `realtime.messages`. `20260728160000_harden_security_definer.sql` relocates the policy helper to the `private` schema. `20260728170000_grant_table_privileges.sql` adds the table-level grants both earlier migrations omitted. `20260728190000_profile_co_member_visibility.sql` lets room members read each other's profile basics (own-row-only made the member list impossible). `20260728200000_realtime_presence_policy.sql` adds the `realtime.messages` INSERT policy that `channel.track()` needs. `20260728210000_rag_schema.sql` creates the RAG corpus (`knowledge_sources`, `documents`, `doc_chunks`, `eval_golden_set`) with `halfvec(1024)` + HNSW + generated `tsvector`, and `20260728220000_hybrid_search.sql` adds the RRF fusion function. Everything below that these two blocks do not name was still design-only at that point; **31 migrations are applied now**, and `supabase/README.md` carries the audit that catches a recorded version drifting from its filename.
 >
 > **`20260812140000_enable_pgtap.sql` was reconstructed from the database rather than written.** pgTAP had been installed ad hoc through a tool instead of through a file, so the extension existed and the repository had no record of it. Every suite in `supabase/tests/` calls `extensions.plan()`, so an environment built from these migrations alone would have failed all four on a missing function, and the symptom would have read as a broken test rather than a missing install. The body is byte-for-byte what was applied, recovered from `schema_migrations.statements`; only the header is new, and its version places it where it actually ran.
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
+
+### Artifacts can be files now (`20260829124000`)
+
+`artifacts.storage_path` has existed since `20260813160000` and travelled the whole way: the column, `Artifact.storagePath` in `packages/contracts`, the read in `apps/api/src/routes/projects.ts`, and an arm in the project panel that said "This one is a file rather than text." **Nothing could ever put anything there.** There was no bucket, no policy on `storage.objects`, no route that could hand a file back, and no writer, so that UI arm was reachable only by a row nobody could create.
+
+The narrative below still says that migration was "deliberately not Storage yet", and the reasoning it gives was right at the time: the only thing the AI produced was text, and putting a paragraph of positioning copy in object storage means a fetch to read it plus a bucket policy to get right. What changed is not the reasoning. The creative side of the module produces files and needs somewhere to put them, so this closes the four gaps and nothing else.
+
+**The path convention is the tenancy scheme**, which is why it is stated in the migration header, in `artifactObjectPath`, and here:
+
+```
+<project_id>/<artifact_id>/<filename>
+```
+
+The first segment is the tenant, and `storage.objects`'s select policy reads it. A file stored anywhere else in this bucket is visible to nobody, which is the safe direction for a convention to fail in. `writeFileArtifact` builds the path through one function that strips separators and traversal out of the filename, because that name arrives from an artifact title or a provider response and a `../` in it would move the object out of its tenant folder.
+
+**The policy and the read path agree by construction.** Both terminate in `private.is_project_member`. `20260827110000` is the reason this is written down as a rule rather than left as a habit: a read path and a policy answering the same question differently is a defect waiting for somebody to fix only one of them.
+
+**The tenant is parsed by a `private` function rather than by an inline cast, and that is a real failure mode rather than tidiness.** `((storage.foldername(name))[1])::uuid` raises `invalid_text_representation` for any object whose first segment is not a UUID, and Postgres does not promise to evaluate the `bucket_id` test first. One stray object anywhere in Storage could therefore turn every member's listing into an error rather than a shorter list. `private.artifact_object_project` returns null instead, and null is nobody. Asserted directly in `supabase/tests/storage_artifacts.sql`, with a junk-path object sitting in the bucket while the member counts rows.
+
+**No client insert, update or delete policy**, matching every artifact row: a client that could write here could fabricate the evidence its own task is judged on, and do it without the `artifacts` row that makes the file discoverable at all.
+
+**The object and the row are written together, and the object is removed if the row fails.** Postgres has no transaction spanning object storage, so the compensation is explicit. The other order was considered and is worse: a row written first would satisfy `artifacts_have_content` while pointing at nothing, and the panel would list a delivered artifact that 404s on download. A missing file that is visible lies to a person; a stored file that is invisible only costs money.
+
+**Uploads are Node-initiated only**, and that is a decision rather than a scheduling accident. The Python service has no storage keys by design ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) and never handles bytes. `WriteArtifactProposal` and `ArtifactEmbedPayload` are unchanged and there is no file-producing proposal kind: a wire shape designed before its first producer is a guess, and unknown kinds already fail loudly. `generate_creative` stays a structured brief arriving as an ordinary text artifact until a byte-producer exists.
+
+**Applied and verified against the live database: `supabase/tests/storage_artifacts.sql`, 11/11.** Advisors after the migration: no new lints.
+
+**One thing found while writing this and deliberately not changed here.** `anon`, `authenticated` and `service_role` all hold the full set of table privileges on `storage.objects`, `TRUNCATE` included, from Supabase's own defaults. That is the same class of finding `20260812120100` closed for `public`, and `TRUNCATE` matters for the same reason: it is not row-level and it ignores RLS entirely. It is not remotely exploitable, since PostgREST does not expose the `storage` schema and the Storage service reaches Postgres by its own path. It is untouched because `storage.objects` is owned by `supabase_storage_admin` rather than by `postgres`, and revoking `INSERT`/`UPDATE`/`DELETE` from `authenticated` there would break user-scoped uploads across every future bucket: narrowing another service's grants is a decision with its own blast radius and does not belong inside this slice. Recorded in [security-compliance.md](security-compliance.md) so it is a decision rather than an oversight.
+
+### The marketing domain (`20260829120000` … `20260829123000`)
+
+The module doc for the first vertical specifies nine entities and this file
+contained none of them. Four now exist: `campaigns`, `channel_connections`,
+`ad_entities` and `campaign_outcomes`. The other five stay design-only and are
+marked as such in [marketing-growth-engine.md](../30-modules/marketing-growth-engine.md),
+so "see data-model.md for tables" is finally a true pointer rather than a
+forward reference.
+
+**Nothing here is new capability.** There is no executor, no adapter call and no
+OAuth route in this slice. The enforcement spine that already works (risk clamp →
+`tasks.risk_tier` → `routeTask` rule 1 → the transition guard) has until now been
+guarding prose, because prose is the only thing an AI task can produce. These are
+the rows it will be guarding, and they land **before** their writers on purpose:
+the recorded defect class in this repository is the opposite order, with
+`risk_tier` unreachable for its whole life and `task_deps` holding no row for two
+weeks.
+
+Three stances are deliberate and each one is a decision somebody could reasonably
+reverse, so each is written down rather than left in the DDL.
+
+**`channel_connections` has no client policy of any kind and no client grant.**
+That is the `events` precedent for a stronger reason. `events` has no reader yet;
+this table has a reader that must never be a client, because a row holds an
+access token and a refresh token, and **RLS filters rows, not columns**. A select
+policy that returned the row would return the secrets with it. The absence of the
+grant is the control, and it fails the right way: a client gets `permission
+denied` rather than zero rows, which is the distinction `20260827110000` cost 47
+tasks and 28 artifacts to learn. `marketing_rls.sql` asserts the error code, not
+a count, and asserts it for the owner of the very room as well as for an
+outsider. What a member legitimately needs to see, "Meta account connected,
+scopes X", is a later API projection that never selects the token columns.
+
+The table is **room-scoped rather than project-scoped**, on the `room_sources`
+reasoning: a connection to somebody's ad account arrives before any single
+campaign project exists, and one room carries many projects. Project scoping
+would mean re-authorising the same account for every goal posted in the same
+workspace.
+
+**`campaign_outcomes` is append-only by grant, including for `service_role`.** An
+outcome row is flywheel training evidence, and a training signal that can be
+rewritten after the fact is not evidence of anything. A correction is a new row
+with `source = 'manual'`, so both the number we pulled and the number a person
+says is right survive, and anyone reading them can see that they differed. Worth
+noting precisely: `feedback_events` states this intent in a comment and enforces
+it only against clients, since it grants `all` to `service_role` and revokes
+nothing. `events` is the stronger half of the pattern and this table follows
+`events`, `TRUNCATE` included.
+
+**`publishing` is a state distinct from `live`.** Recording a campaign as live
+before the platform confirmed it would put an untrue sentence in the audit trail,
+which is exactly the argument that gave `action_embeds` its `answered` state
+rather than reusing `approved`. Between the request and the confirmation the
+honest answer is "we asked". The legal arcs are `draft→ready|cancelled`,
+`ready→publishing|cancelled`, `publishing→live|failed`, `live→paused|completed`,
+`paused→live|cancelled|completed`. **`live→cancelled` is absent on purpose**: a
+spending campaign is paused first, so stopping the money and closing the record
+stay two acts with two events.
+
+Two guards land with their tables. `private.guard_campaign_transition` mirrors
+`guard_task_transition` exactly, validating the arc and writing the
+`campaign.transitioned` event in one trigger, `SECURITY DEFINER` per the
+`20260815200000` lesson. `private.guard_ad_entity_hierarchy` keeps the ad tree
+well-formed: an `ad_set` hangs off a `campaign`, an `ad` off an `ad_set`, and a
+parent belongs to the same campaign. That last clause is the cross-project-edge
+argument from `task_deps` applied here, and it matters for a concrete reason: a
+campaign you pause that does not stop all of its spend is worse than one you
+cannot pause at all.
+
+`ad_entities.state` carries `rejected` at the **entity** level because platforms
+disapprove an ad rather than a campaign, and the module rule "ad-policy rejection
+leads to revise, never silently keep spending" is unstateable if disapproval can
+only be recorded against the whole campaign while its siblings keep running.
+`ad_entities.spec` holds the approved brief and the publisher reads it rather
+than regenerating: a second generation is a different artifact from the one a
+person said yes to, and the difference would reach the world before anyone saw
+it.
+
+Two idempotency keys are declared now and written later, so their writers arrive
+to a column instead of to a migration: `campaigns.source_embed_id` (one approved
+card, one campaign) and the unique
+`(campaign_id, period_start, period_end, source)` on `campaign_outcomes` (the
+same period pulled twice is one row). `ad_entities.idempotency_key` is the DB
+half of rules 9 and 12 for the publish side effect.
+
+**`campaigns.budget_cap` is nullable and NULL means nothing authorised, never
+unlimited**, verbatim the stance `projects.budget_ceiling` takes. The two compose
+in `checkSpendCap` in `packages/marketing`, enforced in tool code per rule 7.
+
+**Applied and verified against the live database: `supabase/tests/marketing_rls.sql`, 39/39.**
+**Advisors after every migration, and they caught something the suite could not.**
+`campaign_transition_allowed` and `campaign_state_is_terminal` were written
+without a pinned `search_path`, passed all 39 assertions, and raised lint 0011 on
+both the moment the migration applied. That is the same pairing `20260813130000`
+had to correct after `20260813120000`, and it is the same lesson: a suite asserts
+what somebody thought to assert. Fixed at source and re-applied rather than
+patched by a follow-up migration, because the file has to be replayable from
+scratch. **One INFO lint remains and it is the intended shape:**
+`channel_connections` has RLS enabled with no policy, exactly like `events` and
+`plan_diffs`, recorded here rather than described as clean so nobody has to
+re-decide it. Three `unindexed_foreign_keys` INFO lints
+(`campaigns.task_id`, `ad_entities.channel_connection_id`,
+`channel_connections.connected_by`) are the same class already accepted on
+`artifacts.task_run_id` and `action_embeds.acted_by`, and are left alone rather
+than answered with three indexes that the `unused_index` lint would then flag.
+
+### Applying a plan diff (`20260828130000`, `20260828140000`)
+
+`embed_component` gains `replan`, in its own migration so the value is never used
+in the transaction that adds it, which PostgreSQL forbids. No new `embed_state`:
+a diff is a proposal with a verdict, so the four existing states already mean what
+they need to.
+
+`public.plan_diffs` is the provenance table, keyed on the embed. A table rather
+than a column on `projects`, because a project legitimately has many diffs over
+its life while `source_embed_id` is one card, once. Append-only by grant, like
+`events`, and with no client select policy for the same reason: what a member
+needs to see is the card, which is already readable through room membership.
+
+`public.apply_plan_diff(embed_id)` is `materialise_plan`'s sibling and shares its
+four properties: one transaction, payload read from the card, idempotent by its
+own provenance, and unknown values raise. Two passes again, so an op may depend on
+a step added after it in the list.
+
+Three guards worth naming.
+
+**Stale ops raise.** An op naming a task at `approved` or later, or in a terminal
+state, fails the whole diff. The card was written against a project that has since
+moved, and skipping the impossible ops would apply a change nobody reviewed. The
+pgTAP suite asserts the atomicity directly: the stale card's _first_ op is an add
+that succeeds, and after the failure that step is not in the table.
+
+**Cross-room diffs raise.** The card names a project in its payload, and the
+function checks that project resolves, through its own plan card, to the room the
+diff was posted in. Nothing else on the path does: the action route checks the
+caller's membership of the card's room, which says nothing about the project the
+payload names.
+
+**`modify_task` writes three columns and no others.** State, owner and risk tier
+are absent from the update statement rather than filtered out of a payload, so
+there is no flag to widen. A diff that could move a step from `user` to `ai`, or
+lower its tier, would be an authorisation decision travelling through the field
+that looks least like one.
+
+**Applied and verified against the live database: `supabase/tests/apply_plan_diff.sql`, 27/27**,
+including that a modify carrying `owner`, `riskTier` and `state` changes none of
+them, that a cancelled step's dependents stay blocked, and that no failed diff is
+recorded as applied, so a retry is still possible.
+
+### The task DAG finally has edges (`20260828120000`)
+
+`task_deps` was created by `20260813120000` and **no row was ever written to it**
+until this migration. `materialise_plan` said why and the reason held: the planner
+emitted stages and steps, so the only edges available would have been inferred
+from stage order, which states a constraint nobody made.
+
+`PlanStep` now carries an `id` and a `dependsOn` on the card payload, and
+`materialise_plan` resolves them in a **second pass** over the stages, after every
+task exists. One pass would have been enough only if a dependency always appeared
+before the step that names it, and nothing requires that: the plan is ordered for
+a reader, so a one-pass version would fail a legal plan on presentation order.
+
+Every edge is written `hard`, which is the only kind `private.task_deps_satisfied`
+consults. The failure stances match the ones already in the function: an
+unresolvable reference and a duplicate step id both **raise**
+(`invalid_parameter_value`), exactly as an unknown owner or an unreadable risk
+tier does, and a cycle is refused by `task_deps_guard_acyclic` rather than
+re-checked here, so the DAG's shape has one definition. All of them raise inside
+the transaction that created the project, so a card that fails on its edges leaves
+nothing behind even though its tasks were already inserted.
+
+A card written before this migration carries no step ids, so nothing resolves and
+it materialises flat: identical to what it did before. The
+`project.materialised` event payload gains an `edges` count, because a plan with
+no edges and a plan that ran everything at once are the same picture afterwards
+without it.
+
+**Applied and verified against the live database: `supabase/tests/materialise_plan.sql`, 42/42**,
+including edge direction (an edge inserted backwards satisfies every count while
+inverting the schedule), that a dependent is genuinely blocked by
+`task_deps_satisfied`, and that `private.tasks_ready` now returns one step from a
+three-step plan where it would have returned three.
 
 ### An escalated step can be resolved by its owner (`20260827120000`)
 
@@ -126,6 +337,8 @@ Workflow      projects ─*─ tasks ─*─ task_deps (DAG)   tasks ─*─ tas
               tasks ─*─ artifacts   tasks ─*─ escalations   projects ─*─ playbook_versions
 Marketplace   node_profiles ─*─ offers ─*─ engagements ─*─ proof_artifacts ─*─ ratings/disputes
 Payments      escrow_holds ─*─ ledger_entries (double-entry) ─*─ payouts   users ─*─ subscriptions
+Marketing     campaigns ─*─ ad_entities (tree)   campaigns ─*─ campaign_outcomes
+              rooms ─*─ channel_connections (OAuth, room-scoped, no client reader)
 Knowledge     documents ─*─ doc_chunks (halfvec + tsvector)   knowledge_sources   suppliers   cost_benchmarks
 Audit         events (append-only, event-sourced)   notifications   delivery_log   ops_actions
 ```
@@ -167,7 +380,7 @@ Audit         events (append-only, event-sourced)   notifications   delivery_log
 
 **Live:** `projects`, `tasks`, `task_deps`, `task_runs` and the append-only `events` log (`20260813120000`), plus `artifacts` (`20260813160000`, described below). `playbook_versions`, `agent_steps`, `tool_invocations` and `escalations` remain design-only.
 
-**`20260813160000` adds `artifacts`:** what a task produced, and the evidence the checker judges. Inline text in `body`, files in `storage_path`, and a **check constraint refusing a row with neither**, because an artifact with no content is a task that reported success and produced nothing. Deliberately not Storage-only yet: the sketch above has artifacts carrying a `storage_path`, which is right for a video edit and wrong for the only thing the AI produces today, and putting a paragraph of copy in object storage would mean a fetch to read it plus a bucket policy to get right. `task_runs` gains its purpose here too, since **each execution attempt is its own row** and a retry that overwrote the previous one would erase why the first failed.
+**`20260813160000` adds `artifacts`:** what a task produced, and the evidence the checker judges. Inline text in `body`, files in `storage_path`, and a **check constraint refusing a row with neither**, because an artifact with no content is a task that reported success and produced nothing. Deliberately not Storage-only yet: the sketch above has artifacts carrying a `storage_path`, which is right for a video edit and wrong for the only thing the AI produces today, and putting a paragraph of copy in object storage would mean a fetch to read it plus a bucket policy to get right. **That last clause is now done and the column is finally reachable:** `20260829124000` adds the private `artifacts` bucket, the member select policy on `storage.objects`, the signed-URL route and the writer, described above. `body` is still where text goes; nothing about the inline case changed. `task_runs` gains its purpose here too, since **each execution attempt is its own row** and a retry that overwrote the previous one would erase why the first failed.
 
 **`20260813140000` adds `projects.source_embed_id` and `public.materialise_plan(uuid)`**, which is how rows first get written: approving a plan card creates the project and one task per step in one transaction. `source_embed_id` is unique, and that is the idempotency key rather than mere provenance: the approve route records the verdict before materialising, so without it a retry after a partial failure would build a second project from the same card. The function is `SECURITY INVOKER` in `public` (the only schema PostgREST can reach) with `EXECUTE` granted to `service_role` alone, which is what keeps it clear of lints 0028/0029 while staying callable by supabase-js. `task_deps` is deliberately left empty: the planner emits stages and steps, not dependencies, and deriving edges from stage order would invent a constraint nobody stated.
 
@@ -218,6 +431,35 @@ Five things about that migration are load-bearing, and each is enforced in the d
 | `platform_fees`, `invoices` | —                                                                                                                |
 
 - Money movements are **idempotent** (unique `idempotency_key`) and **event-sourced**; the ledger is append-only.
+
+## Marketing schema
+
+The first vertical's domain. All four tables are **live** (`20260829120000` …
+`20260829123000`); the narrative and the three deliberate stances are at the top
+of this file. `content_items`, `creative_assets`, `email_sequences`,
+`landing_pages` and `creative_performance` remain design-only, tracked in
+[marketing-growth-engine.md](../30-modules/marketing-growth-engine.md).
+
+| Table                 | Key columns                                                                                                                                                                                                                                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `campaigns`           | `id`, `project_id`, `task_id?`, `name`, `objective`, `channel` (meta/google/email/organic_social), `state` (draft→ready→publishing→live→paused→completed, plus cancelled/failed), `budget_cap` (**NULL = nothing authorised**), `currency`, `pause_reason`, `source_embed_id` UNIQUE, `created_by` |
+| `channel_connections` | `id`, `room_id`, `connected_by`, `provider` (registry-validated), `channel`, `external_account_id`, `granted_scopes[]`, `access_token`, `refresh_token`, `token_expires_at`, `status` (active/expired/revoked), UNIQUE `(room_id, provider, external_account_id)`                                  |
+| `ad_entities`         | `id`, `campaign_id`, `project_id`, `parent_id?`, `kind` (campaign/ad_set/ad), `state` (…/rejected/archived), `external_id?`, `channel_connection_id?`, `spec` JSONB, `idempotency_key` UNIQUE                                                                                                      |
+| `campaign_outcomes`   | `id`, `campaign_id`, `project_id`, `period_start`, `period_end`, `spend`, `impressions`, `clicks`, `conversions`, `revenue`, `metrics` JSONB, `source` (pull_metrics/manual), UNIQUE `(campaign_id, period_start, period_end, source)`                                                             |
+
+- **Grants differ across the four and the differences are the design.** `campaigns`,
+  `ad_entities` and `campaign_outcomes` are `select` for `authenticated` and `all`
+  for `service_role`, like every workflow table. `channel_connections` grants
+  nothing to any client role and carries no policy, because it holds tokens.
+  `campaign_outcomes` additionally revokes `update, delete, truncate` from
+  `service_role` as well as from clients.
+- **Membership is the same predicate everywhere**, `private.is_project_member`, the
+  `20260827110000` version. `ad_entities` and `campaign_outcomes` carry a
+  denormalised `project_id` so that predicate is a plain column test, exactly as
+  `artifacts` carries one beside `task_id`.
+- **The spend cap is enforced in tool code, not by a constraint.** `budget_cap` and
+  `projects.budget_ceiling` compose in `checkSpendCap` (`packages/marketing`),
+  which is where rule 7 puts it.
 
 ## RAG schema
 

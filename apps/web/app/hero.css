@@ -1,0 +1,293 @@
+/*
+ * The cinematic hero band. See components/landing/HeroStage.tsx for why this
+ * exists and what it is drawing.
+ *
+ * Everything that moves here moves slowly and at low contrast. The design
+ * system reserves glow for a live agent, and this is not chrome asking for
+ * attention: it is a field, and the rule it answers to is that nothing in it
+ * should be noticeable while somebody is reading the words on top of it.
+ */
+
+.hero-stage {
+  position: relative;
+  isolation: isolate;
+  /* No 100vw bleed: .hero-stage is a direct child of <main> and is already full
+     width. The usual `width:100vw; margin-left:50%; translateX(-50%)` trick
+     counts the scrollbar in 100vw and overflowed the document by its width.
+
+     The class is `hero-stage`, not `stage`: the plan card's rows have owned
+     `.stage` / `.stage-name` / `.stage-step` since the first version of this
+     page, and the collision gave every row in the sample card a #060c13
+     background and a 600px min-height. Nothing threw; the card just went dark
+     and its text fell to a 1.1 contrast ratio. */
+  min-height: 600px;
+  height: min(88svh, 840px);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  background: #060c13;
+  color: var(--text);
+}
+
+.hs-art {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* The rendered plate. `object-fit: cover` because the band's height is driven by
+   the viewport and the frame's 16:9 will not match it. `xMidYMax`-equivalent
+   framing: the bloom is at the bottom of the render and the arms rise from it, so
+   the bottom edge is the one that must stay anchored when the band is short. */
+.hs-plate {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 100%;
+  display: block;
+}
+
+.hs-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* `.hs-shafts` and its 48s sway are gone with the SVG shafts they moved: the three
+   light shafts are in the photograph now. What still moves here is what a still
+   frame cannot do, which is the arms breathing and the motes rising. */
+
+/* The arms breathe out of phase with each other, which is what stops eight
+   strokes reading as a diagram. */
+.hs-arms path {
+  animation: hs-breathe 11s ease-in-out infinite;
+}
+
+@keyframes hs-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.hs-motes {
+  position: absolute;
+  inset: 0;
+}
+
+.hs-motes span {
+  position: absolute;
+  border-radius: var(--r-full);
+  background: radial-gradient(circle, #7ef0e2 0%, rgba(36, 201, 184, 0.5) 45%, transparent 70%);
+  animation: hs-drift 34s linear infinite;
+}
+
+@keyframes hs-drift {
+  0% {
+    transform: translateY(14px);
+  }
+  100% {
+    transform: translateY(-160px);
+  }
+}
+
+/* Film grain over the whole field. feTurbulence as a data URI, so there is no
+   asset to ship and nothing to 404. */
+.hs-grain {
+  position: absolute;
+  inset: 0;
+  opacity: 0.055;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* The scrim is an ACCESSIBILITY CONTROL, not a mood layer, and the numbers below
+   are the reason it exists rather than a darker render.
+
+   Measured on the bare plate, the lede at --hs-lede came out at 2.25 against the
+   lightest part of the field, needing 4.5. The obvious fix, underexposing the
+   render until every tier passed, was tried and produced a dead picture: shafts
+   gone, bloom gone, a near-black rectangle that satisfied a checker. Text over a
+   photograph is made legible by a scrim; that is what a scrim is for.
+
+   Centred and elliptical because the copy is centred. It is heaviest exactly where
+   the h1 sits and falls to nothing at the edges, so the corners of the plate keep
+   their depth. Composited values are verified in the browser over the rendered
+   page, never against the plate on its own.
+
+   IT IS LIGHT ON PURPOSE, AND THAT IS ALSO MEASURED. The first version ran 0.82 at
+   the centre and put the h1 at 17.3 against a requirement of 3.0, which is the
+   underexposure mistake again in a smaller area: contrast bought by deleting the
+   picture. Swept over the composited page at 1280:
+
+     scrim     eyebrow  quiet  lede   band mean luminance
+     0.82        10.44   8.18  11.78  0.0090
+     0.44         7.63   6.07   9.08  0.0199
+     0.34         6.82   5.54   8.40  0.0234   <- shipped
+     none         4.77   4.00   6.27  0.0384
+
+   With no scrim at all every tier still passes, because the plate is rendered dark
+   enough. The scrim is kept only for margin: 4.77 on the eyebrow is 6% clear of AA
+   at ONE viewport, and the crop moves with the viewport, so a brighter part of the
+   field can arrive under the text. 0.34 buys every tier back to 5.5 or better and
+   still keeps 61% of the picture. */
+.hs-scrim {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 86% 78% at 50% 46%,
+    rgba(4, 10, 14, 0.34) 0%,
+    rgba(4, 10, 14, 0.28) 38%,
+    rgba(4, 10, 14, 0.14) 68%,
+    rgba(4, 10, 14, 0.03) 88%,
+    rgba(4, 10, 14, 0) 100%
+  );
+}
+
+/* ---------------------------------------------------------------- copy */
+
+.hs-copy {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding-block: var(--sp-18);
+}
+
+.hs-copy .eyebrow {
+  color: var(--accent-text);
+  margin-bottom: var(--sp-5);
+}
+
+.hs-copy h1 {
+  margin: 0 auto;
+  max-width: 17ch;
+  color: var(--ink-0);
+  text-wrap: balance;
+}
+
+/* Solid colours, not translucent white. Text over a gradient field should not
+   composite: a `color-mix(... transparent)` changes contrast with whatever part
+   of the image happens to sit behind it, which on a field that runs from #0b2a2f
+   to #060c13 is a range, not a value. These are picked cool to sit in the water
+   rather than warm like the ink ramp, and measured against the lightest part of
+   the field rather than the average. */
+.hs-copy h1 .quiet {
+  color: #9fb3b3;
+}
+
+.hs-copy .lede {
+  margin: var(--sp-6) auto 0;
+  max-width: 52ch;
+  color: #c6d4d4;
+  text-wrap: pretty;
+}
+
+.hs-copy .cta-row {
+  justify-content: center;
+  margin-top: var(--sp-8);
+}
+
+/* The composer replaced the two pills. On the dark plate the field has to state
+   its own surface: it sits inside a `data-skin="dark"` subtree, so the tokens
+   already resolve dark, but the plate behind it is a photograph rather than a
+   flat colour and a translucent field over one is unreadable. */
+.hs-copy .goal {
+  margin-top: var(--sp-8);
+}
+
+.hs-copy .goal-input {
+  background: #0a141aef;
+  border-color: color-mix(in oklab, var(--ink-0) 26%, transparent);
+  color: var(--ink-0);
+}
+
+.hs-copy .goal-input::placeholder {
+  color: #93a6a6;
+}
+
+.hs-copy .goal-input:focus-visible {
+  border-color: var(--teal-400);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--teal-400) 26%, transparent);
+}
+
+/* Demoted from a second pill to a text link: two equal-weight buttons make the
+   reader choose, and there is only one thing to do here. */
+.hero-secondary {
+  display: inline-block;
+  margin-top: var(--sp-5);
+  color: #c6d4d4;
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in oklab, var(--ink-0) 28%, transparent);
+  padding-bottom: 2px;
+  transition: color var(--dur-fast) var(--ease-state);
+}
+
+.hero-secondary:hover {
+  color: var(--ink-0);
+}
+
+/* Pills here, and only here. The reference's hero controls are 32-40px radius
+   while its menu rows are 4px, and the first measurement of it counted the menu
+   rows and concluded the whole system was tight. A pill is the shape of an
+   invitation; the 4px radius stays the shape of a control. */
+.btn.btn-pill {
+  border-radius: var(--r-full);
+  padding: 12px var(--sp-6);
+}
+
+.btn.btn-on-art {
+  background: color-mix(in oklab, var(--ink-0) 12%, transparent);
+  border-color: color-mix(in oklab, var(--ink-0) 28%, transparent);
+  color: var(--ink-0);
+}
+
+.btn.btn-on-art:hover {
+  background: color-mix(in oklab, var(--ink-0) 20%, transparent);
+  border-color: color-mix(in oklab, var(--ink-0) 44%, transparent);
+  color: var(--ink-0);
+}
+
+/* The disclaimer rides at the foot of the image, the way the reference floats
+   "not an FDIC-insured bank" under its own hero. A limit nobody scrolls to has
+   not been disclosed. */
+.hs-note {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  bottom: var(--sp-6);
+  transform: translateX(-50%);
+  width: min(72ch, calc(100vw - var(--gutter) * 2));
+  margin: 0;
+  padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--r-xl);
+  background: #070f16f2;
+  border: 1px solid color-mix(in oklab, var(--ink-0) 12%, transparent);
+  color: #bccbcc;
+  font-size: var(--text-sm);
+  line-height: var(--lh-ui);
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .hero-stage {
+    height: auto;
+    min-height: 0;
+    padding-block: var(--sp-18) var(--sp-32);
+  }
+  .hs-copy {
+    padding-block: 0;
+  }
+  .hs-note {
+    bottom: var(--sp-4);
+    font-size: var(--text-xs);
+    padding: var(--sp-2) var(--sp-4);
+  }
+}

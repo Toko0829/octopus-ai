@@ -72,6 +72,28 @@ export const PlanCitation = z.object({
 export type PlanCitation = z.infer<typeof PlanCitation>;
 
 export const PlanStep = z.object({
+  /**
+   * Names this step inside its own plan, so another step can depend on it.
+   *
+   * Optional because cards written before dependencies existed carry no ids, and
+   * because a step nothing depends on never needs one. It is a join key rather
+   * than a display value: `materialise_plan` builds an id -> task uuid map from
+   * it, which is why the shape is constrained on the Python side that mints it.
+   */
+  id: z.string().optional(),
+  /**
+   * Ids of steps whose output this step consumes, and the only edges that exist.
+   * They become `task_deps` rows with `dep_kind = 'hard'` when the plan is
+   * approved, which is what makes the scheduler hold this step back until they
+   * are approved.
+   *
+   * Stated by the planner and sanitised in `services/ai` before it gets here:
+   * anything unresolvable is already dropped, because an invented edge blocks
+   * work for a reason that does not exist while a missing one merely lets two
+   * things run at once. `materialise_plan` still refuses a reference it cannot
+   * resolve, since a card can also arrive from an older service or a hand edit.
+   */
+  dependsOn: z.array(z.string()).optional().default([]),
   title: z.string(),
   detail: z.string(),
   owner: StepOwner,
@@ -173,6 +195,99 @@ export const PlanEmbedPayload = z.object({
   context: z.array(IntakeSlot).optional(),
 });
 export type PlanEmbedPayload = z.infer<typeof PlanEmbedPayload>;
+
+/* --------------------------------------------------------- replan embeds */
+
+/**
+ * One change a replan proposes. The set is small on purpose: everything an owner
+ * wants from a replan is work added, work called off, or work whose description
+ * was wrong, and each is separately reviewable on a card.
+ */
+export const ReplanAddStep = z.object({
+  op: z.literal('add_step'),
+  stage: FunnelStage,
+  /** Names the step within this diff, so another added step can depend on it. */
+  id: z.string(),
+  title: z.string(),
+  detail: z.string(),
+  owner: StepOwner,
+  citations: z.array(z.number().int().positive()).default([]),
+  riskTier: TaskRiskTier.optional().default('reversible'),
+  acceptanceCriteria: z.array(z.string()).optional().default([]),
+  /**
+   * May name another step this diff adds, by its `id`, or an existing task, by
+   * its UUID. The two spaces cannot collide: a step id is at most 32 characters
+   * of lowercase, digits and hyphens, and a UUID is 36.
+   */
+  dependsOn: z.array(z.string()).optional().default([]),
+});
+export type ReplanAddStep = z.infer<typeof ReplanAddStep>;
+
+export const ReplanCancelTask = z.object({
+  op: z.literal('cancel_task'),
+  taskId: z.string().uuid(),
+  /**
+   * The step's title as it stood when the diff was written, so the card reads on
+   * its own. A person approving "cancel 3f2a-..." is approving a UUID.
+   *
+   * Filled in by Node from the DAG it already sent to the core, never asked of the
+   * model: it is a fact about a row, and asking for it would create a second
+   * source of truth that can disagree with the first. Optional so a card written
+   * before this parses, and because the title is a convenience rather than the
+   * reference: `taskId` is what `apply_plan_diff` acts on.
+   */
+  taskTitle: z.string().optional(),
+  /**
+   * Required, and not decoration. Cancelling is the one change that destroys
+   * planned work, so the audit trail has to say why; `apply_plan_diff` writes it
+   * into the `task.replan_cancelled` event, which the state transition itself
+   * cannot know.
+   */
+  reason: z.string(),
+});
+export type ReplanCancelTask = z.infer<typeof ReplanCancelTask>;
+
+/**
+ * Correct the description of a step that is still going to happen.
+ *
+ * **The absent fields are the safety property.** State, owner and risk tier
+ * cannot be edited here. Changing who runs a step, or what it is permitted to
+ * touch, is a different piece of work and goes through cancel plus add, so the
+ * person sees both halves and approves them. Routing an authorisation decision
+ * through the op that looks least like one is what rules 7 and 11 forbid, and
+ * `apply_plan_diff` enforces it by naming three columns rather than taking a
+ * payload, so there is no flag anybody can pass to widen it.
+ */
+export const ReplanModifyTask = z.object({
+  op: z.literal('modify_task'),
+  taskId: z.string().uuid(),
+  /** As on `cancel_task`: filled in by Node so the card reads on its own. */
+  taskTitle: z.string().optional(),
+  detail: z.string().optional(),
+  acceptanceCriteria: z.array(z.string()).optional(),
+  /** Adds edges and cannot remove them: a removable edge unblocks a step whose
+   * prerequisite was never done. */
+  addDependsOn: z.array(z.string()).optional().default([]),
+});
+export type ReplanModifyTask = z.infer<typeof ReplanModifyTask>;
+
+export const ReplanOp = z.discriminatedUnion('op', [
+  ReplanAddStep,
+  ReplanCancelTask,
+  ReplanModifyTask,
+]);
+export type ReplanOp = z.infer<typeof ReplanOp>;
+
+/** The `payload` of an `action_embeds` row whose component is `replan`. */
+export const ReplanEmbedPayload = z.object({
+  projectId: z.string().uuid(),
+  /** What the owner asked for, in their words, so the card says why it exists. */
+  reason: z.string().optional(),
+  summary: z.string(),
+  ops: z.array(ReplanOp).min(1),
+  citations: z.array(PlanCitation).default([]),
+});
+export type ReplanEmbedPayload = z.infer<typeof ReplanEmbedPayload>;
 
 export const IntakeQuestion = z.object({
   slot: IntakeSlotKey,
@@ -345,6 +460,7 @@ export const ActionEmbed = z.discriminatedUnion('component', [
   z.object({ ...EmbedBase, component: z.literal('plan'), payload: PlanEmbedPayload }),
   z.object({ ...EmbedBase, component: z.literal('question'), payload: QuestionEmbedPayload }),
   z.object({ ...EmbedBase, component: z.literal('artifact'), payload: ArtifactEmbedPayload }),
+  z.object({ ...EmbedBase, component: z.literal('replan'), payload: ReplanEmbedPayload }),
 ]);
 export type ActionEmbed = z.infer<typeof ActionEmbed>;
 
@@ -355,6 +471,7 @@ export type ActionEmbed = z.infer<typeof ActionEmbed>;
 export type PlanActionEmbed = Extract<ActionEmbed, { component: 'plan' }>;
 export type QuestionActionEmbed = Extract<ActionEmbed, { component: 'question' }>;
 export type ArtifactActionEmbed = Extract<ActionEmbed, { component: 'artifact' }>;
+export type ReplanActionEmbed = Extract<ActionEmbed, { component: 'replan' }>;
 
 /**
  * A chat message as returned by the API. `seq` is the monotonic ordering cursor
@@ -529,6 +646,22 @@ export const Artifact = z.object({
 export type Artifact = z.infer<typeof Artifact>;
 
 /**
+ * A short-lived capability to download one file artifact.
+ *
+ * The URL is a **bearer credential**: anyone holding it can fetch the object
+ * until it expires, without presenting a token. That is why it is minted per
+ * request rather than stored, why the window is minutes rather than days, and
+ * why it is never written to a log. `expiresAt` is on the wire so the client can
+ * tell "this link is stale" apart from "this file is gone", which are different
+ * things to say to a person.
+ */
+export const ArtifactFileUrl = z.object({
+  url: z.string().url(),
+  expiresAt: z.string().datetime(),
+});
+export type ArtifactFileUrl = z.infer<typeof ArtifactFileUrl>;
+
+/**
  * One step of an approved plan. `ownerType` is what the planner proposed;
  * `state` is where the router and the scheduler actually put it, and the two
  * disagreeing is information rather than a bug (rule 1 of the router outranks
@@ -681,6 +814,26 @@ export const contract = c.router(
         404: ApiError,
       },
       summary: 'One project with its tasks and everything they produced',
+    },
+
+    getArtifactFileUrl: {
+      method: 'GET',
+      path: '/projects/:projectId/artifacts/:artifactId/file-url',
+      pathParams: z.object({
+        projectId: z.string().uuid(),
+        artifactId: z.string().uuid(),
+      }),
+      responses: {
+        200: ArtifactFileUrl,
+        401: ApiError,
+        /**
+         * Invisible, absent, and "this artifact is text rather than a file" are
+         * all 404, matching how a non-member gets 404 on a room: the API does
+         * not confirm the existence of something it will not show you.
+         */
+        404: ApiError,
+      },
+      summary: 'A short-lived signed URL for one file artifact',
     },
 
     listMessages: {

@@ -75,9 +75,33 @@ RISK_TIERS = ("read_only", "reversible", "external", "high_risk")
 RiskTier = Literal["read_only", "reversible", "external", "high_risk"]
 
 
+# A step id: lowercase, digits and hyphens, short enough to read in an audit
+# event. Constrained rather than free text because it is a join key on the other
+# side of the seam: `materialise_plan` builds an id -> task uuid map from it.
+STEP_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,31}$"
+
+
 class PlanStep(BaseModel):
     """One concrete action inside a funnel stage."""
 
+    id: str | None = Field(
+        default=None,
+        pattern=STEP_ID_PATTERN,
+        description=(
+            "A short slug naming this step within this plan, so other steps can "
+            "depend on it. Human-readable ('positioning-icp'), because it appears "
+            "in audit events."
+        ),
+    )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "Ids of steps whose OUTPUT this step consumes. Hard dependencies only: "
+            "the scheduler blocks on nothing else (see task_deps_satisfied). Coming "
+            "later in the funnel is not a dependency."
+        ),
+    )
     title: str = Field(min_length=1, max_length=120)
     detail: str = Field(min_length=1, max_length=600)
     owner: Literal["AI", "HUMAN", "YOU"] = Field(
@@ -159,7 +183,119 @@ class WriteArtifactProposal(BaseModel):
     citations: list[str] = Field(default_factory=list)
 
 
-Proposal = PostMessageProposal | ProposePlanProposal | WriteArtifactProposal
+# ------------------------------------------------------------------ replan ----
+#
+# Reconciling a running plan with what has actually happened, as a DIFF rather
+# than a regenerated plan. `ai-orchestrator.md` has specified "replan by diff, not
+# regeneration: preserving completed work and audit history" since Phase 0, and
+# the reason is in the name. Regenerating discards the record of what was already
+# approved, delivered and paid for, and the audit trail is the thing this system
+# sells.
+#
+# Three operations, and the set is deliberately small. Everything an owner wants
+# from a replan is expressible as work added, work called off, or work whose
+# description was wrong, and each of those is separately reviewable on a card.
+
+
+class AddStepOp(BaseModel):
+    """Add one step to a running project.
+
+    Carries everything `PlanStep` carries, plus the stage it belongs to, because
+    a diff has no stage structure to sit inside. `depends_on` may name another
+    step added by the same diff, by its `id`, or an existing task, by its UUID:
+    both are references to a task that will exist when the diff is applied, and
+    which kind a given string is can be decided by looking at it.
+    """
+
+    op: Literal["add_step"] = "add_step"
+    stage: StageKey
+    id: str = Field(
+        pattern=STEP_ID_PATTERN,
+        description="Names this step within this diff, so another added step can depend on it.",
+    )
+    title: str = Field(min_length=1, max_length=120)
+    detail: str = Field(min_length=1, max_length=600)
+    owner: Literal["AI", "HUMAN", "YOU"]
+    citations: list[int] = Field(default_factory=list)
+    risk_tier: RiskTier = "reversible"
+    acceptance_criteria: list[str] = Field(default_factory=list, max_length=3)
+    depends_on: list[str] = Field(default_factory=list, max_length=8)
+
+
+class CancelTaskOp(BaseModel):
+    """Call off a step that has not been done yet.
+
+    `reason` is required and is not decoration: a cancelled step is the one kind
+    of change that destroys planned work, so the audit trail has to say on whose
+    account and why. It is written into the `task.replan_cancelled` event.
+
+    **A cancelled step does not release what depends on it.** `task_deps_satisfied`
+    counts a dependency satisfied at `approved` or later, and `cancelled` is
+    neither, so a dependent stays blocked. That is correct rather than an
+    oversight: work planned to consume an output that will now never exist should
+    not quietly proceed as though it had one. A diff that cancels a step usually
+    has to say what happens to its dependents too.
+    """
+
+    op: Literal["cancel_task"] = "cancel_task"
+    task_id: str
+    reason: str = Field(min_length=1, max_length=400)
+
+
+class ModifyTaskOp(BaseModel):
+    """Correct the description of a step that is still going to happen.
+
+    **Only three fields, and the exclusions are the safety property.** State,
+    owner and risk tier are absent on purpose. Changing who runs a step, or what
+    it is permitted to touch, is not an edit to that step: it is a different piece
+    of work, and it goes through `cancel_task` plus `add_step` so a person sees
+    both halves on the card and approves them. Allowing a "modify" to move a step
+    from HUMAN to AI, or from `high_risk` to `reversible`, would route an
+    authorisation decision through the field that looks least like one, which is
+    exactly what rules 7 and 11 forbid.
+
+    `add_depends_on` adds edges and cannot remove them, for the same reason. A
+    removable edge is a way to unblock a step whose prerequisite was never done.
+    """
+
+    op: Literal["modify_task"] = "modify_task"
+    task_id: str
+    detail: str | None = Field(default=None, min_length=1, max_length=600)
+    acceptance_criteria: list[str] | None = Field(default=None, max_length=3)
+    add_depends_on: list[str] = Field(default_factory=list, max_length=8)
+
+
+ReplanOp = AddStepOp | CancelTaskOp | ModifyTaskOp
+
+
+class ProposeReplanProposal(BaseModel):
+    """Propose that Node render a diff card the owner can approve.
+
+    Approving it is what applies the diff, exactly as approving a plan card is
+    what creates the project. The card is the authorisation boundary, so this
+    service proposes a change to a running project and never makes one.
+    """
+
+    kind: Literal["propose_replan"] = "propose_replan"
+    project_id: str
+    summary: str = Field(
+        min_length=1,
+        max_length=800,
+        description="What this diff changes and why, in the owner's terms. Rendered on the card.",
+    )
+    ops: list[ReplanOp] = Field(
+        min_length=1,
+        max_length=10,
+        description=(
+            "Capped at ten because a card a person will not read is not an "
+            "authorisation. A change larger than this is a new plan, not a diff."
+        ),
+    )
+
+
+Proposal = (
+    PostMessageProposal | ProposePlanProposal | WriteArtifactProposal | ProposeReplanProposal
+)
 
 
 # ------------------------------------------------------------------ intake ----
@@ -298,6 +434,53 @@ class IntakeResponse(BaseModel):
 
     reasoning_summary: str
     core: str
+
+
+class ReplanTask(BaseModel):
+    """One task of the running project, as the reasoning core sees it.
+
+    Sent by Node rather than read from the database, because this service reaches
+    Postgres for retrieval only and the DAG is Node's to own (ADR-0006). `state`
+    travels because it decides what may be proposed: a step already approved is
+    history, and proposing to cancel it is proposing to rewrite the record.
+    """
+
+    task_id: str
+    title: str
+    detail: str = ""
+    stage: str | None = None
+    state: str
+    owner: Literal["AI", "HUMAN", "YOU"]
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Task UUIDs this one already waits on. Sent so the core can tell "
+            "whether an edge it is about to propose closes a cycle, rather than "
+            "leaving the acyclicity trigger to discover it under the owner's "
+            "approval click."
+        ),
+    )
+
+
+class ReplanRequest(BaseModel):
+    """Reconcile a running project with what the owner now knows.
+
+    Owner-initiated. Nothing in this system replans on its own, and that is a
+    scope decision rather than a missing feature: automatic replanning would
+    change a running project with no card and no approval, which is the one
+    property the plan card exists to provide.
+    """
+
+    project_id: str
+    goal: str = Field(min_length=1, max_length=4000)
+    reason: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="Why the owner wants the plan changed, in their own words.",
+    )
+    tasks: list[ReplanTask] = Field(min_length=1, max_length=200)
+    context: list[IntakeSlot] = Field(default_factory=list)
+    trace: TraceContext
 
 
 class ExecuteRequest(BaseModel):

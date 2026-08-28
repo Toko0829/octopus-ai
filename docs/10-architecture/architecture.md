@@ -97,6 +97,18 @@ plausible progress figure. A step counts as done at `approved` rather than `done
 matching `private.task_deps_satisfied`, so the number a person reads and the
 number the scheduler acts on cannot disagree about what finished means.
 
+### `GET /api/projects/:projectId/artifacts/:artifactId/file-url`
+
+A short-lived signed URL for an artifact that is a file rather than text.
+
+**The artifact row is read with the caller-scoped client, and that read is the authorization.** If `artifacts_select_member` does not return the row, there is nothing to sign. The service client appears only afterwards, to mint the URL, because signing needs a key no client may hold. Reading the row with the service client and checking membership in the handler would put the authorization back in this file, where the next handler would have to remember to repeat it.
+
+**The `storage.objects` select policy is the second layer, and it agrees with this route by construction.** Both terminate in `private.is_project_member`. That is the `20260827110000` lesson stated as a design rule rather than as a war story: a read path and a policy that answer the same question differently is a defect waiting for somebody to fix only one of them, and the last time it happened it cost 47 tasks and 28 of 58 artifacts.
+
+**The signed URL is a bearer capability and is treated as one.** Anyone holding it can fetch the object until it expires, without presenting a token. So it is minted per request rather than stored, it lives ten minutes, and **it is never logged** (the catch logs `err.message` rather than the error object, because the storage client's errors can carry a response body). `expiresAt` travels with it so the client can tell "this link is stale" apart from "this file is gone".
+
+Invisible, absent, and "this artifact is text rather than a file" are all `404`, matching the room idiom. The branch that decides which is a pure exported function, tested, because the text case is the common one: every artifact the product has written so far has a `body` and a null `storage_path`, and asking Storage to sign null would surface an ordinary artifact as a `500`.
+
 ### `POST /api/projects/:projectId/tasks/:taskId/resolution`
 
 Unsticking one step: `answer` records that the owner did it and completes the
@@ -265,9 +277,33 @@ An approval calls `public.materialise_plan(embedId)`, which creates a `projects`
 - **Idempotent per card.** `projects.source_embed_id` is unique, and a repeat call returns the project it already built. That is what makes the ordering safe: materialising happens **after** the verdict is recorded, so if it fails the decision still stands and a retry cannot produce a second project. Rolling the approval back instead would silently undo a person's decision because of an error they never saw.
 - **The wire's owner becomes the row's owner.** `AI` / `HUMAN` / `YOU` map to `ai` / `human` / `user`, and an unrecognised value **raises** rather than defaulting. Defaulting would quietly route a task meant for a person to the AI, which is the one direction this mapping must never fail in.
 
-**No `task_deps` are written.** The planner returns stages and steps, not dependencies, and inferring "strategy before content" from stage order would invent a constraint nobody stated. An invented edge is worse than a missing one: a missing edge lets things run in parallel that perhaps should not, while an invented one blocks work for a reason that does not exist and cannot be traced to anything.
+**`task_deps` are written from what the planner stated, and from nothing else** (`20260828120000`). For two weeks none were, and the reason held while it held: the planner returned stages and steps, so the only edges available would have been inferred from stage order, and inferring "strategy before content" invents a constraint nobody stated. An invented edge is worse than a missing one, because a missing edge lets things run in parallel that perhaps should not while an invented one blocks work for a reason that does not exist and cannot be traced to anything.
+
+What changed is the planner, not the inference: `PlanStep` carries an `id` and a `dependsOn`, so a step can say which other step's output it consumes, and a second pass over the stages turns those into `hard` edges once every task exists. The function still derives nothing from stage order. An unresolvable reference or a duplicate id **raises**, on the same reasoning as the owner mapping above, and a cycle is refused by the acyclicity trigger rather than re-checked here. All three raise inside the same transaction, so a card that fails on its edges leaves no project behind even though its tasks were already written. `services/ai` drops what it can safely drop before proposing, so those raises are for cards that came from somewhere else.
 
 `PlanEmbedPayload` gained `goal` for this, carrying the request in the person's own words. It also repairs the flywheel label, since `feedback_events.subject` stores this payload and an output with no input is not a training pair.
+
+## Changing a plan that is already running
+
+`POST /api/projects/:projectId/replan` takes the owner's reason and returns `202`.
+The core is handed the project's goal, that reason, and the current DAG, and
+answers with a diff; Node posts it as a `replan` card; approving that card runs
+`public.apply_plan_diff`, through the same embed-action route a plan approval
+uses. So a change to a running project crosses the same authorisation boundary
+the original plan did, and **nothing replans on its own**.
+
+The DAG travels in the request rather than being read by the core, because the
+task graph is Node's (ADR-0006) and the core reaches Postgres for retrieval only.
+It also means the diff is answered against exactly the state this process saw,
+which is what makes `apply_plan_diff`'s staleness check meaningful rather than a
+race between two readers.
+
+Two guards live in the function rather than the route, for the reason the rest of
+this seam already follows. A **stale** op, naming work that has since been
+approved or stopped, raises and takes the whole diff with it, because skipping it
+would apply a change nobody reviewed. And a **cross-room** diff raises: the card
+names a project in its payload, and the route only ever checked the caller's
+membership of the card's room, which says nothing about the project named.
 
 **One scheduler tick runs immediately after**, so the person who just approved something sees where each step went rather than watching rows sit `PENDING` until some future trigger fires. It is not fatal: the approval and the project both stand whatever the tick does, and the next tick finds the same tasks. The decisions live in `@octopus/core` with no database access at all; `apps/api/src/lib/scheduler.ts` is the adapter that gives them one. See [business-projects-workflow.md](../30-modules/business-projects-workflow.md) for the router's rules and for the one place the tick deliberately stops short.
 

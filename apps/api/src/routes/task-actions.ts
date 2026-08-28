@@ -6,6 +6,7 @@ import { retryTask } from '@octopus/core';
 import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
 import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
 import { createSchedulerPorts } from '../lib/scheduler';
+import { resolveProjectOwner } from '../lib/project-owner';
 import { resolveTask, type TaskAction } from '../lib/task-resolution';
 
 /**
@@ -98,34 +99,8 @@ export async function taskActionRoutes(
         // needs is the owner's call: it records their work as the deliverable, or
         // spends compute retrying. A human node in the room must not do either.
         // Read as the caller, so a room they cannot see yields no owner and the
-        // check fails closed.
-        const { data: project, error: projectErr } = await db
-          .from('projects')
-          .select('source_embed_id')
-          .eq('id', projectId)
-          .maybeSingle<{ source_embed_id: string | null }>();
-        if (projectErr) throw projectErr;
-
-        let ownerId: string | null = null;
-        if (project?.source_embed_id) {
-          const { data: embed, error: embedErr } = await db
-            .from('action_embeds')
-            .select('room_id')
-            .eq('id', project.source_embed_id)
-            .maybeSingle<{ room_id: string }>();
-          if (embedErr) throw embedErr;
-          if (embed) {
-            const { data: room, error: roomErr } = await db
-              .from('rooms')
-              .select('owner_id')
-              .eq('id', embed.room_id)
-              .maybeSingle<{ owner_id: string | null }>();
-            if (roomErr) throw roomErr;
-            ownerId = room?.owner_id ?? null;
-          }
-        }
-        // A null owner means nobody, never anybody: the same safe default
-        // `rooms.owner_id` takes for approvals.
+        // check fails closed. A null owner means nobody, never anybody.
+        const { ownerId } = await resolveProjectOwner(db, projectId);
         if (!ownerId || ownerId !== userId) {
           return fail(reply, 403, 'forbidden', 'Only the workspace owner can resolve a step.');
         }

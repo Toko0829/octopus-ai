@@ -86,15 +86,31 @@ def test_a_request_touching_nothing_scores_zero_rather_than_one():
 
 
 def test_proximity_counts_only_stages_the_corpus_covers():
-    """Measurement is a real funnel stage with no document behind it.
+    """Proximity follows the corpus, and the corpus moved.
 
-    Scoring against the six stages rather than the five covered ones would report
-    a measurement-only request as fully in scope, which is exactly the GA4 leak
-    `rag-knowledge.md` measured at 12x over a legitimate goal.
+    Measurement used to be the worked example here: a real funnel stage with no
+    document behind it, so a measurement-only request scored 0.0 and was declined
+    before it cost a retrieval. `measurement-attribution.md` closed that stage, so
+    the same request now scores 1.0 and plans, which is the intended product
+    change rather than a regression to fix back.
+
+    What guards the GA4 leak instead is the division of labour this design rests
+    on. Intake asks whether a request is in the right field; the corpus covers
+    measurement principles and names no analytics platform anywhere, so a platform
+    setup question is in the right field and still unanswerable. That is the
+    **groundedness gate's** job, and `scope-ga4-tracking` is still in the golden
+    set holding exactly that line.
+
+    The property this test actually pins is unchanged: proximity counts covered
+    stages, so a stage the corpus does not have still scores zero.
     """
-    assert proximity(["measurement"]) == 0.0
+    assert proximity(["measurement"]) == 1.0
     assert proximity(["channels"]) == 1.0
-    assert proximity(["channels", "measurement"]) == 0.5
+    assert proximity(["channels", "measurement"]) == 1.0
+    # An uncovered stage still scores zero, which is the rule itself rather than
+    # the list it happens to be checking today.
+    assert proximity(["logistics"]) == 0.0
+    assert proximity(["channels", "logistics"]) == 0.5
 
 
 # ------------------------------------------------------------ completeness ----

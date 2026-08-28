@@ -2,12 +2,21 @@
 
 The pipeline from rag.md, in order:
 
-    query -> embed -> [dense + sparse, fused with RRF in Postgres] -> rerank -> drop weak
+    query -> normalise vocabulary -> embed -> [dense + sparse, fused with RRF in
+    Postgres] -> rerank -> drop weak
 
 The last step is the one that is easy to skip and expensive to skip. A relevance
 threshold DROPS weak chunks rather than padding the context window with them:
 handing a model six loosely related paragraphs is how confident, wrong,
 "grounded" answers get produced.
+
+The first step is the newest. `vocabulary.normalise_query` rewrites the metric
+words a founder uses into the ones the corpus is written in, because at a 1.76x
+threshold margin a synonym the corpus lacks refuses a request the corpus can
+answer. It runs here, on the goal and on every sub-query, rather than in intake:
+this is the one point every retrieval passes through, including the executor's
+per-step re-retrieval, the seed probe, both eval harnesses, and the goals that
+skip intake's questions entirely via `_passthrough`.
 """
 
 from __future__ import annotations
@@ -18,6 +27,7 @@ from dataclasses import dataclass
 from .config import Settings
 from .db import Database
 from .providers import Providers
+from .vocabulary import normalise_query
 
 logger = logging.getLogger("octopus.ai.retrieval")
 
@@ -49,10 +59,38 @@ class RetrievedChunk:
 
 
 @dataclass(frozen=True)
+class ScoredCandidate:
+    """One reranked candidate and the score that decided its fate.
+
+    Recorded for every candidate, kept *and* dropped, because the number worth
+    seeing is the margin rather than the count. A chunk at 0.0011 against a
+    0.0013 threshold is a near-miss and one at 0.00002 is not, and a result that
+    only reports `dropped_below_threshold` cannot tell those two apart. That
+    distinction is exactly the one the registrations/signups refusal turned on:
+    the corpus could answer the question and the survivor missed by a factor
+    under two, which looked identical to "nothing relevant" from outside.
+
+    Nothing in the request path reads this. It is built from values already in
+    hand during the loop that builds the chunks, and `tools/rag-lens` plots it
+    against the threshold line.
+    """
+
+    query: str
+    chunk_id: str
+    title: str
+    rerank_score: float
+    rrf_score: float
+    kept: bool
+
+
+@dataclass(frozen=True)
 class RetrievalResult:
     chunks: list[RetrievedChunk]
     candidates_considered: int
     dropped_below_threshold: int
+    # Defaulted so every existing construction site stays valid and so a caller
+    # that does not care never has to thread it through.
+    scored: tuple[ScoredCandidate, ...] = ()
 
     @property
     def grounded(self) -> bool:
@@ -85,9 +123,12 @@ class Retriever:
 
         That design searched every sub-query but ran a single rerank against the
         original goal. It changed nothing, for a reason the numbers made obvious.
-        Candidate breadth was never the bottleneck: `retrieval_candidates` is 40
-        against a corpus of ~43 chunks, so one search already returns nearly
-        everything and a union has nothing to add. The bottleneck is the rerank,
+        Candidate breadth was never the bottleneck: when it was measured,
+        `retrieval_candidates` was 40 against a corpus of ~43 chunks, so one
+        search already returned nearly everything and a union had nothing to add.
+        ADR-0009 later cut it to 25 on the same reasoning, and it is a setting
+        tied to corpus size rather than a constant, so it is worth re-measuring
+        as the corpus grows. The bottleneck is the rerank,
         where a broad goal scores uniformly badly against specific chunks (top
         0.066, against 0.474 for a focused query), so almost nothing clears the
         threshold and the planner is left with material for two or three stages.
@@ -95,7 +136,26 @@ class Retriever:
         Scoring "how do I price my offer" against the pricing chunks is a
         question the cross-encoder can answer well. Scoring "get my first 100
         customers" against them is not. Hence one rerank per sub-query.
+
+        **Vocabulary is normalised first**, here rather than inside
+        `_retrieve_one`, so that function stays a pure "one query, one search"
+        and there is exactly one place that rewrites anything. Sub-queries are
+        normalised too: they are written by a model that has read the person's
+        wording, so they inherit the person's vocabulary along with it.
         """
+        query, fired = normalise_query(query)
+        if subqueries:
+            normalised_subs: list[str] = []
+            for sub in subqueries:
+                text, sub_fired = normalise_query(sub)
+                normalised_subs.append(text)
+                fired = fired + sub_fired
+            subqueries = normalised_subs
+        if fired:
+            # Logged because a rewrite nobody can attribute is a rewrite nobody
+            # can debug, and this one sits upstream of every retrieval.
+            logger.info("vocabulary normalised", extra={"rules": sorted(set(fired))})
+
         queries = subqueries or [query]
 
         # The goal itself is always searched first, and it is the gate.
@@ -168,6 +228,11 @@ class Retriever:
             chunks=merged,
             candidates_considered=considered,
             dropped_below_threshold=dropped,
+            # Concatenated rather than merged: a chunk scored once per sub-query
+            # and the per-query scores are the point. Collapsing them to a best
+            # score would hide that a chunk clears one stage's question and not
+            # another's, which is the behaviour decomposition exists to buy.
+            scored=tuple(c for r in results for c in r.scored),
         )
 
     async def _retrieve_one(
@@ -206,12 +271,24 @@ class Retriever:
         hits = await self._providers.rerank(query, documents, self._s.rerank_top_n)
 
         chunks: list[RetrievedChunk] = []
+        scored: list[ScoredCandidate] = []
         dropped = 0
         for hit in hits:
-            if hit.score < self._s.active_rerank_min_score:
+            row = rows[hit.index]
+            kept = hit.score >= self._s.active_rerank_min_score
+            scored.append(
+                ScoredCandidate(
+                    query=query,
+                    chunk_id=row["chunk_id"],
+                    title=row["title"],
+                    rerank_score=hit.score,
+                    rrf_score=float(row.get("rrf_score") or 0.0),
+                    kept=kept,
+                )
+            )
+            if not kept:
                 dropped += 1
                 continue
-            row = rows[hit.index]
             chunks.append(
                 RetrievedChunk(
                     chunk_id=row["chunk_id"],
@@ -241,4 +318,5 @@ class Retriever:
             chunks=chunks,
             candidates_considered=len(rows),
             dropped_below_threshold=dropped,
+            scored=tuple(scored),
         )

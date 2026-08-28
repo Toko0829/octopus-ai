@@ -1,6 +1,7 @@
 'use client';
 
 import type {
+  ArtifactFileUrl,
   Channel,
   EmbedActionResponse,
   ListMessagesResponse,
@@ -105,6 +106,32 @@ export function resolveStep(
 /** One project with its steps and everything they produced. */
 export function getProject(projectId: string) {
   return bff<ProjectDetail>(`/projects/${projectId}`);
+}
+
+/**
+ * A download link for an artifact that is a file rather than text.
+ *
+ * Minted per click and short-lived, because the URL is a bearer capability:
+ * anyone holding it can fetch the object until it expires, without signing in.
+ * That is why it is not part of the project payload, where it would sit in
+ * memory and in any logged response for as long as the panel is open.
+ */
+export function getArtifactFileUrl(projectId: string, artifactId: string) {
+  return bff<ArtifactFileUrl>(`/projects/${projectId}/artifacts/${artifactId}/file-url`);
+}
+
+/**
+ * Ask for the plan to be changed.
+ *
+ * Returns `202` and nothing else useful: the diff takes tens of seconds and
+ * arrives as a card in the room, which is where it is approved. Nothing changes
+ * until somebody approves it, so this call is safe to make and abandon.
+ */
+export function requestReplan(projectId: string, reason: string) {
+  return bff<{ runId: string; status: string }>(`/projects/${projectId}/replan`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
 }
 
 export function getMembers(roomId: string) {

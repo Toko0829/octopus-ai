@@ -1,8 +1,14 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import type { Artifact, ProjectDetail, ProjectSummary, Task } from '@octopus/contracts';
+import type {
+  Artifact,
+  ArtifactFileUrl,
+  ProjectDetail,
+  ProjectSummary,
+  Task,
+} from '@octopus/contracts';
 import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
-import { createUserClient, type SupabaseConfig } from '../lib/supabase';
+import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
 import { citationTitles, summariseProjects } from '../lib/project-progress';
 
 /**
@@ -31,6 +37,10 @@ import { citationTitles, summariseProjects } from '../lib/project-progress';
 
 const RoomParams = z.object({ roomId: z.string().uuid() });
 const ProjectParams = z.object({ projectId: z.string().uuid() });
+const ArtifactParams = z.object({
+  projectId: z.string().uuid(),
+  artifactId: z.string().uuid(),
+});
 
 const ProjectRow = z.object({
   id: z.string(),
@@ -68,6 +78,48 @@ const ArtifactRow = z.object({
 
 function fail(reply: FastifyReply, status: number, error: string, message: string) {
   return reply.code(status).send({ error, message });
+}
+
+/**
+ * How long a download link lives.
+ *
+ * Ten minutes. The link is a bearer capability, so the window is the exposure if
+ * one is copied out of a browser's history or a screenshot; ten minutes is long
+ * enough to click and download a large file and short enough that a leaked one
+ * is stale before it is useful. It is minted per request, so a shorter-lived
+ * link costs nothing but a round trip.
+ */
+export const SIGNED_URL_TTL_SECONDS = 600;
+
+/**
+ * What the file-url route should do about an artifact row, decided separately
+ * from doing it.
+ *
+ * Pure so the branch is testable without a Supabase client, and specifically so
+ * the **"text artifact" case is pinned**. A row with no `storage_path` is not a
+ * file, and asking Storage to sign a null path would either throw deep inside
+ * the client or, worse, sign something. Both would surface as a 500 for a
+ * perfectly ordinary artifact.
+ *
+ * All three misses are 404, matching how a non-member gets 404 on a room: the
+ * API does not confirm the existence of something it will not show you. The
+ * `reason` distinguishes them for the log, which is where the difference is
+ * actually useful.
+ */
+export type FileUrlDecision =
+  | { kind: 'sign'; storagePath: string }
+  | { kind: 'not_found'; reason: 'invisible_or_absent' | 'not_a_file' };
+
+export function decideFileUrl(row: { storage_path: string | null } | null): FileUrlDecision {
+  if (!row) return { kind: 'not_found', reason: 'invisible_or_absent' };
+  const path = row.storage_path?.trim();
+  if (!path) return { kind: 'not_found', reason: 'not_a_file' };
+  return { kind: 'sign', storagePath: path };
+}
+
+/** When a link minted now stops working, as an instant the client can compare against. */
+export function signedUrlExpiresAt(nowMs: number, ttlSeconds = SIGNED_URL_TTL_SECONDS): string {
+  return new Date(nowMs + ttlSeconds * 1000).toISOString();
 }
 
 export interface ProjectRoutesOptions {
@@ -269,6 +321,90 @@ export async function projectRoutes(
       } catch (err) {
         request.log.error({ err, projectId, userId: request.user?.sub }, 'getProject failed');
         return fail(reply, 500, 'internal_error', 'Could not load the project.');
+      }
+    },
+  );
+
+  /**
+   * A short-lived download link for one file artifact.
+   *
+   * **The artifact row is read with the caller-scoped client, and that read is
+   * the authorization.** RLS row visibility decides whether this person may have
+   * the file: if `artifacts_select_member` does not return the row, there is
+   * nothing to sign. The service client is used only afterwards, to mint the
+   * URL, because signing needs a key no client may hold. Reading the row with
+   * the service client and then checking membership in code would put the
+   * authorization back in this handler, where the next handler would have to
+   * remember to repeat it.
+   *
+   * The `storage.objects` select policy added by `20260829124000` is the second
+   * layer, and both terminate in `private.is_project_member`, so the policy and
+   * this route agree by construction rather than by two people remembering the
+   * same rule.
+   *
+   * **The signed URL is never logged.** It is a bearer capability: anyone holding
+   * it can fetch the object until it expires, so it belongs in the response and
+   * nowhere else, exactly like an access token.
+   */
+  app.get(
+    '/api/projects/:projectId/artifacts/:artifactId/file-url',
+    { preHandler: requireAuth },
+    async (request, reply): Promise<ArtifactFileUrl | FastifyReply> => {
+      const params = ArtifactParams.safeParse(request.params);
+      if (!params.success) {
+        return fail(reply, 400, 'bad_request', 'projectId and artifactId must be UUIDs.');
+      }
+      const { projectId, artifactId } = params.data;
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+
+      try {
+        const { data: row, error } = await db
+          .from('artifacts')
+          .select('id, storage_path')
+          .eq('id', artifactId)
+          .eq('project_id', projectId)
+          .maybeSingle<{ id: string; storage_path: string | null }>();
+        if (error) throw error;
+
+        const decision = decideFileUrl(row);
+        if (decision.kind === 'not_found') {
+          request.log.info(
+            { projectId, artifactId, reason: decision.reason, userId: request.user?.sub },
+            'file url refused',
+          );
+          return fail(reply, 404, 'not_found', 'No file is available for that artifact.');
+        }
+
+        const admin = createServiceClient(opts.supabase);
+        const { data: signed, error: signErr } = await admin.storage
+          .from('artifacts')
+          .createSignedUrl(decision.storagePath, SIGNED_URL_TTL_SECONDS);
+        if (signErr) throw signErr;
+
+        // An absent URL with no error would otherwise be returned as `undefined`
+        // and fail Zod parsing at the client, which reads as a contract bug
+        // rather than as a missing object.
+        if (!signed?.signedUrl) {
+          request.log.error({ projectId, artifactId }, 'storage returned no signed url');
+          return fail(reply, 404, 'not_found', 'No file is available for that artifact.');
+        }
+
+        return { url: signed.signedUrl, expiresAt: signedUrlExpiresAt(Date.now()) };
+      } catch (err) {
+        // The message, not the error object. Rule 16 forbids a silent failure, so
+        // something has to be logged; the storage client's errors can carry a
+        // response body, and a signed URL that reached the logs would outlive the
+        // request that was allowed to have it.
+        request.log.error(
+          {
+            projectId,
+            artifactId,
+            userId: request.user?.sub,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          'getArtifactFileUrl failed',
+        );
+        return fail(reply, 500, 'internal_error', 'Could not prepare the download.');
       }
     },
   );

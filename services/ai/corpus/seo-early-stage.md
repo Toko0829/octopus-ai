@@ -24,6 +24,11 @@ lower in volume, and far less contested. They also convert better, because
 someone describing their specific situation is closer to acting than someone
 typing a broad category term.
 
+This is why organic search tends to produce fewer visitors and better ones. A
+page that answers a real question earns enquiries and signups from people who
+arrived already believing they have the problem, which is the expensive half of
+persuasion done before they landed.
+
 ## Match the intent behind the query
 
 A query asking how to do something wants instructions, and a page that is mostly

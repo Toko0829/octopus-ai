@@ -45,7 +45,7 @@
   position: relative;
   width: 44px;
   height: 44px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-secondary);
@@ -60,11 +60,11 @@
     border-color var(--dur);
 }
 .guild:hover {
-  border-radius: 12px;
+  border-radius: var(--r-md);
   border-color: var(--border-strong);
 }
 .guild.active {
-  border-radius: 12px;
+  border-radius: var(--r-md);
   color: var(--text);
   box-shadow: inset 0 0 0 1.5px var(--guild-accent, var(--accent));
 }
@@ -76,13 +76,13 @@
   transform: translateY(-50%);
   width: 4px;
   height: 22px;
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
   background: var(--guild-accent, var(--accent));
 }
 .rail-add {
   width: 44px;
   height: 44px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   border: 1px dashed var(--border-strong);
   background: transparent;
   color: var(--text-faint);
@@ -94,7 +94,7 @@
 }
 .rail-add:hover {
   color: var(--accent);
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 
 /* ============================ Channel sidebar ============================ */
@@ -574,18 +574,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Visually hidden, still announced. */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
+/* .sr-only now lives in globals.css, so the landing can use it too. */
 .plan-foot {
   padding: var(--sp-4) var(--sp-5);
   border-top: 1px solid var(--border);
@@ -739,7 +728,7 @@
 .composer-hint kbd {
   font-family: var(--font-mono);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   padding: 1px 5px;
   color: var(--text-muted);
 }
@@ -1241,6 +1230,52 @@
   color: var(--color-text-muted);
 }
 
+/* The plan-change card.
+   Each op says what it does in a WORD, never by colour alone (rule 15): the
+   three tints below are a second signal on top of the label, so the card is
+   still readable to somebody who cannot tell them apart, which matters more
+   here than anywhere because the thing being authorised is the removal of
+   planned work. */
+.diff-op {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+  flex: none;
+}
+
+.diff-add {
+  color: var(--accent-text);
+  background: var(--accent-quiet);
+}
+
+.diff-cancel {
+  color: var(--human);
+  background: var(--human-quiet);
+  border-color: color-mix(in oklab, var(--human) 30%, transparent);
+}
+
+.diff-modify {
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+
+/* The title of a step being cancelled. The strike-through is decoration on top
+   of the `Cancel` label beside it, never the only thing carrying the meaning. */
+.diff-struck {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--text-muted);
+}
+
+.diff-reason {
+  font-style: italic;
+}
+
 /* Request-changes note. The person's writing is kept on screen if the submit
    fails: discarding it is the fastest way to lose trust in the button. */
 .plan-note {
@@ -1489,7 +1524,7 @@
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--warn-quiet);
   color: var(--warn);
   font-size: var(--text-xs);
@@ -1639,7 +1674,7 @@
 .work-dot {
   width: 7px;
   height: 7px;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--text-faint);
   flex: none;
 }
@@ -1686,6 +1721,23 @@
   color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+/* The file arm of an artifact: the sentence, then the control. `work-action` is
+   reused rather than restyled, so a download reads as the same weight of thing
+   as the other actions in this panel. */
+.work-artifact-file {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.work-artifact-file .work-empty {
+  margin-bottom: 4px;
+}
+a.work-action {
+  text-decoration: none;
+  display: inline-block;
 }
 
 .work-artifact {

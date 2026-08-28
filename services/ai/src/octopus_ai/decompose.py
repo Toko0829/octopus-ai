@@ -12,8 +12,9 @@ sub-query. That expense was not the first choice; it is what measurement forced.
 The cheaper design ran every sub-query through search but a **single** rerank
 against the original goal, to keep the rate-limited call count at one. Measured
 against the golden set, it changed nothing at all: candidate breadth was never
-the bottleneck, since `retrieval_candidates` is 40 against a corpus of ~43
-chunks, so one search already returns nearly everything. The bottleneck is the
+the bottleneck, since `retrieval_candidates` was 40 at the time against a corpus
+of ~43 chunks, so one search already returned nearly everything (ADR-0009 later
+cut it to 25 on the same reasoning). The bottleneck is the
 rerank, where a broad goal scores uniformly badly against specific chunks (0.066
 top, against 0.474 for a focused query). Scoring "how do I price my offer"
 against pricing chunks is a question a cross-encoder answers well; scoring "get
@@ -43,10 +44,16 @@ MAX_SUBQUERIES = 6
 
 # Stages the corpus actually has documents for. Asking for a sub-query about a
 # stage nothing covers spends a rerank call to look for something already known
-# to be absent, and measurement is exactly that case (rag-knowledge.md carries
-# the stage-by-stage map). Kept as data rather than prose in the prompt so it is
-# enforced in code the model cannot talk its way past.
-COVERED_STAGES = ("strategy", "content", "creative", "channels", "conversion")
+# to be absent (rag-knowledge.md carries the stage-by-stage map). Kept as data
+# rather than prose in the prompt so it is enforced in code the model cannot talk
+# its way past.
+#
+# `measurement` was the standing example of an absent stage and is no longer one:
+# `measurement-attribution.md` covers it. This tuple and the corpus have to move
+# together in both directions. Adding a stage here with no document spends rerank
+# calls on nothing; adding a document without listing the stage here means broad
+# goals never generate a sub-query that could reach it.
+COVERED_STAGES = ("strategy", "content", "creative", "channels", "conversion", "measurement")
 
 # A cross-encoder concatenates (query, passage) into one sequence, and it is
 # trained on short queries: MS MARCO's average is around six words. A 25-word
@@ -61,7 +68,9 @@ Return JSON: {"stages": [{"stage": str, "relevant": bool, "query": str}, ...]}
 
 Include one object for EVERY stage in this list, in this order:
 strategy (positioning, offer, pricing), content, creative,
-channels (paid ads, SEO, email, organic social), conversion (landing pages, forms).
+channels (paid ads, SEO, email, organic social, partnerships, referrals),
+conversion (landing pages, forms),
+measurement (which metrics matter, attribution, tracking what converts).
 
 For each stage, decide `relevant`: would someone pursuing this goal genuinely
 need advice from that stage? Judge that by how the goal is written.

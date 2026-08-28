@@ -6,20 +6,31 @@
 >
 > The full engineering spec lives in [rag.md](../10-architecture/rag.md); this module doc is the operational/domain view. Update both on any ingestion/retrieval/model/eval change.
 
-## The corpus decides which words work, and that is now measured
+## The corpus decides which words work, and that is now fixed from both ends
 
-Retrieval is sensitive to the exact metric word, and the margin is what makes it so. Two phrasings of one intent against the same corpus:
+Retrieval is sensitive to the exact metric word, and the margin is what makes it so. Two phrasings of one intent against the same corpus, measured before the fix:
 
 | goal                                    | result                                                  |
 | --------------------------------------- | ------------------------------------------------------- |
 | marketing plan to get **registrations** | `refusing-v0`, 25 candidates, none above threshold      |
 | marketing plan to get **signups**       | `grounded-plan-v1`, 150 candidates, full six-stage plan |
 
-The corpus says "signups" throughout and never says "registrations". At a 1.76x threshold margin a synonym the corpus does not contain simply falls through, so a person who says "register on my website" is refused where one who says "sign up" is served, for the same request.
+The corpus said "signups" throughout and never said "registrations". At a 1.76x threshold margin a synonym the corpus does not contain simply falls through, so a person who says "register on my website" was refused where one who says "sign up" was served, for the same request.
 
-**This is a corpus gap, not a retrieval defect.** The fix is vocabulary coverage: the documents should use the words people actually use, including registration, subscriber, enquiry and booking alongside signup. A prompt instruction telling intake to normalise the metric is the wrong lever, and this project has measured three times what happens to prompt-level dispositions. Add a golden case with each vocabulary the corpus takes on, per the standing rule that the negative half is load-bearing.
+**The primary fix was the corpus, because that is where the gap was.** The ten pre-existing internal documents now use the words people actually use, woven into prose where they genuinely fit rather than listed: the conversion event in `landing-conversion` is named as "a signup, a registration, a booked call, an enquiry, an app install, a completed purchase, a place on a waiting list", `paid-ads-cpa-control` gained the principle that a CPA quoted without naming its event is not comparable to anything, and `lifecycle-email`, `offer-design`, `positioning-icp`, `content-strategy`, `organic-social` and `seo-early-stage` each carry one or two variants where the sentence wanted them anyway.
 
-Until then the failure is at least legible: `refusing-v0` names it as nothing retrieved rather than as a gate refusal, which is the distinction those separate cores exist to preserve.
+Keyword-stuffing was the failure mode to avoid, and the constraint is measured rather than stylistic: a large document written in general marketing vocabulary is what made Meta's advertising standards a magnet, and a synonym list reads exactly like one.
+
+**`vocabulary.py` is the second half**, for the variants prose cannot carry naturally. A curated table of about twenty rules rewrites founder vocabulary into corpus vocabulary (registrations, enrolments, installs, enquiries, demos, clients, buyers, members, MRR), applied once at the top of `Retriever.retrieve` so it covers the goal, every sub-query, the executor's per-step re-retrieval, the seed probe, both eval harnesses, and the goals that skip intake's questions through `_passthrough`.
+
+Four properties, each of which is a way it could have been done wrong:
+
+- **It replaces terms and never adds them.** Query expansion is measured-fatal here: `MAX_REFINED_GOAL_WORDS` is 7 because a nine-word query refused where a five-word phrasing of the same intent grounded. A test asserts no rule grows a query by more than one word.
+- **It is a curated domain table, not a dictionary and not a second embedding space.** Dense retrieval is already the semantic synonym layer and is not the stage that fails; the cross-encoder score against the threshold is, and another embedding space does not move it. A general dictionary has no domain, and "registration" neighbours company, vehicle and event registration, which would pull business-formation vocabulary into marketing queries: the exact direction `neg-incorporation` and `neg-car-licence` exist to defend.
+- **The guards are the larger half.** "register" maps only when it takes a preposition, so "register my company", "register a trademark" and "register for VAT" are untouched; "clients" is guarded against "email clients"; "members" against "team members". They are pinned per rule in `tests/test_vocabulary.py`, which is the level a pre-retrieval code rule belongs at: a dry run over every query in the golden file confirms all eight negatives and all six scope negatives pass through this module **unchanged**, so a golden case cannot test it. `neg-vat-registration` is the one that also earns its place at the retrieval gate. See "Growing the corpus again spent the margin" for the three that were drafted, measured to leak for unrelated reasons, and deliberately not filed.
+- **It does not overlap `strip_particulars`.** That module removes the person's own particulars (their audience, numbers and domain); this one replaces practitioner vocabulary. ICP nouns are deliberately absent here, because mapping domain nouns is unbounded and already solved one layer up.
+
+A prompt instruction telling intake to normalise the metric was considered and rejected: this project has now measured four times what happens to a prompt-level disposition, most recently in `risk.py`. The rule lives in code.
 
 ## Crawled sources, and what each page actually produced
 
@@ -31,14 +42,16 @@ carry a URL and the date we read it, so a reader can open the thing being cited.
 That was the point: until this existed, every citation the product rendered
 pointed at a document only we hold.
 
-**Four documents are live**, 42 chunks against the internal corpus's 43:
+**Four documents are live**, 35 chunks against the internal corpus's 64:
 
 | Document                                              | Publisher         | Market | Cadence | Chunks |
 | ----------------------------------------------------- | ----------------- | ------ | ------: | -----: |
-| Google Ads policies overview                          | Google Ads policy | US     |  weekly |     16 |
-| Google Ads personalized advertising policy            | Google Ads policy | US     |  weekly |      9 |
-| Google responsive search ad format spec               | Google Ads help   | US     |   daily |     11 |
-| ICO guide to PECR: electronic and telephone marketing | ICO               | UK     | monthly |      6 |
+| Google Ads policies overview                          | Google Ads policy | US     |  weekly |     14 |
+| Google Ads personalized advertising policy            | Google Ads policy | US     |  weekly |      7 |
+| Google responsive search ad format spec               | Google Ads help   | US     |   daily |      9 |
+| ICO guide to PECR: electronic and telephone marketing | ICO               | UK     | monthly |      5 |
+
+Each is smaller than it was, because all four were carrying site chrome that has since been trimmed. See below.
 
 ### What the first run measured, including where it contradicted the plan
 
@@ -78,8 +91,37 @@ fetcher can read:
 **A registry entry is verified by reading what it stored, not by its status
 code.** That is the rule the first run produced. A `200` means a server answered;
 it says nothing about whether the answer is a document, and two or three
-chunks of navigation apiece in a corpus of 110 is not a small problem, because navigation is
+chunks of navigation apiece is not a small problem, because navigation is
 retrievable and will eventually be cited as though it were guidance.
+
+### The four kept pages were carrying chrome too, and it was masking a leak
+
+That warning was written about the three pages that were **only** navigation, and
+it turned out to understate the problem. The four documents that were kept are
+real guidance wrapped in a header and a footer, and the tag-stripping fetcher
+ingested both. The evidence was a golden negative: "how do I register my company
+in the UK" retrieved the ICO document, and the only occurrence of "registration"
+anywhere in it was the footer, `Download registration certificate / Who we are /
+Careers / Modern slavery statement`. Google's ad-format spec carried a `Register
+now` conference banner the same way.
+
+The boilerplate was trimmed from all four checked-in snapshots, front matter and
+body preserved: **42 chunks became 35**, so roughly a sixth of the external
+corpus was site furniture. Every one now begins and ends on real content, and no
+chrome marker survives.
+
+**The useful half is what the removal exposed.** `neg-car-licence` had been
+passing, and immediately began leaking: with seven junk chunks gone, real content
+had more room in the candidate pool and a weak match surfaced that had been
+crowded out. **The negative had been passing because of garbage, which is not a
+safety property.** Restoring the chrome would have made the gate green again and
+the corpus worse, so the leak was fixed at its source instead, by making the
+referral document's fraud section speak about affiliates specifically rather than
+about incentives in general.
+
+Layout-aware parsing (rag.md ingestion step 4) is still the real fix and is still
+unbuilt. Until it exists, a new registry entry needs its chrome trimmed by hand,
+and this is now a checklist item rather than a discovery.
 
 The ICO entry was **repointed rather than dropped**: the section landing page
 became `guide-to-pecr/electronic-and-telephone-marketing/`, which is the guidance
@@ -132,19 +174,23 @@ Stored as `authority: vendor`, `doc_type: user-source`. No new authority value: 
 - Serve grounded, cited retrieval to the agent, **preferring real outcomes** ("what worked for customers like this") as they accrue.
 - Run the outcome-ingestion side of the [learning flywheel](../10-architecture/learning-flywheel.md).
 
-> **Implementation status (Phase 1):** ingestion and hybrid retrieval are live in `services/ai`. Schema in `20260728210000_rag_schema.sql`, RRF fusion in `public.hybrid_search`. A **ten-document** seed corpus lives in `services/ai/corpus/` for the US market. Seed or re-seed with `uv run --directory services/ai python -m octopus_ai.seed`; re-running is a no-op unless a document, the chunker, or the embedding model changed.
+> **Implementation status (Phase 1):** ingestion and hybrid retrieval are live in `services/ai`. Schema in `20260728210000_rag_schema.sql`, RRF fusion in `public.hybrid_search`. A **thirteen-document** seed corpus lives in `services/ai/corpus/` for the US market, covering all six funnel stages. Seed or re-seed with `uv run --directory services/ai python -m octopus_ai.seed`; re-running is a no-op unless a document, the chunker, or the embedding model changed, so a vocabulary edit re-embeds only the documents that changed.
 >
-> Corpus coverage against the six funnel stages in [marketing-growth-engine.md](marketing-growth-engine.md):
+> Corpus coverage against the six funnel stages in [marketing-growth-engine.md](marketing-growth-engine.md). **All six are now covered**; measurement was the standing gap and is closed:
 >
-> | Stage       | Documents                                                                            |
-> | ----------- | ------------------------------------------------------------------------------------ |
-> | Strategy    | `positioning-icp`, `offer-design`                                                    |
-> | Content     | `content-strategy`                                                                   |
-> | Creative    | `creative-direction`                                                                 |
-> | Channels    | `paid-ads-cpa-control`, `seo-early-stage`, `lifecycle-email`, `organic-social`       |
-> | Conversion  | `landing-conversion`                                                                 |
-> | Measurement | partial, inside `paid-ads-cpa-control` (attribution). **No dedicated document yet.** |
-> | Compliance  | `ftc-disclosure-basics`                                                              |
+> | Stage       | Documents                                                                                                                                       |
+> | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+> | Strategy    | `positioning-icp`, `offer-design`                                                                                                               |
+> | Content     | `content-strategy`                                                                                                                              |
+> | Creative    | `creative-direction`                                                                                                                            |
+> | Channels    | `paid-ads-cpa-control`, `seo-early-stage`, `lifecycle-email`, `organic-social`, `influencer-partnership-outreach`, `referral-affiliate-program` |
+> | Conversion  | `landing-conversion`                                                                                                                            |
+> | Measurement | `measurement-attribution` **(new)**, with acting on a CPA still in `paid-ads-cpa-control`                                                       |
+> | Compliance  | `ftc-disclosure-basics`                                                                                                                         |
+>
+> `measurement-attribution` deliberately **names no analytics platform**. That is what keeps `scope-ga4-tracking` a valid scope negative: the corpus covers measurement principles, and stretching them into a platform setup question is the failure the gate exists to catch. It is also the standing corpus rule, since platform specifics go stale between crawls and belong in crawled sources with effective dates.
+>
+> `influencer-partnership-outreach` and `referral-affiliate-program` each converted a scope negative into covered ground, so `scope-influencer-rates` and `scope-affiliate-program` were **promoted to positives** (`infl-pricing`, `aff-structure`) and replaced with sharper near-misses about vendor choice. A scope negative that has become covered does not merely stop testing anything, it fails `--gate` on block rate for being answered correctly.
 >
 > Written to be durable: they carry principles and diagnostics rather than platform specifics (character limits, ad formats, current fee levels), because those go stale between crawls and [rag.md](../10-architecture/rag.md) forbids quoting them from memory. Volatile specifics belong in crawled sources with effective dates, or as typed rows, not in hand-authored prose.
 >
@@ -222,7 +268,7 @@ It was not a marginal call once a second measurement landed beside it. Asked the
 
 **What that costs, stated plainly:** Meta-specific ad-policy coverage. The ad-policy family survives on Google's two documents, and `rag-knowledge.md` already says the corpus carries principles while crawling is for volatile specifics and jurisdiction guidance, which is what the RSA format spec and the ICO guidance are. Re-registering Meta is reasonable once layout-aware parsing (rag.md step 4) can extract a section rather than a whole hub.
 
-Final state, measured on the live corpus: **four external documents, 42 chunks** beside the internal corpus's 43.
+Final state at the time, measured on the live corpus: **four external documents, 42 chunks** beside the internal corpus's 43. Both numbers moved again with the vocabulary change below.
 
 |                            |          |
 | -------------------------- | -------: |
@@ -233,6 +279,44 @@ Final state, measured on the live corpus: **four external documents, 42 chunks**
 
 Fifteen positives pass, including all four new externally-sourced ones, and every negative returns nothing. Coverage at 0.98 is one expected document out of roughly seventeen on the broad goal, inside the 0.97 to 1.00 range this eval has always moved through between identical runs, and it is not a gate threshold.
 
+### Growing the corpus again spent the margin, exactly as ADR-0009 predicted
+
+The vocabulary change added three documents and removed seven chunks of crawled chrome, taking the corpus to **99 chunks (64 internal, 35 external)**. Two things were measured on the way, and both are worth keeping because each contradicts an intuitive reading.
+
+**Candidate depth was re-validated and must not be raised.** ADR-0009 left `retrieval_candidates = 25` as a setting tied to corpus size, due for re-measurement as the corpus grew. Swept at 25, 40, 60 and 100 against the grown corpus: the expected document's rank and score were **identical at every depth**, so the pool was never the constraint, while raising it caused `neg-car-licence` to start leaking. The obvious lever was the wrong one in both directions, and 25 stands.
+
+**Three drafted negatives were measured to leak and are deliberately not filed as cases**, recorded in `golden.json`'s own comment with their scores: "register my company in the UK" (ICO, 0.0032), "register a trademark for my brand name" (Google Ads, 0.0017), "what should I pay my first team members" (influencer, 0.0017). Each leaks on genuinely related-ish material rather than on nonsense, which is the "right field-ish, wrong question" shape the **groundedness gate** answers and a ranking threshold cannot. Filing them under `cases` would fail the retrieval gate permanently for something retrieval cannot be asked to do, which is the same argument that created `scope_negatives`.
+
+They also did not test what they were drafted to test. `vocabulary.py` runs **before** retrieval, and a dry run over every query in the golden file confirms all eight negatives and all six scope negatives pass through it unchanged, so the guards are pinned per rule in `tests/test_vocabulary.py` instead, which is the level a code rule belongs at.
+
+**The lesson is the one ADR-0009 already wrote down**, now with a second measurement behind it: the 1.76x margin is not headroom to spend, and each corpus addition consumes some of it. The response is not to raise `RERANK_LOCAL_MIN_SCORE`, which trades a leak for refusals of legitimate goals at random. It is to keep new documents specific, since every leak fixed in this change was fixed by making a document speak about its own subject rather than about a general principle.
+
+### Verification status of this change, stated rather than implied
+
+**The full 35-case gate has NOT been run to completion on the grown corpus.** What was measured is listed below, and the gap is named because a doc that implies a gate ran is worse than one that admits it did not.
+
+| Measured                                                                                               | Result                                                                 |
+| ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| Full gate, 19-case set, after the vocabulary weave and `vocabulary.py`, before the three new documents | recall **1.00**, coverage **1.00**, MRR **0.97**, **0 leaks**          |
+| First 14 of 35 cases on the grown corpus (shards 1 and 2 of 5)                                         | **12/12** positive hits, **0 leaks**, no misses                        |
+| All 8 golden negatives, probed directly with decomposition                                             | 5 pass, 3 leak and are recorded above rather than filed                |
+| Candidate depth 25 / 40 / 60 / 100                                                                     | identical positive ranks; raising it causes leaks                      |
+| Vocabulary rewrite over every golden query                                                             | 6 positives rewritten, **every negative and scope negative untouched** |
+
+Two things are outstanding and neither should be assumed: the **remaining 21 cases**, and the **`--gate` credentialed pass**, which is the only thing that can confirm the two new scope negatives block and that promoting `scope-influencer-rates` and `scope-affiliate-program` did not move the false-refusal rate.
+
+**Why it stopped:** an eval run costs far more wall clock than it used to. Two full runs died on transient Supabase connection drops, `db.py` retries three times which is not enough for a multi-second blip inside a 40-minute job, and the sharded path then measured **~43 minutes per 7-case shard** on a developer machine. Part of that is this change: `measurement` joining `COVERED_STAGES` gives a broad goal a sixth sub-query, and every sub-query is another cross-encoder pass. That is the CPU cost ADR-0009 accepted, arriving in the eval harness rather than in a user's plan.
+
+To finish it:
+
+```bash
+uv run --directory services/ai python -m octopus_ai.evaluation --shard 3/5 --out shard-3.json
+uv run --directory services/ai python -m octopus_ai.evaluation --merge shard-*.json
+uv run --directory services/ai python -m octopus_ai.evaluation --gate
+```
+
+`--merge` refuses to report unless every case is present, so a partial set cannot produce a green check by accident.
+
 ### And the fix that did not reach the running system
 
 Worth recording because it wasted a full twenty-five minute run and because the shape recurs. `config.py` writes every default **twice**, once on the dataclass field and once again in `get_settings()`. So changing the field moved the number the unit test reads and left the number the service uses. The guard test went green, the eval banner printed the **old** threshold, and the run reported a leak that had supposedly just been fixed.
@@ -240,6 +324,57 @@ Worth recording because it wasted a full twenty-five minute run and because the 
 A guard that passes while production disagrees with it is worse than no guard, and nothing else would have caught this: a type check cannot see it, the test was green, and the only visible symptom was a gate failure that looked like the recalibration having been the wrong call. It was the wrong call, but not for that reason, and the two failures were indistinguishable until the banner was read.
 
 The threshold is now a single module constant referenced from both places, and a test asserts that `get_settings()`, the path the service actually takes, yields it. The other sixteen settings keep the duplicated pattern deliberately: it is survivable for a model name, and rewriting them all is a different change from this one.
+
+## Looking at it: `tools/rag-lens`
+
+Everything above is a number in a table or a paragraph in this file, and the
+failures this module has actually had were all the same shape: a **disagreement
+between two things that were each individually fine**. The corpus said "signups"
+and the founder said "registrations". Meta fetched perfectly and crowded out an
+unrelated document. UK is covered and EU is not, and both facts are true. None of
+those is visible in any single artefact, which is why each was discovered by
+being bitten rather than by being seen.
+
+`tools/rag-lens` renders one self-contained HTML page from files that already
+exist:
+
+| View         | Question                                                                           | Input                                                         |
+| ------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| **Coverage** | which funnel stage × market cells hold documents, and which are proven retrievable | the corpus front matter, the stage table below, `golden.json` |
+| **Margins**  | where every candidate's rerank score sits relative to the drop threshold           | `probe.py`, which runs the real pipeline                      |
+| **Run diff** | what a change to the threshold, embedder or decomposition actually moved           | the shard JSON the eval already writes                        |
+
+```bash
+python tools/rag-lens/rag_lens.py --current services/ai/shards/*.json
+```
+
+**It reports and does not gate.** The thresholds and the pass/fail verdict stay
+in `octopus_ai.evaluation --merge`, because a second implementation of the same
+arithmetic is a second thing that can disagree with CI. Two views need no
+database, no model weights and no virtualenv, which is what makes running it
+routine rather than an occasion.
+
+**It is not a production trace viewer, and must not become one.**
+[observability.md](../10-architecture/observability.md) pins Langfuse as the
+single sink that Ragas and DeepEval publish to. This is the editorial instrument
+for corpus quality, which Langfuse does not do and which a trace of one request
+cannot answer.
+
+**Its stage map is parsed from the coverage table in this document rather than
+copied into the tool**, so a document dropped from the corpus cannot keep showing
+as covered. Anything the two disagree about is reported as a finding: a document
+no stage claims, a stage naming a document that is gone, a golden case expecting a
+title no file carries, a document no golden case asks for. On the run that
+introduced the tool, that last check was clean and the first fired four times, on
+all four crawled documents: the table below describes the internal playbooks only,
+so it under-reports the corpus by the exact set of documents whose provenance is
+real.
+
+Retrieval records `RetrievalResult.scored` for this: every candidate with the
+rerank score that decided it, kept or dropped. `dropped_below_threshold` counts,
+and a count cannot distinguish a survivor that missed by 1.76x from one that was
+nowhere near, which is the entire distinction between a corpus that cannot answer
+a question and a synonym that refused an answerable one.
 
 ## The groundedness gate
 
