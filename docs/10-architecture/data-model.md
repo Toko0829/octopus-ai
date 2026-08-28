@@ -10,6 +10,112 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### The marketing domain (`20260829120000` … `20260829123000`)
+
+The module doc for the first vertical specifies nine entities and this file
+contained none of them. Four now exist: `campaigns`, `channel_connections`,
+`ad_entities` and `campaign_outcomes`. The other five stay design-only and are
+marked as such in [marketing-growth-engine.md](../30-modules/marketing-growth-engine.md),
+so "see data-model.md for tables" is finally a true pointer rather than a
+forward reference.
+
+**Nothing here is new capability.** There is no executor, no adapter call and no
+OAuth route in this slice. The enforcement spine that already works (risk clamp →
+`tasks.risk_tier` → `routeTask` rule 1 → the transition guard) has until now been
+guarding prose, because prose is the only thing an AI task can produce. These are
+the rows it will be guarding, and they land **before** their writers on purpose:
+the recorded defect class in this repository is the opposite order, with
+`risk_tier` unreachable for its whole life and `task_deps` holding no row for two
+weeks.
+
+Three stances are deliberate and each one is a decision somebody could reasonably
+reverse, so each is written down rather than left in the DDL.
+
+**`channel_connections` has no client policy of any kind and no client grant.**
+That is the `events` precedent for a stronger reason. `events` has no reader yet;
+this table has a reader that must never be a client, because a row holds an
+access token and a refresh token, and **RLS filters rows, not columns**. A select
+policy that returned the row would return the secrets with it. The absence of the
+grant is the control, and it fails the right way: a client gets `permission
+denied` rather than zero rows, which is the distinction `20260827110000` cost 47
+tasks and 28 artifacts to learn. `marketing_rls.sql` asserts the error code, not
+a count, and asserts it for the owner of the very room as well as for an
+outsider. What a member legitimately needs to see, "Meta account connected,
+scopes X", is a later API projection that never selects the token columns.
+
+The table is **room-scoped rather than project-scoped**, on the `room_sources`
+reasoning: a connection to somebody's ad account arrives before any single
+campaign project exists, and one room carries many projects. Project scoping
+would mean re-authorising the same account for every goal posted in the same
+workspace.
+
+**`campaign_outcomes` is append-only by grant, including for `service_role`.** An
+outcome row is flywheel training evidence, and a training signal that can be
+rewritten after the fact is not evidence of anything. A correction is a new row
+with `source = 'manual'`, so both the number we pulled and the number a person
+says is right survive, and anyone reading them can see that they differed. Worth
+noting precisely: `feedback_events` states this intent in a comment and enforces
+it only against clients, since it grants `all` to `service_role` and revokes
+nothing. `events` is the stronger half of the pattern and this table follows
+`events`, `TRUNCATE` included.
+
+**`publishing` is a state distinct from `live`.** Recording a campaign as live
+before the platform confirmed it would put an untrue sentence in the audit trail,
+which is exactly the argument that gave `action_embeds` its `answered` state
+rather than reusing `approved`. Between the request and the confirmation the
+honest answer is "we asked". The legal arcs are `draft→ready|cancelled`,
+`ready→publishing|cancelled`, `publishing→live|failed`, `live→paused|completed`,
+`paused→live|cancelled|completed`. **`live→cancelled` is absent on purpose**: a
+spending campaign is paused first, so stopping the money and closing the record
+stay two acts with two events.
+
+Two guards land with their tables. `private.guard_campaign_transition` mirrors
+`guard_task_transition` exactly, validating the arc and writing the
+`campaign.transitioned` event in one trigger, `SECURITY DEFINER` per the
+`20260815200000` lesson. `private.guard_ad_entity_hierarchy` keeps the ad tree
+well-formed: an `ad_set` hangs off a `campaign`, an `ad` off an `ad_set`, and a
+parent belongs to the same campaign. That last clause is the cross-project-edge
+argument from `task_deps` applied here, and it matters for a concrete reason: a
+campaign you pause that does not stop all of its spend is worse than one you
+cannot pause at all.
+
+`ad_entities.state` carries `rejected` at the **entity** level because platforms
+disapprove an ad rather than a campaign, and the module rule "ad-policy rejection
+leads to revise, never silently keep spending" is unstateable if disapproval can
+only be recorded against the whole campaign while its siblings keep running.
+`ad_entities.spec` holds the approved brief and the publisher reads it rather
+than regenerating: a second generation is a different artifact from the one a
+person said yes to, and the difference would reach the world before anyone saw
+it.
+
+Two idempotency keys are declared now and written later, so their writers arrive
+to a column instead of to a migration: `campaigns.source_embed_id` (one approved
+card, one campaign) and the unique
+`(campaign_id, period_start, period_end, source)` on `campaign_outcomes` (the
+same period pulled twice is one row). `ad_entities.idempotency_key` is the DB
+half of rules 9 and 12 for the publish side effect.
+
+**`campaigns.budget_cap` is nullable and NULL means nothing authorised, never
+unlimited**, verbatim the stance `projects.budget_ceiling` takes. The two compose
+in `checkSpendCap` in `packages/marketing`, enforced in tool code per rule 7.
+
+**Applied and verified against the live database: `supabase/tests/marketing_rls.sql`, 39/39.**
+**Advisors after every migration, and they caught something the suite could not.**
+`campaign_transition_allowed` and `campaign_state_is_terminal` were written
+without a pinned `search_path`, passed all 39 assertions, and raised lint 0011 on
+both the moment the migration applied. That is the same pairing `20260813130000`
+had to correct after `20260813120000`, and it is the same lesson: a suite asserts
+what somebody thought to assert. Fixed at source and re-applied rather than
+patched by a follow-up migration, because the file has to be replayable from
+scratch. **One INFO lint remains and it is the intended shape:**
+`channel_connections` has RLS enabled with no policy, exactly like `events` and
+`plan_diffs`, recorded here rather than described as clean so nobody has to
+re-decide it. Three `unindexed_foreign_keys` INFO lints
+(`campaigns.task_id`, `ad_entities.channel_connection_id`,
+`channel_connections.connected_by`) are the same class already accepted on
+`artifacts.task_run_id` and `action_embeds.acted_by`, and are left alone rather
+than answered with three indexes that the `unused_index` lint would then flag.
+
 ### Applying a plan diff (`20260828130000`, `20260828140000`)
 
 `embed_component` gains `replan`, in its own migration so the value is never used
@@ -203,6 +309,8 @@ Workflow      projects ─*─ tasks ─*─ task_deps (DAG)   tasks ─*─ tas
               tasks ─*─ artifacts   tasks ─*─ escalations   projects ─*─ playbook_versions
 Marketplace   node_profiles ─*─ offers ─*─ engagements ─*─ proof_artifacts ─*─ ratings/disputes
 Payments      escrow_holds ─*─ ledger_entries (double-entry) ─*─ payouts   users ─*─ subscriptions
+Marketing     campaigns ─*─ ad_entities (tree)   campaigns ─*─ campaign_outcomes
+              rooms ─*─ channel_connections (OAuth, room-scoped, no client reader)
 Knowledge     documents ─*─ doc_chunks (halfvec + tsvector)   knowledge_sources   suppliers   cost_benchmarks
 Audit         events (append-only, event-sourced)   notifications   delivery_log   ops_actions
 ```
@@ -295,6 +403,35 @@ Five things about that migration are load-bearing, and each is enforced in the d
 | `platform_fees`, `invoices` | —                                                                                                                |
 
 - Money movements are **idempotent** (unique `idempotency_key`) and **event-sourced**; the ledger is append-only.
+
+## Marketing schema
+
+The first vertical's domain. All four tables are **live** (`20260829120000` …
+`20260829123000`); the narrative and the three deliberate stances are at the top
+of this file. `content_items`, `creative_assets`, `email_sequences`,
+`landing_pages` and `creative_performance` remain design-only, tracked in
+[marketing-growth-engine.md](../30-modules/marketing-growth-engine.md).
+
+| Table                 | Key columns                                                                                                                                                                                                                                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `campaigns`           | `id`, `project_id`, `task_id?`, `name`, `objective`, `channel` (meta/google/email/organic_social), `state` (draft→ready→publishing→live→paused→completed, plus cancelled/failed), `budget_cap` (**NULL = nothing authorised**), `currency`, `pause_reason`, `source_embed_id` UNIQUE, `created_by` |
+| `channel_connections` | `id`, `room_id`, `connected_by`, `provider` (registry-validated), `channel`, `external_account_id`, `granted_scopes[]`, `access_token`, `refresh_token`, `token_expires_at`, `status` (active/expired/revoked), UNIQUE `(room_id, provider, external_account_id)`                                  |
+| `ad_entities`         | `id`, `campaign_id`, `project_id`, `parent_id?`, `kind` (campaign/ad_set/ad), `state` (…/rejected/archived), `external_id?`, `channel_connection_id?`, `spec` JSONB, `idempotency_key` UNIQUE                                                                                                      |
+| `campaign_outcomes`   | `id`, `campaign_id`, `project_id`, `period_start`, `period_end`, `spend`, `impressions`, `clicks`, `conversions`, `revenue`, `metrics` JSONB, `source` (pull_metrics/manual), UNIQUE `(campaign_id, period_start, period_end, source)`                                                             |
+
+- **Grants differ across the four and the differences are the design.** `campaigns`,
+  `ad_entities` and `campaign_outcomes` are `select` for `authenticated` and `all`
+  for `service_role`, like every workflow table. `channel_connections` grants
+  nothing to any client role and carries no policy, because it holds tokens.
+  `campaign_outcomes` additionally revokes `update, delete, truncate` from
+  `service_role` as well as from clients.
+- **Membership is the same predicate everywhere**, `private.is_project_member`, the
+  `20260827110000` version. `ad_entities` and `campaign_outcomes` carry a
+  denormalised `project_id` so that predicate is a plain column test, exactly as
+  `artifacts` carries one beside `task_id`.
+- **The spend cap is enforced in tool code, not by a constraint.** `budget_cap` and
+  `projects.budget_ceiling` compose in `checkSpendCap` (`packages/marketing`),
+  which is where rule 7 puts it.
 
 ## RAG schema
 

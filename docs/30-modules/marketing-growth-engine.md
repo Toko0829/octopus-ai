@@ -2,7 +2,7 @@
 
 > The domain module for Octopus's **first vertical**: full-funnel digital marketing for solo founders/creators. Owns the marketing channel integrations, creative generation, campaign execution, and the auto-optimize loop — all behind approval + spend guardrails. This is the vertical the [learning flywheel](../10-architecture/learning-flywheel.md) is trained on first.
 >
-> **Owner paths:** `packages/agent-tools/**` (marketing tools) + `packages/core` (campaign domain) + channel adapters in `packages/*`/`supabase/functions` · **Depends on:** ai-orchestrator (drives it via tools), rag-knowledge (grounding + outcome retrieval), integrations (channel/creative/analytics providers), business-projects-workflow (the funnel DAG), human-nodes-marketplace (expert marketers), payments-billing (ad-spend + escrow), analytics (metrics + optimization).
+> **Owner paths:** `packages/marketing/**` (campaign domain: spend math, the adapter seam, the provider registry) + `apps/api` (marketing tool IO) · **Depends on:** ai-orchestrator (drives it via tools), rag-knowledge (grounding + outcome retrieval), integrations (channel/creative/analytics providers), business-projects-workflow (the funnel DAG), human-nodes-marketplace (expert marketers), payments-billing (ad-spend + escrow), analytics (metrics + optimization).
 >
 > Update on any change to channels, creative tools, the campaign model, or the optimization loop.
 
@@ -48,7 +48,7 @@ All channel actions are typed tools with **risk tiers**; anything that publishes
 - A **project** = a growth goal; its **task DAG** is the funnel (strategy → content → creative → channels → conversion → measurement).
 - **Campaigns** belong to a project and map to channel entities (ad campaigns/ad sets/ads, content calendars, email sequences).
 - **Assets** (creative/copy/landing) are artifacts with performance attached.
-- See [business-projects-workflow.md](business-projects-workflow.md) for the DAG/state machine and [data-model.md](../10-architecture/data-model.md) for tables.
+- See [business-projects-workflow.md](business-projects-workflow.md) for the DAG/state machine and [data-model.md](../10-architecture/data-model.md) for tables. That pointer is now true: the marketing domain has a schema section there rather than a forward reference.
 
 ## Guardrails (marketing-specific)
 
@@ -68,7 +68,32 @@ Expert marketers plug in for: **creative direction & taste**, **high-end video/e
 
 ## Key entities
 
-`campaigns` · `ad_entities` (campaign/ad_set/ad refs) · `content_items` · `creative_assets` · `email_sequences` · `landing_pages` · `channel_connections` (OAuth, scoped) · `campaign_outcomes` · `creative_performance`.
+Nine were specified from Phase 0 and this table says which of them exist, because a list that mixes live tables with intentions reads as though all nine are there. Column shapes live in [data-model.md](../10-architecture/data-model.md).
+
+| Entity                 | Status                   | Notes                                                                                                              |
+| ---------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `campaigns`            | ✅ live `20260829120000` | One channel, one authorised cap, one lifecycle. `budget_cap` NULL means nothing authorised, never unlimited        |
+| `channel_connections`  | ✅ live `20260829121000` | OAuth tokens, **room-scoped**. No client policy and no client grant: RLS filters rows, not columns                 |
+| `ad_entities`          | ✅ live `20260829122000` | The campaign → ad_set → ad tree. `rejected` is entity-level; `spec` is the approved brief the publisher reads      |
+| `campaign_outcomes`    | ✅ live `20260829123000` | Measured performance. Append-only including for `service_role`; a correction is a new row with `source = 'manual'` |
+| `content_items`        | ⏳ deferred (slice 6+)   | Needs a producer first. A schema with no writer is this repository's most-documented defect class                  |
+| `creative_assets`      | ⏳ deferred (slice 6+)   | Lands with the creative-provider ADR and the first byte-producer; until then creative arrives as a file artifact   |
+| `email_sequences`      | ⏳ deferred (slice 6+)   | —                                                                                                                  |
+| `landing_pages`        | ⏳ deferred (slice 6+)   | —                                                                                                                  |
+| `creative_performance` | ⏳ deferred (slice 6+)   | Depends on `creative_assets` existing to attach to                                                                 |
+
+**No writer exists for the four live tables yet, and that is deliberate rather than an oversight.** The campaign card, `materialise_campaign`, the OAuth callback and the publish executor are the next slices. Guards land with their tables here because the recorded failure in this repository is the other order: `tasks.risk_tier` was unreachable for its entire life, and `task_deps` held no row for two weeks while enforcing an empty set.
+
+## Campaign lifecycle
+
+`draft → ready → publishing → live → paused → completed`, plus `cancelled` and `failed`. Enforced by trigger in Postgres (`private.guard_campaign_transition`), which also writes the `campaign.transitioned` audit event, so a transition cannot be recorded without having happened and cannot happen without being recorded.
+
+Two arcs are worth reading rather than skimming:
+
+- **`publishing` is not `live`.** Claiming a campaign is live before the platform confirmed it would put an untrue sentence in the audit trail. Between the request and the confirmation the honest answer is "we asked", and that is a state.
+- **`live → cancelled` does not exist.** A spending campaign is paused first. Stopping the money and closing the record stay two acts with two events, so nobody can close a campaign and discover afterwards that it was still spending.
+
+`pause_reason` (`kill_switch` | `cpa_breach` | `user` | `optimizer`) carries **why** spend stopped. The reason is data; the state is the same one however it was reached.
 
 ## Relationship to the north star
 

@@ -28,6 +28,14 @@
   >
   > **Trigger to fix: the first additional collaborator.** The eval needs `select` on `documents` / `doc_chunks` and `execute` on `hybrid_search`, nothing more, so the fix is a dedicated least-privilege Postgres role rather than the key that bypasses RLS entirely. Do this before granting anyone else push access, not after.
 
+- **Channel OAuth tokens are stored without envelope encryption.** `channel_connections` (`20260829121000`) holds `access_token` and `refresh_token` as plain columns.
+
+  > **Accepted risk, with a trigger (Phase 2).** Acceptable **only** while the sole registered provider is the in-repo `fake` adapter, whose tokens authorise nothing and reach no network. The row-level control is real and is asserted: the table carries no policy and no grant to `authenticated` or `anon`, so a client is refused rather than shown zero rows, and `supabase/tests/marketing_rls.sql` checks the error code for the owner of the connection's own room as well as for an outsider. What is not protected is the at-rest case, where a database backup or a `service_role` leak yields the tokens directly. Every other control in this document assumes `service_role` containment holds; this one has no second layer behind it.
+  >
+  > **Trigger to fix: the first real provider credential**, which is the Meta sandbox adapter. Do it in that change, not after it, because the interval between a real token landing and the encryption landing is exactly the exposure. **Known fix:** pgsodium or KMS envelope encryption on the two token columns, with decryption confined to the tool code that makes the call.
+
+- **`channel_connections` is the one table with no reader at all**, and it is a stronger version of the `events` stance rather than the same one. RLS filters rows, not columns, so any select policy that returned the row would return the secrets with it. A member's legitimate view ("Meta account connected, scopes X, expires Y") is an API projection that never selects the token columns.
+
 - **Dynamic group-chat RLS** is tested with **pgTAP** in `supabase/tests/rls_membership.sql` (22 assertions, verified green against the live database). Covers a room shared by an owner, an unexpired node, an **expired** node and an outsider, across `rooms`, `messages`, `action_embeds` and `feedback_events`.
 
   The load-bearing case is that an **expired node sees nothing at all**: not the room, not the messages, not the plan card. Time-boxed access is what the entire marketplace model rests on, and until this file existed the only evidence it worked was that nothing had visibly leaked.
@@ -41,6 +49,8 @@
 - **The workflow DAG** is covered by `supabase/tests/rls_workflow.sql` (33 assertions, verified green). Same four actors against `projects` / `tasks` / `task_deps` / `task_runs`, plus the two triggers. Its RLS half runs as a client and its **trigger half runs as `postgres` deliberately**, which is the opposite rule for the opposite reason: RLS must be tested as a client because `postgres` bypasses it, and the state-machine and acyclicity guards must be tested as `postgres` because they are meant to bind trusted server code too. If those ever start passing merely because the caller was privileged, the guard has been lost.
 
   **Known narrowing:** project visibility is inherited from room membership, which is coarser than the thread-scoped, time-boxed access this document requires of a node. It lands with threads. No node is admitted to any room today.
+
+- **The marketing domain** is covered by `supabase/tests/marketing_rls.sql` (39 assertions, verified green). Same four actors against `campaigns` / `ad_entities` / `campaign_outcomes`, the campaign state machine and the ad-tree guard as `postgres`, and `TRUNCATE` on all four tables. Two assertions are unlike anything else in the suite set: `channel_connections` must answer **`permission denied` rather than zero rows**, since the grant absence is the control and the two failure shapes are indistinguishable through PostgREST; and `campaign_outcomes` must refuse `UPDATE` **to `service_role`**, because a training signal that trusted code can rewrite is not evidence.
 
 - **A policy and a read path that answer the same question differently is a defect waiting to be half-fixed.** `private.is_project_member` resolved a project to its room through `rooms.project_id`, which `materialise_plan` writes once, so only the first project approved in a room was visible to anybody. Measured before the fix: **6 projects with 3 reachable, and 47 tasks and 28 of 58 artifacts unreachable by any client, including their owner.** The identical mistake had already been found and fixed in the delivery path (`roomForProject`) two weeks earlier, and nobody carried it into the policy.
 
