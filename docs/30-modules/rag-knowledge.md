@@ -293,7 +293,7 @@ They also did not test what they were drafted to test. `vocabulary.py` runs **be
 
 ### Verification status of this change, stated rather than implied
 
-**The full 35-case gate has NOT been run to completion on the grown corpus.** What was measured is listed below, and the gap is named because a doc that implies a gate ran is worse than one that admits it did not.
+**The full 35-case gate has now run to completion on the grown corpus** (2026-08-28; results below the table). What was measured at the time of the change is listed first, because the gap between the two was named while it existed: a doc that implies a gate ran is worse than one that admits it did not.
 
 | Measured                                                                                               | Result                                                                 |
 | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
@@ -303,19 +303,11 @@ They also did not test what they were drafted to test. `vocabulary.py` runs **be
 | Candidate depth 25 / 40 / 60 / 100                                                                     | identical positive ranks; raising it causes leaks                      |
 | Vocabulary rewrite over every golden query                                                             | 6 positives rewritten, **every negative and scope negative untouched** |
 
-Two things are outstanding and neither should be assumed: the **remaining 21 cases**, and the **`--gate` credentialed pass**, which is the only thing that can confirm the two new scope negatives block and that promoting `scope-influencer-rates` and `scope-affiliate-program` did not move the false-refusal rate.
+**Closed 2026-08-28: both outstanding halves are measured now.** The full 35-case set ran to completion in CI, all five shards, and the merged report over the whole set is: positive recall **1.00**, coverage **0.97**, MRR **0.86**, **0 negative leaks**, with all eight golden negatives returning nothing. The `--gate` credentialed pass then ran on the same corpus: **blocked 1.00 of scope negatives (min 1.00), passed 1.00 of legitimate goals (min 0.80)**, so the two new scope negatives block and promoting `scope-influencer-rates` and `scope-affiliate-program` did not move the false-refusal rate — both promoted cases (`infl-pricing`, `aff-structure`) hit at rank 1 as positives in the same run.
 
-**Why it stopped:** an eval run costs far more wall clock than it used to. Two full runs died on transient Supabase connection drops, `db.py` retries three times which is not enough for a multi-second blip inside a 40-minute job, and the sharded path then measured **~43 minutes per 7-case shard** on a developer machine. Part of that is this change: `measurement` joining `COVERED_STAGES` gives a broad goal a sixth sub-query, and every sub-query is another cross-encoder pass. That is the CPU cost ADR-0009 accepted, arriving in the eval harness rather than in a user's plan.
+What follows is why the run had stopped, kept because the wall-clock numbers still hold: an eval run costs far more wall clock than it used to. Two full runs died on transient Supabase connection drops, `db.py` retries three times which is not enough for a multi-second blip inside a 40-minute job, and the sharded path then measured **~43 minutes per 7-case shard** on a developer machine. Part of that is this change: `measurement` joining `COVERED_STAGES` gives a broad goal a sixth sub-query, and every sub-query is another cross-encoder pass. That is the CPU cost ADR-0009 accepted, arriving in the eval harness rather than in a user's plan. The same slowdown reached CI, where the per-shard `timeout-minutes` sized for the pre-growth corpus killed three of five shards before the bound was raised to 40 — recorded with its measured numbers in [infra-devops.md](infra-devops.md).
 
-To finish it:
-
-```bash
-uv run --directory services/ai python -m octopus_ai.evaluation --shard 3/5 --out shard-3.json
-uv run --directory services/ai python -m octopus_ai.evaluation --merge shard-*.json
-uv run --directory services/ai python -m octopus_ai.evaluation --gate
-```
-
-`--merge` refuses to report unless every case is present, so a partial set cannot produce a green check by accident.
+`--merge` refuses to report unless every case is present, so a partial set cannot produce a green check by accident — and that refusal is what surfaced the CI timeout as a red gate naming the missing cases rather than a green check over a shrunken denominator.
 
 ### And the fix that did not reach the running system
 
