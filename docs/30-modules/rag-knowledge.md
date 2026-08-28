@@ -325,6 +325,57 @@ A guard that passes while production disagrees with it is worse than no guard, a
 
 The threshold is now a single module constant referenced from both places, and a test asserts that `get_settings()`, the path the service actually takes, yields it. The other sixteen settings keep the duplicated pattern deliberately: it is survivable for a model name, and rewriting them all is a different change from this one.
 
+## Looking at it: `tools/rag-lens`
+
+Everything above is a number in a table or a paragraph in this file, and the
+failures this module has actually had were all the same shape: a **disagreement
+between two things that were each individually fine**. The corpus said "signups"
+and the founder said "registrations". Meta fetched perfectly and crowded out an
+unrelated document. UK is covered and EU is not, and both facts are true. None of
+those is visible in any single artefact, which is why each was discovered by
+being bitten rather than by being seen.
+
+`tools/rag-lens` renders one self-contained HTML page from files that already
+exist:
+
+| View         | Question                                                                           | Input                                                         |
+| ------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| **Coverage** | which funnel stage × market cells hold documents, and which are proven retrievable | the corpus front matter, the stage table below, `golden.json` |
+| **Margins**  | where every candidate's rerank score sits relative to the drop threshold           | `probe.py`, which runs the real pipeline                      |
+| **Run diff** | what a change to the threshold, embedder or decomposition actually moved           | the shard JSON the eval already writes                        |
+
+```bash
+python tools/rag-lens/rag_lens.py --current services/ai/shards/*.json
+```
+
+**It reports and does not gate.** The thresholds and the pass/fail verdict stay
+in `octopus_ai.evaluation --merge`, because a second implementation of the same
+arithmetic is a second thing that can disagree with CI. Two views need no
+database, no model weights and no virtualenv, which is what makes running it
+routine rather than an occasion.
+
+**It is not a production trace viewer, and must not become one.**
+[observability.md](../10-architecture/observability.md) pins Langfuse as the
+single sink that Ragas and DeepEval publish to. This is the editorial instrument
+for corpus quality, which Langfuse does not do and which a trace of one request
+cannot answer.
+
+**Its stage map is parsed from the coverage table in this document rather than
+copied into the tool**, so a document dropped from the corpus cannot keep showing
+as covered. Anything the two disagree about is reported as a finding: a document
+no stage claims, a stage naming a document that is gone, a golden case expecting a
+title no file carries, a document no golden case asks for. On the run that
+introduced the tool, that last check was clean and the first fired four times, on
+all four crawled documents: the table below describes the internal playbooks only,
+so it under-reports the corpus by the exact set of documents whose provenance is
+real.
+
+Retrieval records `RetrievalResult.scored` for this: every candidate with the
+rerank score that decided it, kept or dropped. `dropped_below_threshold` counts,
+and a count cannot distinguish a survivor that missed by 1.76x from one that was
+nowhere near, which is the entire distinction between a corpus that cannot answer
+a question and a synonym that refused an answerable one.
+
 ## The groundedness gate
 
 Between retrieval and generation, `groundedness.assess` asks one question of the retrieved sources: **do these answer the goal, or do they merely rank against it?** Live, on by default (`GROUNDEDNESS_CHECK`), and the reason Phase 2 can begin: while Phase 1 was read-only the leak above produced a bad answer, and the moment a plan can spend money or publish, it produces a bad action.

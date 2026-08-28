@@ -59,10 +59,38 @@ class RetrievedChunk:
 
 
 @dataclass(frozen=True)
+class ScoredCandidate:
+    """One reranked candidate and the score that decided its fate.
+
+    Recorded for every candidate, kept *and* dropped, because the number worth
+    seeing is the margin rather than the count. A chunk at 0.0011 against a
+    0.0013 threshold is a near-miss and one at 0.00002 is not, and a result that
+    only reports `dropped_below_threshold` cannot tell those two apart. That
+    distinction is exactly the one the registrations/signups refusal turned on:
+    the corpus could answer the question and the survivor missed by a factor
+    under two, which looked identical to "nothing relevant" from outside.
+
+    Nothing in the request path reads this. It is built from values already in
+    hand during the loop that builds the chunks, and `tools/rag-lens` plots it
+    against the threshold line.
+    """
+
+    query: str
+    chunk_id: str
+    title: str
+    rerank_score: float
+    rrf_score: float
+    kept: bool
+
+
+@dataclass(frozen=True)
 class RetrievalResult:
     chunks: list[RetrievedChunk]
     candidates_considered: int
     dropped_below_threshold: int
+    # Defaulted so every existing construction site stays valid and so a caller
+    # that does not care never has to thread it through.
+    scored: tuple[ScoredCandidate, ...] = ()
 
     @property
     def grounded(self) -> bool:
@@ -200,6 +228,11 @@ class Retriever:
             chunks=merged,
             candidates_considered=considered,
             dropped_below_threshold=dropped,
+            # Concatenated rather than merged: a chunk scored once per sub-query
+            # and the per-query scores are the point. Collapsing them to a best
+            # score would hide that a chunk clears one stage's question and not
+            # another's, which is the behaviour decomposition exists to buy.
+            scored=tuple(c for r in results for c in r.scored),
         )
 
     async def _retrieve_one(
@@ -238,12 +271,24 @@ class Retriever:
         hits = await self._providers.rerank(query, documents, self._s.rerank_top_n)
 
         chunks: list[RetrievedChunk] = []
+        scored: list[ScoredCandidate] = []
         dropped = 0
         for hit in hits:
-            if hit.score < self._s.active_rerank_min_score:
+            row = rows[hit.index]
+            kept = hit.score >= self._s.active_rerank_min_score
+            scored.append(
+                ScoredCandidate(
+                    query=query,
+                    chunk_id=row["chunk_id"],
+                    title=row["title"],
+                    rerank_score=hit.score,
+                    rrf_score=float(row.get("rrf_score") or 0.0),
+                    kept=kept,
+                )
+            )
+            if not kept:
                 dropped += 1
                 continue
-            row = rows[hit.index]
             chunks.append(
                 RetrievedChunk(
                     chunk_id=row["chunk_id"],
@@ -273,4 +318,5 @@ class Retriever:
             chunks=chunks,
             candidates_considered=len(rows),
             dropped_below_threshold=dropped,
+            scored=tuple(scored),
         )

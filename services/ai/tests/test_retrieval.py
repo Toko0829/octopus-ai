@@ -89,6 +89,44 @@ async def test_weak_chunks_are_dropped_not_padded():
 
 
 @pytest.mark.asyncio
+async def test_every_candidate_is_recorded_with_the_score_that_decided_it():
+    """The margin is the diagnostic, and a drop count cannot carry it.
+
+    `dropped_below_threshold` says two chunks fell short. It cannot say that one
+    of them missed by a factor under two while the other was nowhere near, and
+    that distinction is the whole difference between "the corpus cannot answer
+    this" and "a synonym the corpus happens not to use refused an answerable
+    question". `tools/rag-lens` plots this against the threshold.
+    """
+    settings = make_settings(rerank_min_score=0.05)
+    rows = [row("a", "Relevant"), row("b", "Near miss"), row("c", "Nowhere near")]
+    providers = StubProviders([RerankHit(0, 0.42), RerankHit(1, 0.049), RerankHit(2, 0.001)])
+
+    result = await Retriever(settings, StubDb(rows), providers).retrieve("q")
+
+    assert [(c.chunk_id, c.kept) for c in result.scored] == [
+        ("a", True),
+        ("b", False),
+        ("c", False),
+    ]
+    assert [c.title for c in result.scored] == ["Relevant", "Near miss", "Nowhere near"]
+    # Dropped candidates keep their real score rather than being zeroed, which is
+    # what makes the near miss distinguishable from the irrelevant one.
+    near, far = result.scored[1], result.scored[2]
+    assert near.rerank_score == pytest.approx(0.049)
+    assert far.rerank_score == pytest.approx(0.001)
+    assert all(c.query == "q" for c in result.scored)
+
+
+@pytest.mark.asyncio
+async def test_trace_defaults_to_empty_so_callers_need_not_thread_it():
+    """Nothing in the request path reads the trace; it must stay optional."""
+    assert RetrievalResult(
+        chunks=[], candidates_considered=0, dropped_below_threshold=0
+    ).scored == ()
+
+
+@pytest.mark.asyncio
 async def test_everything_below_threshold_is_not_grounded():
     settings = make_settings(rerank_min_score=0.05)
     providers = StubProviders([RerankHit(0, 0.01)])
