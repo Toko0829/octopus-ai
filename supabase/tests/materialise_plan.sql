@@ -1,5 +1,6 @@
--- materialise_plan: approving a card becomes a project and its tasks.
--- Covers 20260813140000_materialise_plan.sql.
+-- materialise_plan: approving a card becomes a project, its tasks and its edges.
+-- Covers 20260813140000_materialise_plan.sql, as amended by 20260816120000
+-- (risk tier and acceptance criteria) and 20260828120000 (task_deps).
 --
 -- The assertions worth reading first are the failure ones. Every path that raises
 -- is also checked for leaving NOTHING behind, because the reason this is one
@@ -16,7 +17,7 @@
 
 begin;
 
-select extensions.plan(25);
+select extensions.plan(42);
 
 -- ---------------------------------------------------------------- fixtures
 
@@ -36,7 +37,15 @@ insert into mids (k, v) values
   ('e_badowner', gen_random_uuid()),
   ('e_badrisk', gen_random_uuid()),
   ('e_empty', gen_random_uuid()),
-  ('e_ownerless', gen_random_uuid());
+  ('e_ownerless', gen_random_uuid()),
+  ('m_deps', gen_random_uuid()),
+  ('m_badref', gen_random_uuid()),
+  ('m_cycle', gen_random_uuid()),
+  ('m_dupid', gen_random_uuid()),
+  ('e_deps', gen_random_uuid()),
+  ('e_badref', gen_random_uuid()),
+  ('e_cycle', gen_random_uuid()),
+  ('e_dupid', gen_random_uuid());
 
 create or replace function pg_temp.mid(text) returns uuid language sql stable as
   $$ select v from mids where k = $1 $$;
@@ -68,7 +77,11 @@ insert into public.messages (id, room_id, author_kind, body, idempotency_key) va
   (pg_temp.mid('m_badowner'),  pg_temp.mid('room'),      'agent', 'plan', 'mat-badowner'),
   (pg_temp.mid('m_badrisk'),   pg_temp.mid('room'),      'agent', 'plan', 'mat-badrisk'),
   (pg_temp.mid('m_empty'),     pg_temp.mid('room'),      'agent', 'plan', 'mat-empty'),
-  (pg_temp.mid('m_ownerless'), pg_temp.mid('ownerless'), 'agent', 'plan', 'mat-ownerless');
+  (pg_temp.mid('m_ownerless'), pg_temp.mid('ownerless'), 'agent', 'plan', 'mat-ownerless'),
+  (pg_temp.mid('m_deps'),      pg_temp.mid('room'),      'agent', 'plan', 'mat-deps'),
+  (pg_temp.mid('m_badref'),    pg_temp.mid('room'),      'agent', 'plan', 'mat-badref'),
+  (pg_temp.mid('m_cycle'),     pg_temp.mid('room'),      'agent', 'plan', 'mat-cycle'),
+  (pg_temp.mid('m_dupid'),     pg_temp.mid('room'),      'agent', 'plan', 'mat-dupid');
 
 -- The realistic case: six stages, two of them legitimately empty, owners across
 -- all three kinds. Empty stages are meaningful output (the corpus had nothing in
@@ -130,6 +143,59 @@ values (pg_temp.mid('e_empty'), pg_temp.mid('m_empty'), pg_temp.mid('room'), 'pl
 insert into public.action_embeds (id, message_id, room_id, component, payload, required_role, state)
 values (pg_temp.mid('e_ownerless'), pg_temp.mid('m_ownerless'), pg_temp.mid('ownerless'), 'plan',
   '{"title":"T","summary":"S","citations":[],"stages":[{"stage":"strategy","steps":[{"title":"X","detail":"D","owner":"AI","citations":[]}]}]}'::jsonb,
+  'owner', 'approved');
+
+-- The dependency card. Three steps across three stages, and the edges deliberately
+-- run ACROSS stages and BACKWARDS through the payload: `launch` depends on
+-- `ad-copy`, which is written before it, and on `positioning`, earlier still.
+--
+-- Two things it is built to prove. Cross-stage edges are the normal case rather
+-- than the exotic one, because stage order is presentation and execution order is
+-- the graph. And a dependency may be declared before the task it names exists,
+-- which is why the function resolves edges in a second pass: a one-pass version
+-- would fail a perfectly legal plan on the order a reader happens to see it in.
+insert into public.action_embeds (id, message_id, room_id, component, payload, required_role, state)
+values (pg_temp.mid('e_deps'), pg_temp.mid('m_deps'), pg_temp.mid('room'), 'plan', $j$
+{
+  "goal": "get my first paying customers",
+  "title": "Plan with stated dependencies",
+  "summary": "Three steps, two of which consume another's output.",
+  "citations": [{"sourceId":"c1","label":"Positioning and ICP for a solo founder"}],
+  "stages": [
+    {"stage":"strategy","steps":[
+      {"id":"positioning","title":"Sharpen positioning","detail":"Narrow to a situation.",
+       "owner":"AI","citations":[1],"riskTier":"reversible","dependsOn":[]}]},
+    {"stage":"content","steps":[
+      {"id":"ad-copy","title":"Write the ad copy","detail":"From the positioning.",
+       "owner":"AI","citations":[1],"riskTier":"reversible","dependsOn":["positioning"]}]},
+    {"stage":"channels","steps":[
+      {"id":"launch","title":"Build the campaign","detail":"Using the copy.",
+       "owner":"AI","citations":[1],"riskTier":"reversible","dependsOn":["ad-copy","positioning"]}]}
+  ]
+}
+$j$::jsonb, 'owner', 'approved');
+
+-- A reference naming no step in the plan. The reasoning core drops these before
+-- proposing, so a card carrying one came from somewhere else: an older service, a
+-- replay, a hand edit. This layer refuses rather than guessing on its behalf.
+insert into public.action_embeds (id, message_id, room_id, component, payload, required_role, state)
+values (pg_temp.mid('e_badref'), pg_temp.mid('m_badref'), pg_temp.mid('room'), 'plan',
+  '{"title":"T","summary":"S","citations":[],"stages":[{"stage":"strategy","steps":[{"id":"a","title":"X","detail":"D","owner":"AI","citations":[],"dependsOn":["ghost"]}]}]}'::jsonb,
+  'owner', 'approved');
+
+-- A cycle. Nothing in the function checks for one: `task_deps_guard_acyclic` from
+-- 20260813120000 does, and asserting it here proves the guard still covers a
+-- writer that did not exist when it was written.
+insert into public.action_embeds (id, message_id, room_id, component, payload, required_role, state)
+values (pg_temp.mid('e_cycle'), pg_temp.mid('m_cycle'), pg_temp.mid('room'), 'plan',
+  '{"title":"T","summary":"S","citations":[],"stages":[{"stage":"strategy","steps":[{"id":"a","title":"A","detail":"D","owner":"AI","citations":[],"dependsOn":["b"]},{"id":"b","title":"B","detail":"D","owner":"AI","citations":[],"dependsOn":["a"]}]}]}'::jsonb,
+  'owner', 'approved');
+
+-- Two steps claiming one id. An edge naming it would bind to whichever row was
+-- written last, which is an edge pointing somewhere nobody chose.
+insert into public.action_embeds (id, message_id, room_id, component, payload, required_role, state)
+values (pg_temp.mid('e_dupid'), pg_temp.mid('m_dupid'), pg_temp.mid('room'), 'plan',
+  '{"title":"T","summary":"S","citations":[],"stages":[{"stage":"strategy","steps":[{"id":"dup","title":"A","detail":"D","owner":"AI","citations":[]},{"id":"dup","title":"B","detail":"D","owner":"AI","citations":[]}]}]}'::jsonb,
   'owner', 'approved');
 
 -- ------------------------------------------------------------- the happy path
@@ -327,6 +393,149 @@ select extensions.is(
      )),
   0::bigint,
   'five failed calls left no partial projects behind: all of it, or none of it'
+);
+
+-- --------------------------------------------------------------- dependencies
+
+create temporary table dag as
+  select public.materialise_plan(pg_temp.mid('e_deps')) as project_id;
+
+create or replace function pg_temp.dtask(p_title text) returns uuid language sql stable as $$
+  select id from public.tasks
+  where project_id = (select project_id from dag) and title = p_title
+$$;
+
+select extensions.is(
+  (select count(*) from public.tasks where project_id = (select project_id from dag)),
+  3::bigint,
+  'a plan with dependencies materialises its steps exactly as one without them does'
+);
+
+select extensions.is(
+  (select count(*) from public.task_deps d
+     join public.tasks t on t.id = d.task_id
+    where t.project_id = (select project_id from dag)),
+  3::bigint,
+  'every stated dependency becomes an edge, including the two on one step'
+);
+
+-- Direction is the assertion most worth making, because an edge inserted the wrong
+-- way round still satisfies every count above while inverting the whole schedule:
+-- the positioning step would wait for the copy written from it.
+select extensions.ok(
+  exists (select 1 from public.task_deps
+           where task_id = pg_temp.dtask('Write the ad copy')
+             and depends_on_task_id = pg_temp.dtask('Sharpen positioning')),
+  'the edge points from the consumer to what it consumes, not the reverse'
+);
+
+select extensions.ok(
+  not exists (select 1 from public.task_deps
+               where task_id = pg_temp.dtask('Sharpen positioning')),
+  'the step nothing was said to depend on has no dependencies of its own'
+);
+
+select extensions.is(
+  (select count(distinct dep_kind::text) from public.task_deps d
+     join public.tasks t on t.id = d.task_id
+    where t.project_id = (select project_id from dag)),
+  1::bigint,
+  'one dependency kind, because the planner states one relationship'
+);
+
+select extensions.is(
+  (select distinct dep_kind::text from public.task_deps d
+     join public.tasks t on t.id = d.task_id
+    where t.project_id = (select project_id from dag)),
+  'hard',
+  'edges are HARD: soft and resource mean things the planner was never asked'
+);
+
+-- The payoff, and the only assertions here that describe a behaviour change rather
+-- than a row. Before this migration every task in every project satisfied this
+-- predicate immediately, so one tick dispatched the whole plan at once.
+select extensions.ok(
+  private.task_deps_satisfied(pg_temp.dtask('Sharpen positioning')),
+  'a step with no dependencies is ready at once, as it always was'
+);
+
+select extensions.ok(
+  not private.task_deps_satisfied(pg_temp.dtask('Write the ad copy')),
+  'a step waits for what it consumes: the first thing task_deps has ever actually blocked'
+);
+
+select extensions.is(
+  (select count(*) from private.tasks_ready((select project_id from dag))),
+  1::bigint,
+  'the scheduler now selects one step from this plan where it would have selected three'
+);
+
+select extensions.is(
+  (select * from private.tasks_ready((select project_id from dag)) limit 1),
+  pg_temp.dtask('Sharpen positioning'),
+  'and it is the one nothing is waiting on'
+);
+
+select extensions.is(
+  (select (payload->>'edges')::int from public.events
+     where verb = 'project.materialised' and subject_id = (select project_id from dag)),
+  3,
+  'the audit record counts the edges: a flat plan and a plan that ran everything at once look identical without it'
+);
+
+select extensions.ok(
+  (select public.materialise_plan(pg_temp.mid('e_deps')) = (select project_id from dag))
+  and (select count(*) from public.task_deps d
+         join public.tasks t on t.id = d.task_id
+        where t.project_id = (select project_id from dag)) = 3,
+  'a retry returns the same project and does not double its edges'
+);
+
+-- A card written before dependencies existed. Its steps carry no ids, so nothing
+-- can resolve against them, so it materialises flat: exactly what it did before.
+select extensions.is(
+  (select count(*) from public.task_deps d
+     join public.tasks t on t.id = d.task_id
+    where t.project_id = (select project_id from legacy)),
+  0::bigint,
+  'an old card produces no edges rather than failing: absent is not wrong'
+);
+
+select extensions.is(
+  pg_temp.merr(format('select public.materialise_plan(%L)', pg_temp.mid('e_badref'))),
+  '22023',
+  'a dependency naming no step raises: guessing on behalf of an unknown producer is how an invented edge gets in'
+);
+
+-- 23514 is check_violation, which `task_deps_guard_acyclic` raises. The point of
+-- asserting it through this function is that the guard was written for a caller
+-- that did not exist yet, and now one does.
+select extensions.is(
+  pg_temp.merr(format('select public.materialise_plan(%L)', pg_temp.mid('e_cycle'))),
+  '23514',
+  'a cycle is refused by the trigger, not by this function: one definition of the DAG''s shape'
+);
+
+select extensions.is(
+  pg_temp.merr(format('select public.materialise_plan(%L)', pg_temp.mid('e_dupid'))),
+  '22023',
+  'two steps sharing an id raises rather than letting an edge bind to whichever was written last'
+);
+
+-- The atomicity claim again, for the three new failure paths. The cycle one is the
+-- interesting member: it fails in pass 2, by which time the project and both of
+-- its tasks are already inserted. If the rollback were not real, a cyclic card
+-- would leave behind a project whose graph can never be answered, which is the
+-- silent permanent stall 20260813120000 exists to prevent.
+select extensions.is(
+  (select count(*) from public.projects
+     where source_embed_id in (
+       pg_temp.mid('e_badref'),
+       pg_temp.mid('e_cycle'),
+       pg_temp.mid('e_dupid')
+     )),
+  0::bigint,
+  'a card that fails on its edges leaves no project behind, though its tasks were already written'
 );
 
 -- ---------------------------------------------------------------- privileges

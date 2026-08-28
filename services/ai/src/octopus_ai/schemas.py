@@ -75,9 +75,33 @@ RISK_TIERS = ("read_only", "reversible", "external", "high_risk")
 RiskTier = Literal["read_only", "reversible", "external", "high_risk"]
 
 
+# A step id: lowercase, digits and hyphens, short enough to read in an audit
+# event. Constrained rather than free text because it is a join key on the other
+# side of the seam: `materialise_plan` builds an id -> task uuid map from it.
+STEP_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,31}$"
+
+
 class PlanStep(BaseModel):
     """One concrete action inside a funnel stage."""
 
+    id: str | None = Field(
+        default=None,
+        pattern=STEP_ID_PATTERN,
+        description=(
+            "A short slug naming this step within this plan, so other steps can "
+            "depend on it. Human-readable ('positioning-icp'), because it appears "
+            "in audit events."
+        ),
+    )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "Ids of steps whose OUTPUT this step consumes. Hard dependencies only: "
+            "the scheduler blocks on nothing else (see task_deps_satisfied). Coming "
+            "later in the funnel is not a dependency."
+        ),
+    )
     title: str = Field(min_length=1, max_length=120)
     detail: str = Field(min_length=1, max_length=600)
     owner: Literal["AI", "HUMAN", "YOU"] = Field(

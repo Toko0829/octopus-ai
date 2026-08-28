@@ -23,6 +23,13 @@ export const PostMessageProposal = z.object({
 export type PostMessageProposal = z.infer<typeof PostMessageProposal>;
 
 const PlanStep = z.object({
+  /**
+   * Snake_case like the two below, mirroring the Python schema, and renamed where
+   * the payload is built. Both are optional because a core that predates
+   * dependencies must keep working, and because most steps depend on nothing.
+   */
+  id: z.string().max(32).optional(),
+  depends_on: z.array(z.string().max(32)).max(8).optional().default([]),
   title: z.string().min(1).max(120),
   detail: z.string().min(1).max(600),
   owner: z.enum(['AI', 'HUMAN', 'YOU']),

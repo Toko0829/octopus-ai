@@ -101,6 +101,7 @@ describe('planEmbedPayload', () => {
     owner: 'AI' as const,
     citations: [1],
     risk_tier: 'high_risk' as const,
+    depends_on: [] as string[],
     acceptance_criteria: ['spend stays inside the band'],
   };
   const plan = {
@@ -164,5 +165,75 @@ describe('planEmbedPayload', () => {
     const mapped = firstStep(planEmbedPayload(parsed.data, 'grow my app', []));
     expect(mapped.riskTier).toBe('reversible');
     expect(mapped.acceptanceCriteria).toEqual([]);
+  });
+
+  it('renames depends_on rather than spreading it, and keeps the id', () => {
+    // The second field with a default, and it fails more quietly than the tier.
+    // A spread drops `depends_on`, `dependsOn` defaults to `[]`, the card parses,
+    // and `materialise_plan` writes a project with no edges. The result is a plan
+    // that merely looks flat, and flat is what every plan used to be, so there is
+    // nothing to notice.
+    const withDeps = {
+      ...plan,
+      stages: [
+        {
+          stage: 'channels' as const,
+          steps: [{ ...step, id: 'launch', depends_on: ['ad-copy'] }],
+        },
+      ],
+    };
+    const mapped = firstStep(planEmbedPayload(withDeps, 'grow my app', []));
+
+    expect(mapped.id).toBe('launch');
+    expect(mapped.dependsOn).toEqual(['ad-copy']);
+    expect(mapped).not.toHaveProperty('depends_on');
+  });
+
+  it('omits the id entirely when the core sends none', () => {
+    // Rather than writing `id: null`. A step that names itself and one that does
+    // not stay distinguishable in the stored payload, and the SQL reads the key's
+    // absence to mean "nothing can depend on this".
+    const mapped = firstStep(planEmbedPayload(plan, 'grow my app', []));
+
+    expect(mapped).not.toHaveProperty('id');
+    expect(mapped.dependsOn).toEqual([]);
+  });
+
+  it('carries dependencies through the contract it is stored under', () => {
+    const withDeps = {
+      ...plan,
+      stages: [
+        {
+          stage: 'channels' as const,
+          steps: [{ ...step, id: 'launch', depends_on: ['ad-copy'] }],
+        },
+      ],
+    };
+    const parsed = PlanEmbedPayload.safeParse(planEmbedPayload(withDeps, 'grow my app', []));
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.stages[0]?.steps[0]?.dependsOn).toEqual(['ad-copy']);
+  });
+
+  it('reads a card written before dependencies existed as one with none', () => {
+    // Absent must not cost the card, the same rule the risk tier follows. An old
+    // payload has neither key, and both have to survive the parse.
+    const parsed = PlanEmbedPayload.safeParse({
+      title: 'Launch plan',
+      summary: 'S',
+      citations: [],
+      stages: [
+        {
+          stage: 'channels',
+          steps: [
+            { title: 'Draft the ads', detail: 'Three variants.', owner: 'AI', citations: [] },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.stages[0]?.steps[0]?.dependsOn).toEqual([]);
+    expect(parsed.success && parsed.data.stages[0]?.steps[0]?.id).toBeUndefined();
   });
 });

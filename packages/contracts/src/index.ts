@@ -72,6 +72,28 @@ export const PlanCitation = z.object({
 export type PlanCitation = z.infer<typeof PlanCitation>;
 
 export const PlanStep = z.object({
+  /**
+   * Names this step inside its own plan, so another step can depend on it.
+   *
+   * Optional because cards written before dependencies existed carry no ids, and
+   * because a step nothing depends on never needs one. It is a join key rather
+   * than a display value: `materialise_plan` builds an id -> task uuid map from
+   * it, which is why the shape is constrained on the Python side that mints it.
+   */
+  id: z.string().optional(),
+  /**
+   * Ids of steps whose output this step consumes, and the only edges that exist.
+   * They become `task_deps` rows with `dep_kind = 'hard'` when the plan is
+   * approved, which is what makes the scheduler hold this step back until they
+   * are approved.
+   *
+   * Stated by the planner and sanitised in `services/ai` before it gets here:
+   * anything unresolvable is already dropped, because an invented edge blocks
+   * work for a reason that does not exist while a missing one merely lets two
+   * things run at once. `materialise_plan` still refuses a reference it cannot
+   * resolve, since a card can also arrive from an older service or a hand edit.
+   */
+  dependsOn: z.array(z.string()).optional().default([]),
   title: z.string(),
   detail: z.string(),
   owner: StepOwner,

@@ -167,11 +167,13 @@ const INTAKE_COPY = {
  * sends.
  *
  * The core speaks snake_case and the contract speaks camelCase, so the fields are
- * **renamed rather than spread**. That distinction is load-bearing for exactly one
- * of them: `riskTier` carries a default, so a spread would drop the core's
- * `risk_tier`, the parse would succeed, and every step would land on `reversible`
- * with nothing raising. That is the same failure the tier exists to prevent,
- * arriving through the mapping instead of through the planner.
+ * **renamed rather than spread**. That distinction is load-bearing for the two
+ * that carry defaults. A spread would drop the core's `risk_tier`, the parse would
+ * succeed, and every step would land on `reversible` with nothing raising: the
+ * same failure the tier exists to prevent, arriving through the mapping instead of
+ * through the planner. `depends_on` fails the identical way and more quietly
+ * still, since a plan whose edges all vanished is a plan that merely looks flat,
+ * and flat is what every plan used to be.
  *
  * Exported so the mapping is testable without a database, a room, or a running
  * core. It is pure.
@@ -199,6 +201,11 @@ export function planEmbedPayload(
     stages: plan.stages.map((stage) => ({
       stage: stage.stage,
       steps: stage.steps.map((step) => ({
+        // Omitted rather than written as null when the core sends no id, so a
+        // step that names itself and one that does not stay distinguishable in
+        // the stored payload rather than both reading as "id: null".
+        ...(step.id ? { id: step.id } : {}),
+        dependsOn: step.depends_on,
         title: step.title,
         detail: step.detail,
         owner: step.owner,

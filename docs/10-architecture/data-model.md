@@ -10,6 +10,40 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### The task DAG finally has edges (`20260828120000`)
+
+`task_deps` was created by `20260813120000` and **no row was ever written to it**
+until this migration. `materialise_plan` said why and the reason held: the planner
+emitted stages and steps, so the only edges available would have been inferred
+from stage order, which states a constraint nobody made.
+
+`PlanStep` now carries an `id` and a `dependsOn` on the card payload, and
+`materialise_plan` resolves them in a **second pass** over the stages, after every
+task exists. One pass would have been enough only if a dependency always appeared
+before the step that names it, and nothing requires that: the plan is ordered for
+a reader, so a one-pass version would fail a legal plan on presentation order.
+
+Every edge is written `hard`, which is the only kind `private.task_deps_satisfied`
+consults. The failure stances match the ones already in the function: an
+unresolvable reference and a duplicate step id both **raise**
+(`invalid_parameter_value`), exactly as an unknown owner or an unreadable risk
+tier does, and a cycle is refused by `task_deps_guard_acyclic` rather than
+re-checked here, so the DAG's shape has one definition. All of them raise inside
+the transaction that created the project, so a card that fails on its edges leaves
+nothing behind even though its tasks were already inserted.
+
+A card written before this migration carries no step ids, so nothing resolves and
+it materialises flat: identical to what it did before. The
+`project.materialised` event payload gains an `edges` count, because a plan with
+no edges and a plan that ran everything at once are the same picture afterwards
+without it.
+
+**Applied and verified against the live database: `supabase/tests/materialise_plan.sql`, 42/42**,
+including edge direction (an edge inserted backwards satisfies every count while
+inverting the schedule), that a dependent is genuinely blocked by
+`task_deps_satisfied`, and that `private.tasks_ready` now returns one step from a
+three-step plan where it would have returned three.
+
 ### An escalated step can be resolved by its owner (`20260827120000`)
 
 `private.task_transition_allowed` let `ESCALATED` go only to `MATCHING`, which is

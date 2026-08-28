@@ -37,6 +37,7 @@ from typing import Literal
 from pydantic import ValidationError
 
 from .config import Settings
+from .plan_graph import sanitise_dependencies
 from .providers import ProviderError, Providers
 from .retrieval import RetrievalResult
 from .risk import clamp_risk_tier, high_risk_match, normalise_criteria
@@ -93,7 +94,7 @@ Produce a full-funnel plan as a JSON object, grounded ONLY in the SOURCES block.
 Shape:
 {"title": str, "summary": str, "stages": [
   {"stage": "strategy"|"content"|"creative"|"channels"|"conversion"|"measurement",
-   "steps": [{"title": str, "detail": str,
+   "steps": [{"id": str, "depends_on": [str], "title": str, "detail": str,
               "owner": "AI"|"HUMAN"|"YOU", "citations": [int],
               "risk_tier": "read_only"|"reversible"|"external"|"high_risk",
               "acceptance_criteria": [str]}]}]}
@@ -106,6 +107,20 @@ Rules:
 - At most 3 steps per stage. Prefer fewer, specific steps over more, vague ones.
 - `citations` are 1-based numbers of the sources you actually used for that step.
   Leave it empty only if the step genuinely rests on no source.
+- `id` names the step inside this plan so other steps can refer to it. Lowercase
+  letters, digits and hyphens, and readable: "positioning-icp", "ad-copy-cold".
+  Every step gets one, and no two steps share one.
+- `depends_on` lists the ids of steps whose OUTPUT this step consumes. Write the
+  ad copy step as depending on the positioning step when the copy is written FROM
+  that positioning.
+  - Coming later in the funnel is NOT a dependency. The stages are an order of
+    presentation, not an order of execution, and steps with no edge between them
+    are free to run at the same time, which is the point.
+  - Cross-stage edges are normal and expected. Creative usually consumes strategy.
+  - **When you are unsure, leave it out.** A missing edge lets two things run in
+    parallel that perhaps should not have. An invented one stops work for a reason
+    that does not exist, and nobody reading the plan later can tell why.
+  - Never point a step at itself, and never write a loop (A needs B, B needs A).
 - `owner`: AI for what the system can do alone, HUMAN for expert judgement,
   taste or relationships, YOU for a decision, authorisation, or a fact only the
   person has (budget, brand taste, account access).
@@ -311,6 +326,13 @@ def parse_plan(raw: str, source_count: int) -> ProposePlanProposal:
     connecting an account, and can never lower it. That decision leaves the prompt
     because rules 7 and 11 put authorisation in code, and because this project has
     now twice measured a model agreeing with a disposition and then ignoring it.
+
+    Dependencies are sanitised rather than checked, and the asymmetry with
+    citations directly above is deliberate: a citation the reader cannot follow
+    must not ship, while a dependency we cannot resolve is safest simply dropped.
+    `plan_graph.sanitise_dependencies` holds the argument in full. Every repair is
+    logged, because the failure this repository keeps rediscovering is not the
+    drop, it is the silence around it.
     """
     plan = ProposePlanProposal.model_validate_json(raw)
 
@@ -350,7 +372,11 @@ def parse_plan(raw: str, source_count: int) -> ProposePlanProposal:
         # clothing, and the refusal path says so far more clearly.
         raise ValueError("plan has no steps in any stage")
 
-    return ProposePlanProposal(title=plan.title, summary=plan.summary, stages=normalised)
+    stages, problems = sanitise_dependencies(normalised)
+    for problem in problems:
+        logger.warning("plan dependency repaired: %s", problem)
+
+    return ProposePlanProposal(title=plan.title, summary=plan.summary, stages=stages)
 
 
 async def plan_grounded(
