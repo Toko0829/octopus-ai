@@ -1241,6 +1241,52 @@
   color: var(--color-text-muted);
 }
 
+/* The plan-change card.
+   Each op says what it does in a WORD, never by colour alone (rule 15): the
+   three tints below are a second signal on top of the label, so the card is
+   still readable to somebody who cannot tell them apart, which matters more
+   here than anywhere because the thing being authorised is the removal of
+   planned work. */
+.diff-op {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+  flex: none;
+}
+
+.diff-add {
+  color: var(--accent-text);
+  background: var(--accent-quiet);
+}
+
+.diff-cancel {
+  color: var(--human);
+  background: var(--human-quiet);
+  border-color: color-mix(in oklab, var(--human) 30%, transparent);
+}
+
+.diff-modify {
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+
+/* The title of a step being cancelled. The strike-through is decoration on top
+   of the `Cancel` label beside it, never the only thing carrying the meaning. */
+.diff-struck {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--text-muted);
+}
+
+.diff-reason {
+  font-style: italic;
+}
+
 /* Request-changes note. The person's writing is kept on screen if the submit
    fails: discarding it is the fastest way to lose trust in the button. */
 .plan-note {

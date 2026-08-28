@@ -4,6 +4,7 @@ import { loadServerEnv } from '@octopus/config';
 import { healthRoutes } from './routes/health';
 import { messageRoutes } from './routes/messages';
 import { projectRoutes } from './routes/projects';
+import { replanRoutes } from './routes/replan';
 import { taskActionRoutes } from './routes/task-actions';
 import { roomRoutes } from './routes/rooms';
 import { agentRunRoutes } from './routes/agent-runs';
@@ -49,6 +50,16 @@ export async function buildServer(): Promise<FastifyInstance> {
   // dispatch to the executor, so it needs the same reasoning-core wiring the
   // approval tick does.
   await app.register(taskActionRoutes, {
+    verify,
+    supabase,
+    aiServiceUrl: env.AI_SERVICE_URL,
+    aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+  });
+
+  // Changing a plan that is already running. Produces a card; applying it is the
+  // embed-action route, so a diff crosses the same authorisation boundary a plan
+  // does.
+  await app.register(replanRoutes, {
     verify,
     supabase,
     aiServiceUrl: env.AI_SERVICE_URL,

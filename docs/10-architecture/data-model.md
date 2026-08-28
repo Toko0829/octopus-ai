@@ -10,6 +10,49 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### Applying a plan diff (`20260828130000`, `20260828140000`)
+
+`embed_component` gains `replan`, in its own migration so the value is never used
+in the transaction that adds it, which PostgreSQL forbids. No new `embed_state`:
+a diff is a proposal with a verdict, so the four existing states already mean what
+they need to.
+
+`public.plan_diffs` is the provenance table, keyed on the embed. A table rather
+than a column on `projects`, because a project legitimately has many diffs over
+its life while `source_embed_id` is one card, once. Append-only by grant, like
+`events`, and with no client select policy for the same reason: what a member
+needs to see is the card, which is already readable through room membership.
+
+`public.apply_plan_diff(embed_id)` is `materialise_plan`'s sibling and shares its
+four properties: one transaction, payload read from the card, idempotent by its
+own provenance, and unknown values raise. Two passes again, so an op may depend on
+a step added after it in the list.
+
+Three guards worth naming.
+
+**Stale ops raise.** An op naming a task at `approved` or later, or in a terminal
+state, fails the whole diff. The card was written against a project that has since
+moved, and skipping the impossible ops would apply a change nobody reviewed. The
+pgTAP suite asserts the atomicity directly: the stale card's _first_ op is an add
+that succeeds, and after the failure that step is not in the table.
+
+**Cross-room diffs raise.** The card names a project in its payload, and the
+function checks that project resolves, through its own plan card, to the room the
+diff was posted in. Nothing else on the path does: the action route checks the
+caller's membership of the card's room, which says nothing about the project the
+payload names.
+
+**`modify_task` writes three columns and no others.** State, owner and risk tier
+are absent from the update statement rather than filtered out of a payload, so
+there is no flag to widen. A diff that could move a step from `user` to `ai`, or
+lower its tier, would be an authorisation decision travelling through the field
+that looks least like one.
+
+**Applied and verified against the live database: `supabase/tests/apply_plan_diff.sql`, 27/27**,
+including that a modify carrying `owner`, `riskTier` and `state` changes none of
+them, that a cancelled step's dependents stay blocked, and that no failed diff is
+recorded as applied, so a retry is still possible.
+
 ### The task DAG finally has edges (`20260828120000`)
 
 `task_deps` was created by `20260813120000` and **no row was ever written to it**

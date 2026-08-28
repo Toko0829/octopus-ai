@@ -271,6 +271,28 @@ What changed is the planner, not the inference: `PlanStep` carries an `id` and a
 
 `PlanEmbedPayload` gained `goal` for this, carrying the request in the person's own words. It also repairs the flywheel label, since `feedback_events.subject` stores this payload and an output with no input is not a training pair.
 
+## Changing a plan that is already running
+
+`POST /api/projects/:projectId/replan` takes the owner's reason and returns `202`.
+The core is handed the project's goal, that reason, and the current DAG, and
+answers with a diff; Node posts it as a `replan` card; approving that card runs
+`public.apply_plan_diff`, through the same embed-action route a plan approval
+uses. So a change to a running project crosses the same authorisation boundary
+the original plan did, and **nothing replans on its own**.
+
+The DAG travels in the request rather than being read by the core, because the
+task graph is Node's (ADR-0006) and the core reaches Postgres for retrieval only.
+It also means the diff is answered against exactly the state this process saw,
+which is what makes `apply_plan_diff`'s staleness check meaningful rather than a
+race between two readers.
+
+Two guards live in the function rather than the route, for the reason the rest of
+this seam already follows. A **stale** op, naming work that has since been
+approved or stopped, raises and takes the whole diff with it, because skipping it
+would apply a change nobody reviewed. And a **cross-room** diff raises: the card
+names a project in its payload, and the route only ever checked the caller's
+membership of the card's room, which says nothing about the project named.
+
 **One scheduler tick runs immediately after**, so the person who just approved something sees where each step went rather than watching rows sit `PENDING` until some future trigger fires. It is not fatal: the approval and the project both stand whatever the tick does, and the next tick finds the same tasks. The decisions live in `@octopus/core` with no database access at all; `apps/api/src/lib/scheduler.ts` is the adapter that gives them one. See [business-projects-workflow.md](../30-modules/business-projects-workflow.md) for the router's rules and for the one place the tick deliberately stops short.
 
 ## Timeouts across the Node/Python seam

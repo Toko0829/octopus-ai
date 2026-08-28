@@ -80,10 +80,67 @@ export type WriteArtifactProposal = z.infer<typeof WriteArtifactProposal>;
  * silently dropped. The core widening its own powers by inventing a proposal
  * kind should break the run, not quietly do nothing.
  */
+/**
+ * One change a replan proposes. Snake_case throughout, mirroring the Python
+ * schema, and renamed where the card payload is built.
+ */
+const ReplanAddStepProposal = z.object({
+  op: z.literal('add_step'),
+  stage: z.enum(['strategy', 'content', 'creative', 'channels', 'conversion', 'measurement']),
+  id: z.string().max(32),
+  title: z.string().min(1).max(120),
+  detail: z.string().min(1).max(600),
+  owner: z.enum(['AI', 'HUMAN', 'YOU']),
+  citations: z.array(z.number().int().positive()).default([]),
+  risk_tier: TaskRiskTier.optional().default('reversible'),
+  acceptance_criteria: z.array(z.string()).max(3).optional().default([]),
+  depends_on: z.array(z.string().max(64)).max(8).optional().default([]),
+});
+
+const ReplanCancelTaskProposal = z.object({
+  op: z.literal('cancel_task'),
+  task_id: z.string().uuid(),
+  reason: z.string().min(1).max(400),
+});
+
+const ReplanModifyTaskProposal = z.object({
+  op: z.literal('modify_task'),
+  task_id: z.string().uuid(),
+  detail: z.string().min(1).max(600).optional(),
+  acceptance_criteria: z.array(z.string()).max(3).optional(),
+  add_depends_on: z.array(z.string().max(64)).max(8).optional().default([]),
+});
+
+/**
+ * A diff against a running project.
+ *
+ * `ops` is capped here as well as in the core, on this side's own rule: the core
+ * may propose, and the bounds on what it proposes are this side's to enforce
+ * rather than the prompt's to honour. Ten is the number a person will actually
+ * read, and a card nobody reads is not an authorisation.
+ */
+export const ProposeReplanProposal = z.object({
+  kind: z.literal('propose_replan'),
+  project_id: z.string().uuid(),
+  summary: z.string().min(1).max(800),
+  ops: z
+    .array(
+      z.discriminatedUnion('op', [
+        ReplanAddStepProposal,
+        ReplanCancelTaskProposal,
+        ReplanModifyTaskProposal,
+      ]),
+    )
+    .min(1)
+    .max(10),
+});
+export type ProposeReplanProposal = z.infer<typeof ProposeReplanProposal>;
+
 export const Proposal = z.discriminatedUnion('kind', [
   PostMessageProposal,
   ProposePlanProposal,
   WriteArtifactProposal,
+  ProposeReplanProposal,
 ]);
 export type Proposal = z.infer<typeof Proposal>;
 
@@ -209,6 +266,100 @@ export async function requestPlan(
     if (!parsed.success) {
       // A shape we do not recognise is a contract break, not something to
       // muddle through with.
+      throw new AiServiceError(
+        `AI service response did not match the contract: ${parsed.error}`,
+        'contract',
+      );
+    }
+    return parsed.data;
+  } catch (err) {
+    if (err instanceof AiServiceError) throw err;
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new AiServiceError(`AI service timed out after ${timeoutMs}ms`, 'timeout');
+    }
+    throw new AiServiceError(
+      err instanceof Error ? err.message : 'AI service unreachable',
+      'unreachable',
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface ReplanTaskInput {
+  taskId: string;
+  title: string;
+  detail: string;
+  stage: string | null;
+  state: string;
+  owner: 'AI' | 'HUMAN' | 'YOU';
+  dependsOn: string[];
+}
+
+export interface ReplanInput {
+  projectId: string;
+  roomId: string;
+  goal: string;
+  reason: string;
+  tasks: ReplanTaskInput[];
+  context?: IntakeSlot[];
+  agentRunId: string;
+}
+
+/**
+ * Ask the core for a diff against a running project.
+ *
+ * **The DAG travels in the request rather than being read by the core.** The task
+ * graph is Node's (ADR-0006), and the core reaches Postgres for retrieval only.
+ * Sending it also means the diff is answered against exactly the state this
+ * process saw, which is what makes the staleness check in `apply_plan_diff`
+ * meaningful rather than a race with a second reader.
+ *
+ * Shares the plan timeout, because it does the same expensive things: one
+ * retrieval, one groundedness check, one long generation.
+ */
+export async function requestReplan(
+  baseUrl: string,
+  input: ReplanInput,
+  timeoutMs = DEFAULT_PLAN_TIMEOUT_MS,
+): Promise<PlanResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${baseUrl}/replan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        project_id: input.projectId,
+        goal: input.goal,
+        reason: input.reason,
+        // Renamed rather than spread, for the reason the plan mapping records:
+        // a field with a default that silently arrives absent is the failure
+        // mode that leaves everything looking merely empty.
+        tasks: input.tasks.map((task) => ({
+          task_id: task.taskId,
+          title: task.title,
+          detail: task.detail,
+          stage: task.stage,
+          state: task.state,
+          owner: task.owner,
+          depends_on: task.dependsOn,
+        })),
+        context: input.context ?? [],
+        trace: {
+          agent_run_id: input.agentRunId,
+          project_id: input.projectId,
+          room_id: input.roomId,
+        },
+      }),
+    });
+
+    if (!res.ok) throw new AiServiceError(`AI service returned ${res.status}`, 'status');
+
+    const parsed = PlanResponse.safeParse(await res.json());
+    if (!parsed.success) {
       throw new AiServiceError(
         `AI service response did not match the contract: ${parsed.error}`,
         'contract',

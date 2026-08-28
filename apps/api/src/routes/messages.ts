@@ -8,6 +8,7 @@ import {
   PlanEmbedPayload,
   PostMessageBody,
   QuestionEmbedPayload,
+  ReplanEmbedPayload,
   type ListMessagesResponse,
 } from '@octopus/contracts';
 import { z } from 'zod';
@@ -65,6 +66,7 @@ const EmbedRow = z.discriminatedUnion('component', [
   // the right behaviour for a corrupt row and the wrong behaviour for a variant
   // somebody forgot to add, and nothing distinguished the two.
   z.object({ ...EmbedRowBase, component: z.literal('artifact'), payload: ArtifactEmbedPayload }),
+  z.object({ ...EmbedRowBase, component: z.literal('replan'), payload: ReplanEmbedPayload }),
 ]);
 
 /** Database row shape (snake_case) for the columns we select. */
@@ -105,13 +107,28 @@ function toEmbed(raw: unknown): Message['embed'] {
 
   // Rebuilt per variant rather than spread from the parsed row, so the returned
   // value satisfies the union by construction instead of by assertion.
-  if (parsed.data.component === 'plan') {
-    return { ...common, component: 'plan', payload: parsed.data.payload };
+  //
+  // **Exhaustive, and the `never` is the point.** The artifact card went
+  // unrendered for everybody because a variant was missing from the union above,
+  // and the tail of this function used to end in a bare `return ... 'artifact'`,
+  // which would have quietly mislabelled a fourth component as an artifact rather
+  // than failing. Adding a component to `EmbedRow` without adding an arm here is
+  // now a compile error.
+  const embed = parsed.data;
+  switch (embed.component) {
+    case 'plan':
+      return { ...common, component: 'plan', payload: embed.payload };
+    case 'question':
+      return { ...common, component: 'question', payload: embed.payload };
+    case 'artifact':
+      return { ...common, component: 'artifact', payload: embed.payload };
+    case 'replan':
+      return { ...common, component: 'replan', payload: embed.payload };
+    default: {
+      const unreachable: never = embed;
+      return unreachable;
+    }
   }
-  if (parsed.data.component === 'question') {
-    return { ...common, component: 'question', payload: parsed.data.payload };
-  }
-  return { ...common, component: 'artifact', payload: parsed.data.payload };
 }
 
 function toMessage(row: MessageRow): Message {

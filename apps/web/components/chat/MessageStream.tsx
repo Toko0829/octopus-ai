@@ -6,6 +6,7 @@ import { RoleBadge } from './ui';
 import { OctopusMark } from './icons';
 import { PlanCard } from './PlanCard';
 import { ArtifactCard } from './ArtifactCard';
+import { ReplanCard } from './ReplanCard';
 
 interface Props {
   channelName: string | null;
@@ -129,6 +130,9 @@ export function MessageStream({
                 <PlanCard embed={m.embed} canAct={canAct} onAct={onEmbedAction} />
               )}
               {m.embed?.component === 'artifact' && <ArtifactCard embed={m.embed} />}
+              {m.embed?.component === 'replan' && (
+                <ReplanCard embed={m.embed} canAct={canAct} onAct={onEmbedAction} />
+              )}
             </div>
           </div>
         );

@@ -8,6 +8,14 @@
 >
 > **Implementation status (Phase 1, in progress):** the **Discord-style chat shell** at `/app` now runs on **live data, with no mock or demo content anywhere**. Sign-in (`/sign-in`, Supabase GoTrue) gates the workspace via middleware; reads happen in the Server Component; the browser talks to Fastify only through the thin BFF at `/api/bff/*`; messages arrive over Realtime and sends are optimistic, reconciled on the server copy. House style via design tokens in `app/globals.css` + `app/app/chat.css`, type (Fraunces / Hanken Grotesk / JetBrains Mono via `next/font`), light + dark skins.
 >
+> **The plan-change card** (`ReplanCard.tsx`) renders a `replan` embed: a diff against a project that is already running. It reuses `PlanCard`'s classes and its approve / request-changes footer, and holds three rules of its own.
+>
+> - **Every op is shown and labelled with a word.** A person is authorising the removal of planned work, so the card cannot summarise: "3 changes" is not something anybody can agree to. `Add` / `Cancel` / `Update` each carry their own label, their own explanation, and a tint that is a second signal on top of the word rather than the thing carrying it (rule 15). The strike-through on a cancelled title is decoration on top of the `Cancel` label, never the only cue.
+> - **A cancelled step is named.** The op references a task by UUID, so the payload carries `taskTitle` beside it; when it is absent, because the card predates the field, the id is shown rather than hidden, since a reference the reader cannot resolve still beats a change they cannot see.
+> - **The consequence people do not expect is on the card.** Cancelling a step does not release what waits on it, and reading that after approving is much worse than reading it before.
+>
+> **`ProjectPanel` gained a way to ask.** The panel could unstick one step and could not say "this plan is wrong"; without that the only way to change direction was to abandon the project and post a new goal, discarding every deliverable already produced. The affordance is owner-only and its copy promises a proposal rather than an edit, because that is what it does: the diff arrives in the chat as a card and nothing changes until it is approved.
+>
 > **The plan card is now rendered on real data.** `PlanCard.tsx` reads an `action_embeds` row of component `plan`, produced by the `grounded-plan-v1` core. Three rules it holds:
 >
 > - **All six funnel stages render, always.** A stage with no steps is meaningful output, not absent output: it says the corpus had nothing in scope. Hiding it would read as "this plan has four parts" rather than "two stages are unsupported", and the second is what lets a reader judge the plan.

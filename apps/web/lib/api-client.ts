@@ -107,6 +107,20 @@ export function getProject(projectId: string) {
   return bff<ProjectDetail>(`/projects/${projectId}`);
 }
 
+/**
+ * Ask for the plan to be changed.
+ *
+ * Returns `202` and nothing else useful: the diff takes tens of seconds and
+ * arrives as a card in the room, which is where it is approved. Nothing changes
+ * until somebody approves it, so this call is safe to make and abandon.
+ */
+export function requestReplan(projectId: string, reason: string) {
+  return bff<{ runId: string; status: string }>(`/projects/${projectId}/replan`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+}
+
 export function getMembers(roomId: string) {
   return bff<{ members: RoomMember[] }>(`/rooms/${roomId}/members`);
 }

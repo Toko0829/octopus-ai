@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { ProjectDetail, ProjectSummary, Task, TaskState } from '@octopus/contracts';
-import { getProject, getProjects, resolveStep } from '../../lib/api-client';
+import { getProject, getProjects, requestReplan, resolveStep } from '../../lib/api-client';
 
 /**
  * What happened after a plan was approved.
@@ -211,12 +211,15 @@ export function ProjectPanel({ roomId, canAct, onClose }: Props) {
 
                   {open && detail === null && <p className="work-empty">Loading the steps.</p>}
                   {open && detail !== null && detail.id === p.id && (
-                    <TaskList
-                      tasks={detail.tasks}
-                      projectId={detail.id}
-                      canAct={canAct}
-                      onResolved={() => setRefresh((n) => n + 1)}
-                    />
+                    <>
+                      <TaskList
+                        tasks={detail.tasks}
+                        projectId={detail.id}
+                        canAct={canAct}
+                        onResolved={() => setRefresh((n) => n + 1)}
+                      />
+                      {canAct && <RequestReplan projectId={detail.id} />}
+                    </>
                   )}
                 </li>
               );
@@ -450,6 +453,102 @@ function ResolveStep({
           disabled={busy !== null || text.trim().length === 0}
         >
           {busy === 'answer' ? 'Recording' : 'Record it'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Asking for the plan itself to be changed.
+ *
+ * The panel could already unstick one step; nothing could say "this plan is
+ * wrong". Without it the only way to change direction was to abandon the project
+ * and post a new goal, which throws away every deliverable already produced.
+ *
+ * **It produces a card, and the card is where the change happens.** This button
+ * asks; approving the diff in the chat is what applies it, through the same
+ * embed-action route a plan approval goes through. So the copy promises a
+ * proposal rather than an edit, because that is what it does.
+ */
+function RequestReplan({ projectId }: { projectId: string }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send() {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestReplan(projectId, reason.trim());
+      setSent(true);
+      setOpen(false);
+    } catch (err) {
+      // The reason stays on screen. It is the person's writing, and a failed
+      // submit that discards it is the fastest way to lose trust in the button.
+      setError(err instanceof Error ? err.message : 'That did not go through.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (sent) {
+    return (
+      <p className="work-resolve-label">
+        Working out what to change. The suggestion will arrive in the chat as a card, and nothing
+        changes until you approve it.
+      </p>
+    );
+  }
+
+  if (!open) {
+    return (
+      <div className="work-resolve">
+        <button type="button" className="work-action" onClick={() => setOpen(true)}>
+          Change this plan
+        </button>
+        {error && (
+          <p className="work-resolve-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="work-resolve">
+      <label className="work-resolve-label" htmlFor={`replan-${projectId}`}>
+        What should change, and why? I will come back with a specific set of changes for you to
+        approve. Nothing is altered until you do.
+      </label>
+      <textarea
+        id={`replan-${projectId}`}
+        className="work-resolve-input"
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        rows={3}
+        disabled={busy}
+        placeholder="I do not want to run paid ads. Focus on SEO and email instead."
+      />
+      {error && (
+        <p className="work-resolve-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="work-resolve-actions">
+        <button type="button" className="btn-ghost" onClick={() => setOpen(false)} disabled={busy}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => void send()}
+          disabled={busy || reason.trim().length === 0}
+        >
+          {busy ? 'Working it out' : 'Suggest changes'}
         </button>
       </div>
     </div>

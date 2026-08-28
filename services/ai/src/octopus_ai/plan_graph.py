@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from .schemas import PlanStage, PlanStep
 
-__all__ = ["sanitise_dependencies"]
+__all__ = ["find_cycle", "sanitise_dependencies"]
 
 
 def _drop_all_edges(stages: list[PlanStage]) -> list[PlanStage]:
@@ -116,7 +116,7 @@ def sanitise_dependencies(stages: list[PlanStage]) -> tuple[list[PlanStage], lis
                 edges[step.id] = kept
         cleaned.append(PlanStage(stage=stage.stage, steps=steps))
 
-    cycle = _find_cycle(edges)
+    cycle = find_cycle(edges)
     if cycle:
         problems.append(
             f"dependencies form a cycle ({' -> '.join(cycle)}); dropping every "
@@ -128,7 +128,7 @@ def sanitise_dependencies(stages: list[PlanStage]) -> tuple[list[PlanStage], lis
     return cleaned, problems
 
 
-def _find_cycle(edges: dict[str, list[str]]) -> list[str] | None:
+def find_cycle(edges: dict[str, list[str]]) -> list[str] | None:
     """One cycle in the dependency graph, named, or None.
 
     Named rather than merely detected because the log line is the only thing that

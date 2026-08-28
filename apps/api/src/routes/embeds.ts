@@ -88,13 +88,14 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       // (2) The card must be one this route knows how to act on, and the list is
       // an allow-list rather than a deny-list.
       //
-      // `approve` here means "materialise this plan into a project", and it is
-      // reached by embed id alone. A question card has no verdict to give and no
-      // stages to build from, so approving one would hand `materialise_plan` a
-      // payload it was never written for. Any component added later is refused
-      // until someone writes what acting on it means, which is the same direction
-      // the `required_role` check below already fails in.
-      if (embed.component !== 'plan') {
+      // `approve` means "commit what this card proposes", and which commit that is
+      // depends on the component: a plan becomes a project, a replan changes one
+      // that is already running. It is reached by embed id alone, so a question
+      // card, which has no verdict to give and no stages to build from, would hand
+      // a payload to a function never written for it. Any component added later is
+      // refused until someone writes what acting on it means, which is the same
+      // direction the `required_role` check below already fails in.
+      if (embed.component !== 'plan' && embed.component !== 'replan') {
         return fail(reply, 409, 'conflict', 'This card is not one you approve or reject.');
       }
 
@@ -176,19 +177,25 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       // `projects.source_embed_id` is unique. Failing loudly here rather than
       // rolling back the approval keeps the person's decision from being silently
       // undone by an error they cannot see.
+      // A replan card commits through its own function, and the two are siblings
+      // rather than variants: both read the payload from the card, both are
+      // idempotent by their own provenance, and both are one transaction because
+      // half an applied diff is a project in a state nobody reviewed.
+      const commit = embed.component === 'replan' ? 'apply_plan_diff' : 'materialise_plan';
+
       let projectId: string | null = null;
       if (action === 'approve') {
-        const { data, error: materialiseError } = await admin.rpc('materialise_plan', {
+        const { data, error: materialiseError } = await admin.rpc(commit, {
           p_embed_id: embedId,
         });
         if (materialiseError) {
           request.log.error(
-            { err: materialiseError, embedId, roomId },
-            'plan approved but not materialised; the card stands and the project is missing',
+            { err: materialiseError, embedId, roomId, commit },
+            'card approved but not committed; the card stands and the change is missing',
           );
         } else {
           projectId = data as string;
-          request.log.info({ embedId, roomId, projectId }, 'plan materialised into a project');
+          request.log.info({ embedId, roomId, projectId, commit }, 'card committed');
 
           // One scheduler tick, immediately. A project whose tasks sit PENDING
           // until some future trigger fires is indistinguishable from a project
@@ -221,10 +228,10 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       // The decision belongs in the room as a system message: the chat is the
       // audit trail (discord-chat-spec.md), and a state change nobody can see is
       // not one anyone can dispute.
+      const approvedCopy =
+        embed.component === 'replan' ? 'Plan changes applied.' : 'Plan approved.';
       const summary =
-        action === 'approve'
-          ? 'Plan approved.'
-          : `Changes requested.${note ? ` Note: ${note}` : ''}`;
+        action === 'approve' ? approvedCopy : `Changes requested.${note ? ` Note: ${note}` : ''}`;
       const { error: noticeError } = await admin.from('messages').insert({
         room_id: roomId,
         author_id: null,

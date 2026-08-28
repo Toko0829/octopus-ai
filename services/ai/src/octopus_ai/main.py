@@ -26,6 +26,7 @@ from .ingestion import Ingestor
 from .intake import run_intake
 from .planner import build_sources_block, plan_grounded, refuse
 from .providers import Providers
+from .replan import replan
 from .retrieval import Retriever
 from .schemas import (
     ExecuteRequest,
@@ -34,6 +35,7 @@ from .schemas import (
     IntakeResponse,
     PlanRequest,
     PlanResponse,
+    ReplanRequest,
     SourceRequest,
     SourceResponse,
 )
@@ -290,6 +292,32 @@ async def execute(request: ExecuteRequest) -> PlanResponse:
     assert state.retriever and state.providers and state.settings  # set in lifespan
 
     return await execute_task(request, state.retriever, state.providers, state.settings)
+
+
+@app.post("/replan", response_model=PlanResponse, tags=["reasoning"])
+async def replan_project(request: ReplanRequest) -> PlanResponse:
+    """Propose a diff against a running project, or decline to.
+
+    Owner-initiated: something changed, or a step failed twice, and the plan they
+    approved is no longer the plan they want. This returns add / cancel / modify
+    ops for Node to render as a card, and applying them happens only when the
+    owner approves it, exactly as with the plan card.
+
+    This service still only proposes (ADR-0006). It is handed the current DAG in
+    the request rather than reading it, because the task graph is Node's.
+    """
+    logger.info(
+        "replan requested",
+        extra={
+            "project_id": request.project_id,
+            "tasks": len(request.tasks),
+            "agent_run_id": request.trace.agent_run_id,
+        },
+    )
+
+    assert state.retriever and state.providers and state.settings  # set in lifespan
+
+    return await replan(request, state.retriever, state.providers, state.settings)
 
 
 @app.post("/sources", response_model=SourceResponse, tags=["knowledge"])

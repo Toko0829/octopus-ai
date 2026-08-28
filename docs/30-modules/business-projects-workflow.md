@@ -20,7 +20,9 @@
 >
 > **The graph has edges now** (`20260828120000`). The planner states which steps consume which other steps' output, and `materialise_plan` writes them as `hard` `task_deps` rows, so `task_deps_satisfied` and `private.tasks_ready` are enforcing a real graph rather than an empty set for the first time. See "Where the edges come from" below.
 >
-> **Not built yet:** `playbook_versions`, `escalations`, and replan-by-diff. **Consuming the question before the work succeeds is what makes a race safe and a failure silent.** The card is closed first so a second message cannot answer the same steps twice. The first live answer then hit an invalid enum value, every task failed, the failure was logged per task, and the room said **nothing at all**: the person had answered, the question had vanished, and no step had moved. The card is now **reopened** when nothing completes, so their next message is still read as an answer, and the run says so plainly. Losing a reply is bad; losing it without saying so is worse.
+> **Replan-by-diff is live** (`20260828130000`, `20260828140000`). An owner can ask for a running plan to be changed, and gets a card of add / cancel / modify ops to approve. See "Changing a plan that is already running" below.
+>
+> **Not built yet:** `playbook_versions` and `escalations`. **Consuming the question before the work succeeds is what makes a race safe and a failure silent.** The card is closed first so a second message cannot answer the same steps twice. The first live answer then hit an invalid enum value, every task failed, the failure was logged per task, and the room said **nothing at all**: the person had answered, the question had vanished, and no step had moved. The card is now **reopened** when nothing completes, so their next message is still read as an answer, and the run says so plainly. Losing a reply is bad; losing it without saying so is worse.
 
 **An answered step is a finished step, and the machine had to say so.** The only arc out of `NEEDS_USER` was back to `ROUTING`, where the router applies rule 2 to a `user`-owned task and returns it to `NEEDS_USER`: the answer had nowhere to land and the loop had no end. Nothing failed, the task simply waited forever. `20260815220000` adds `NEEDS_USER → APPROVED`, and the semantics are the point rather than a convenience: the plan gave that person work only they could do, so answering **is** doing it, and `APPROVED` is the state that satisfies dependents. The answer is stored as an artifact `created_by: 'user'` with **no citations**, deliberately, since a person's own decision rests on no retrieved source and attaching one would attribute their judgement to the corpus. The checker never sees it: a human answering is not a maker to be checked.
 
@@ -75,6 +77,58 @@ Two properties of the view are decisions rather than presentation:
 - **Progress counts `APPROVED` as done**, matching `task_deps_satisfied` rather
   than waiting for `PAID`. If the number a person reads disagreed with the one the
   scheduler acts on, one of them would be lying.
+
+## Changing a plan that is already running
+
+`ai-orchestrator.md` has specified "replan by diff, not regeneration, preserving
+completed work and audit history" since Phase 0, and nothing produced one,
+because there was no way to ask for it. The gap became visible the moment the
+project panel did: a person could see fifteen steps, disagree with three, and
+have no move available short of abandoning the project and posting a new goal,
+which throws away every deliverable already produced.
+
+**Owner-initiated and owner-approved.** `POST /api/projects/:projectId/replan`
+takes a reason in the person's own words and returns `202`; the core answers with
+a diff; the diff is posted as a `replan` card; approving it runs
+`public.apply_plan_diff`, through the ordinary embed-action route. So a change to
+a running project crosses the same authorisation boundary the original plan did.
+**Automatic replanning after each task is deliberately out of scope**, and the
+argument is the one that put plan approval behind a card in the first place: a
+model proposing something is not the same as somebody agreeing to it.
+
+**Three ops, and the set is small on purpose.** Everything an owner wants is work
+added, work called off, or work whose description was wrong, and each is
+separately reviewable on a card. Capped at ten, because a card nobody reads is
+not an authorisation.
+
+**`modify_task` cannot change state, owner or risk tier, and that is the safety
+property.** Changing who runs a step, or what it is permitted to touch, is a
+different piece of work and goes through cancel plus add so the person sees both
+halves. Routing an authorisation decision through the op that looks least like
+one is exactly what rules 7 and 11 forbid. It is enforced by `apply_plan_diff`
+naming three columns rather than accepting a payload, so there is no flag anybody
+can pass to widen it, and asserted directly: the pgTAP suite approves a card that
+asks for all three and checks the row did not move.
+
+**A stale diff fails rather than half-applying.** The card was written against
+the project as it was; by the time it is approved a step may have been approved,
+failed or cancelled. An op naming such a step raises and the whole transaction
+rolls back, including the ops that had already succeeded. Skipping the impossible
+ones would apply a diff nobody reviewed.
+
+**Cancelling a step does not release what depends on it.**
+`task_deps_satisfied` counts a dependency satisfied at `approved` or later, and
+`cancelled` is neither, so a dependent stays blocked. That is correct rather than
+an oversight: work planned to consume an output that will now never exist should
+not quietly proceed as though it had one. The prompt tells the model to deal with
+dependents in the same diff, the card says so in as many words, and the pgTAP
+suite asserts it so nobody later "fixes" it into auto-unblocking.
+
+**A diff cannot reach another room's project.** The card is posted in a room and
+names a project in its payload; `apply_plan_diff` checks the project resolves,
+through its own plan card, to that same room. Nothing else on the path does: the
+action route verifies the caller's membership of the card's room, which says
+nothing about the project the payload names.
 
 ## Project lifecycle
 
