@@ -97,6 +97,18 @@ plausible progress figure. A step counts as done at `approved` rather than `done
 matching `private.task_deps_satisfied`, so the number a person reads and the
 number the scheduler acts on cannot disagree about what finished means.
 
+### `GET /api/projects/:projectId/artifacts/:artifactId/file-url`
+
+A short-lived signed URL for an artifact that is a file rather than text.
+
+**The artifact row is read with the caller-scoped client, and that read is the authorization.** If `artifacts_select_member` does not return the row, there is nothing to sign. The service client appears only afterwards, to mint the URL, because signing needs a key no client may hold. Reading the row with the service client and checking membership in the handler would put the authorization back in this file, where the next handler would have to remember to repeat it.
+
+**The `storage.objects` select policy is the second layer, and it agrees with this route by construction.** Both terminate in `private.is_project_member`. That is the `20260827110000` lesson stated as a design rule rather than as a war story: a read path and a policy that answer the same question differently is a defect waiting for somebody to fix only one of them, and the last time it happened it cost 47 tasks and 28 of 58 artifacts.
+
+**The signed URL is a bearer capability and is treated as one.** Anyone holding it can fetch the object until it expires, without presenting a token. So it is minted per request rather than stored, it lives ten minutes, and **it is never logged** (the catch logs `err.message` rather than the error object, because the storage client's errors can carry a response body). `expiresAt` travels with it so the client can tell "this link is stale" apart from "this file is gone".
+
+Invisible, absent, and "this artifact is text rather than a file" are all `404`, matching the room idiom. The branch that decides which is a pure exported function, tested, because the text case is the common one: every artifact the product has written so far has a `body` and a null `storage_path`, and asking Storage to sign null would surface an ordinary artifact as a `500`.
+
 ### `POST /api/projects/:projectId/tasks/:taskId/resolution`
 
 Unsticking one step: `answer` records that the owner did it and completes the

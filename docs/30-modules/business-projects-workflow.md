@@ -295,7 +295,16 @@ It cannot tell you whether the positioning advice is good. It can tell you the m
 
 `fabricated_citation` never retries: asking the same maker again is how you get a second invented source, so it escalates immediately. Everything else gets one bounded re-do, because "produced nothing" is the kind of failure a retry plausibly fixes. **Each attempt is its own `task_runs` row**, so a retry never erases why the previous one failed.
 
-Artifacts are inline text (`body`) rather than Storage for now: the only thing the AI produces today is prose, and putting a paragraph in object storage would mean a fetch to read it and a bucket policy to get right. `storage_path` arrives with the first artifact that is genuinely a file. A database constraint refuses a row with neither, because an artifact with no content is a task that reported success and produced nothing.
+Artifacts are inline text (`body`) when what a step produced is prose, which is everything the AI writes today, and a file in Storage when it is genuinely a file. A database constraint refuses a row with neither, because an artifact with no content is a task that reported success and produced nothing.
+
+**The file half became real in `20260829124000`, and it had been half-built for two weeks.** `storage_path` existed, `Artifact.storagePath` was on the wire, the project route selected it, and the panel had an arm that said "This one is a file rather than text." There was no bucket, no policy, no reader and no writer, so that arm was reachable only by a row nobody could create. What exists now:
+
+- **A private bucket**, path `<project_id>/<artifact_id>/<filename>`. The first segment is the tenant and the `storage.objects` select policy reads it, so a file written anywhere else in the bucket is visible to nobody.
+- **`GET /api/projects/:projectId/artifacts/:artifactId/file-url`**, which reads the artifact row **as the caller** (RLS row visibility is the authorization) and then mints a ten-minute signed URL with the service key. The URL is a bearer capability: minted per click, never stored, never logged.
+- **`writeFileArtifact`** in `apps/api/src/lib/artifact-files.ts`, which uploads the object and writes the row together and **removes the object if the row fails**. Postgres has no transaction across object storage, so the compensation is explicit. Row-first would be worse: it satisfies the check constraint while pointing at nothing, and the panel would list a delivered artifact that 404s on download.
+- **A Download control** in the project panel, where the sentence used to be.
+
+**Uploads are Node-initiated only.** The Python service has no storage keys by design ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) and never handles bytes, so `WriteArtifactProposal` and `ArtifactEmbedPayload` are unchanged and there is **no file-producing proposal kind**. A wire shape designed before its first producer is a guess, and unknown kinds already fail loudly; that seam changes when a byte-producer exists.
 
 ## What else lives in `packages/core`
 

@@ -64,6 +64,14 @@
 >
 > Every token it uses was checked against `globals.css` before shipping, and one did not exist: `--danger` was written from habit and is not in this system. That is the third time this file has recorded that defect, after `--hairline` and `--warning`, and it is the argument for the CI grep the anti-pattern section already asks for.
 
+> **A file deliverable is now something you can open.** That arm of the artifact block used to be one sentence, "This one is a file rather than text.", describing something with no control beside it, and it was unreachable anyway because nothing could write a file until `20260829124000`. It is a **Download** button now, and three things about it are deliberate.
+>
+> **The link is fetched on click, never with the project.** A signed URL is a bearer capability, good for ten minutes without signing in, so shipping one inside the project payload would mint a download credential for every file the moment the panel opened and keep it in memory for as long as it stayed open.
+>
+> **A blocked pop-up is shown rather than swallowed.** `window.open` after an await is exactly what a pop-up blocker stops, and a button that appears to do nothing is worse than a link somebody clicks themselves; when the tab is refused, an "Open the file" link takes its place.
+>
+> **The control is `work-action`, not a new style.** A download reads as the same weight of thing as the other actions in this panel, and one more bespoke button is how a design system stops being one.
+
 ## Responsibilities
 
 Turn the house style into shipped, accessible, themeable React — and make it **hard to ship slop** (lint/guardrails).

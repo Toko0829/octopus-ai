@@ -51,7 +51,7 @@ All channel actions are typed tools with **risk tiers**; anything that publishes
 
 - A **project** = a growth goal; its **task DAG** is the funnel (strategy → content → creative → channels → conversion → measurement).
 - **Campaigns** belong to a project and map to channel entities (ad campaigns/ad sets/ads, content calendars, email sequences).
-- **Assets** (creative/copy/landing) are artifacts with performance attached.
+- **Assets** (creative/copy/landing) are artifacts with performance attached. Copy is an inline artifact; a generated image or video will be a **file artifact** in the private `artifacts` bucket (`20260829124000`), written by `writeFileArtifact` and read through a signed URL. **No creative provider is wired yet and `generate_creative` still produces a structured brief as ordinary text**: choosing an image or video provider is an irreversible decision that needs its own ADR, and until a byte-producer exists a file-producing proposal kind would be a wire shape designed before anything can fill it. Slice 6.
 - See [business-projects-workflow.md](business-projects-workflow.md) for the DAG/state machine and [data-model.md](../10-architecture/data-model.md) for tables. That pointer is now true: the marketing domain has a schema section there rather than a forward reference.
 
 ## `packages/marketing` (the domain, without the IO)

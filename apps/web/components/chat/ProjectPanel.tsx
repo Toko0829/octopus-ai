@@ -2,7 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import type { ProjectDetail, ProjectSummary, Task, TaskState } from '@octopus/contracts';
-import { getProject, getProjects, requestReplan, resolveStep } from '../../lib/api-client';
+import {
+  getArtifactFileUrl,
+  getProject,
+  getProjects,
+  requestReplan,
+  resolveStep,
+} from '../../lib/api-client';
 
 /**
  * What happened after a plan was approved.
@@ -324,7 +330,7 @@ function TaskRow({
                   </div>
                 )}
                 {artifact.storagePath && !artifact.body && (
-                  <p className="work-empty">This one is a file rather than text.</p>
+                  <ArtifactFile artifact={artifact} projectId={projectId} />
                 )}
                 {artifact.citations.length > 0 ? (
                   <p className="work-artifact-sources">
@@ -345,6 +351,69 @@ function TaskRow({
         </>
       )}
     </li>
+  );
+}
+
+/**
+ * A deliverable that is a file.
+ *
+ * This arm used to read "This one is a file rather than text." and that was the
+ * whole feature: a sentence describing something nobody could open. It was also
+ * unreachable, since there was no bucket and no writer, so the copy described a
+ * state the product could not produce.
+ *
+ * **The link is fetched on click, never with the project.** It is a bearer
+ * capability, good for ten minutes without signing in, so putting one in the
+ * project payload would mint a download credential for every file the moment the
+ * panel opened and keep it in memory for as long as it stayed open. One click,
+ * one link, and it expires whether or not it was used.
+ *
+ * **The link is offered rather than followed when the browser refuses to open
+ * it.** A pop-up blocker can stop `window.open` after an await, and a button
+ * that appears to do nothing is worse than a link somebody has to click twice.
+ * Which of the two happened is visible, rather than being guessed at.
+ */
+function ArtifactFile({
+  artifact,
+  projectId,
+}: {
+  artifact: ProjectDetail['tasks'][number]['artifacts'][number];
+  projectId: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [link, setLink] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function download() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { url } = await getArtifactFileUrl(projectId, artifact.id);
+      const opened = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!opened) setLink(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The download could not be prepared.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="work-artifact-file">
+      <p className="work-empty">This one is a file rather than text.</p>
+      {link ? (
+        // Reached only when the browser blocked the tab. The person clicks this
+        // one themselves, which no blocker interferes with.
+        <a className="work-action" href={link} target="_blank" rel="noopener noreferrer">
+          Open the file
+        </a>
+      ) : (
+        <button type="button" className="work-action" onClick={download} disabled={busy}>
+          {busy ? 'Preparing the link' : 'Download'}
+        </button>
+      )}
+      {error && <p className="work-error">{error}</p>}
+    </div>
   );
 }
 

@@ -1734,6 +1734,23 @@
   text-underline-offset: 2px;
 }
 
+/* The file arm of an artifact: the sentence, then the control. `work-action` is
+   reused rather than restyled, so a download reads as the same weight of thing
+   as the other actions in this panel. */
+.work-artifact-file {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.work-artifact-file .work-empty {
+  margin-bottom: 4px;
+}
+a.work-action {
+  text-decoration: none;
+  display: inline-block;
+}
+
 .work-artifact {
   margin-top: 10px;
   border-left: 2px solid var(--border-strong);

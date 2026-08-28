@@ -646,6 +646,22 @@ export const Artifact = z.object({
 export type Artifact = z.infer<typeof Artifact>;
 
 /**
+ * A short-lived capability to download one file artifact.
+ *
+ * The URL is a **bearer credential**: anyone holding it can fetch the object
+ * until it expires, without presenting a token. That is why it is minted per
+ * request rather than stored, why the window is minutes rather than days, and
+ * why it is never written to a log. `expiresAt` is on the wire so the client can
+ * tell "this link is stale" apart from "this file is gone", which are different
+ * things to say to a person.
+ */
+export const ArtifactFileUrl = z.object({
+  url: z.string().url(),
+  expiresAt: z.string().datetime(),
+});
+export type ArtifactFileUrl = z.infer<typeof ArtifactFileUrl>;
+
+/**
  * One step of an approved plan. `ownerType` is what the planner proposed;
  * `state` is where the router and the scheduler actually put it, and the two
  * disagreeing is information rather than a bug (rule 1 of the router outranks
@@ -798,6 +814,26 @@ export const contract = c.router(
         404: ApiError,
       },
       summary: 'One project with its tasks and everything they produced',
+    },
+
+    getArtifactFileUrl: {
+      method: 'GET',
+      path: '/projects/:projectId/artifacts/:artifactId/file-url',
+      pathParams: z.object({
+        projectId: z.string().uuid(),
+        artifactId: z.string().uuid(),
+      }),
+      responses: {
+        200: ArtifactFileUrl,
+        401: ApiError,
+        /**
+         * Invisible, absent, and "this artifact is text rather than a file" are
+         * all 404, matching how a non-member gets 404 on a room: the API does
+         * not confirm the existence of something it will not show you.
+         */
+        404: ApiError,
+      },
+      summary: 'A short-lived signed URL for one file artifact',
     },
 
     listMessages: {
