@@ -103,3 +103,39 @@ def test_whitespace_is_flattened():
 def test_a_missing_queries_key_raises_for_the_caller_to_handle():
     with pytest.raises(ValueError, match="queries"):
         parse_subqueries(json.dumps({"nope": []}))
+
+
+def test_measurement_is_a_covered_stage_now():
+    """The corpus grew a measurement document, so the stage stops being filtered.
+
+    This tuple and the corpus have to move together in both directions. Listing a
+    stage with no document spends a rerank call looking for something known to be
+    absent, which is why measurement was excluded for so long; shipping the
+    document without listing the stage means a broad goal never generates a
+    sub-query that could reach it, which is the mirror-image waste.
+    """
+    payload = json.dumps(
+        {
+            "stages": [
+                {"stage": "measurement", "relevant": True, "query": "which metrics matter early"},
+            ]
+        }
+    )
+    assert parse_subqueries(payload) == ["which metrics matter early"]
+
+
+def test_a_stage_the_corpus_does_not_cover_is_still_filtered_in_code():
+    """The rule outlives whichever stages happen to be covered today.
+
+    Enforced here rather than in the prompt because the corpus changes and
+    prompts drift, which is the standing reason this filter exists at all.
+    """
+    payload = json.dumps(
+        {
+            "stages": [
+                {"stage": "logistics", "relevant": True, "query": "how do I ship orders abroad"},
+                {"stage": "channels", "relevant": True, "query": "lower cost per signup on ads"},
+            ]
+        }
+    )
+    assert parse_subqueries(payload) == ["lower cost per signup on ads"]

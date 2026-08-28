@@ -2,12 +2,21 @@
 
 The pipeline from rag.md, in order:
 
-    query -> embed -> [dense + sparse, fused with RRF in Postgres] -> rerank -> drop weak
+    query -> normalise vocabulary -> embed -> [dense + sparse, fused with RRF in
+    Postgres] -> rerank -> drop weak
 
 The last step is the one that is easy to skip and expensive to skip. A relevance
 threshold DROPS weak chunks rather than padding the context window with them:
 handing a model six loosely related paragraphs is how confident, wrong,
 "grounded" answers get produced.
+
+The first step is the newest. `vocabulary.normalise_query` rewrites the metric
+words a founder uses into the ones the corpus is written in, because at a 1.76x
+threshold margin a synonym the corpus lacks refuses a request the corpus can
+answer. It runs here, on the goal and on every sub-query, rather than in intake:
+this is the one point every retrieval passes through, including the executor's
+per-step re-retrieval, the seed probe, both eval harnesses, and the goals that
+skip intake's questions entirely via `_passthrough`.
 """
 
 from __future__ import annotations
@@ -18,6 +27,7 @@ from dataclasses import dataclass
 from .config import Settings
 from .db import Database
 from .providers import Providers
+from .vocabulary import normalise_query
 
 logger = logging.getLogger("octopus.ai.retrieval")
 
@@ -85,9 +95,12 @@ class Retriever:
 
         That design searched every sub-query but ran a single rerank against the
         original goal. It changed nothing, for a reason the numbers made obvious.
-        Candidate breadth was never the bottleneck: `retrieval_candidates` is 40
-        against a corpus of ~43 chunks, so one search already returns nearly
-        everything and a union has nothing to add. The bottleneck is the rerank,
+        Candidate breadth was never the bottleneck: when it was measured,
+        `retrieval_candidates` was 40 against a corpus of ~43 chunks, so one
+        search already returned nearly everything and a union had nothing to add.
+        ADR-0009 later cut it to 25 on the same reasoning, and it is a setting
+        tied to corpus size rather than a constant, so it is worth re-measuring
+        as the corpus grows. The bottleneck is the rerank,
         where a broad goal scores uniformly badly against specific chunks (top
         0.066, against 0.474 for a focused query), so almost nothing clears the
         threshold and the planner is left with material for two or three stages.
@@ -95,7 +108,26 @@ class Retriever:
         Scoring "how do I price my offer" against the pricing chunks is a
         question the cross-encoder can answer well. Scoring "get my first 100
         customers" against them is not. Hence one rerank per sub-query.
+
+        **Vocabulary is normalised first**, here rather than inside
+        `_retrieve_one`, so that function stays a pure "one query, one search"
+        and there is exactly one place that rewrites anything. Sub-queries are
+        normalised too: they are written by a model that has read the person's
+        wording, so they inherit the person's vocabulary along with it.
         """
+        query, fired = normalise_query(query)
+        if subqueries:
+            normalised_subs: list[str] = []
+            for sub in subqueries:
+                text, sub_fired = normalise_query(sub)
+                normalised_subs.append(text)
+                fired = fired + sub_fired
+            subqueries = normalised_subs
+        if fired:
+            # Logged because a rewrite nobody can attribute is a rewrite nobody
+            # can debug, and this one sits upstream of every retrieval.
+            logger.info("vocabulary normalised", extra={"rules": sorted(set(fired))})
+
         queries = subqueries or [query]
 
         # The goal itself is always searched first, and it is the gate.

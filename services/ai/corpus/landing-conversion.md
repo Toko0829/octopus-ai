@@ -26,6 +26,13 @@ Every additional option lowers the chance that any one of them is taken. A page
 built for a campaign should ask for a single thing, and navigation that invites
 the visitor to wander is working against it.
 
+That single thing goes by a different name in every business: a signup, a
+registration, a booked call, an enquiry, an app install, a completed purchase, a
+place on a waiting list. The name matters far less than the discipline of picking
+one and letting the whole page serve it. Pages that ask for two conversions
+usually get neither, because the visitor reads the second option as evidence that
+the first was not really the point.
+
 Secondary information is not banned, it is subordinated. It appears below the
 decision for the minority who want it, not alongside it competing for attention.
 
@@ -56,6 +63,11 @@ give it.
 
 Fields that feel invasive relative to what is being offered cost more than their
 count suggests.
+
+A pre-launch waitlist page is the clearest case of this. It can ask for an email
+address and nothing else, because it is buying permission to talk later rather
+than qualifying anybody now, and every extra question trades registrations for
+information you have no use for yet.
 
 ## Speed and mobile are conversion features
 

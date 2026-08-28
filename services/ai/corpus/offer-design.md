@@ -31,6 +31,12 @@ Ways the first step gets smaller: a shorter commitment period, a narrower scope
 that solves one problem rather than promising everything, or a starting point
 that produces a visible result before payment is due.
 
+For a service, the small first step is usually a booked call rather than a
+proposal, because a call costs the client twenty minutes and a proposal asks them
+to choose. For a membership or subscription, it is a shorter first term, since
+what a stranger resists is rarely the price and is usually the length of the
+commitment.
+
 ## Who carries the risk
 
 Every offer places risk on one side. If the buyer carries all of it, they pay

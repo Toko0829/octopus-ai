@@ -45,7 +45,58 @@
     "They are the groundedness gate's set, scored by `--gate`, which is a",
     "credentialed, LLM-dependent pass and deliberately NOT the deterministic CI",
     "gate. Add one whenever you find a marketing question the corpus does not",
-    "cover; that is now a security task, not a coverage one."
+    "cover; that is now a security task, not a coverage one.",
+    "",
+    "VOCABULARY CASES (`vocab-*`) exist because the corpus decides which words",
+    "work. Measured before they were added: 'marketing plan to get registrations'",
+    "returned refusing-v0 with nothing above threshold, while the same request",
+    "phrased with 'signups' returned a full six-stage plan. At a 1.76x threshold",
+    "margin a synonym the corpus lacks is the whole distance between a plan and a",
+    "refusal. Two fixes landed together and each of these cases pins both: the",
+    "corpus now uses the words people actually use, and `vocabulary.py` rewrites",
+    "the remaining variants into corpus terms before retrieval. They are ordinary",
+    "positives, because that is what they are: requests the corpus can answer.",
+    "",
+    "MEASURED AND DELIBERATELY NOT FILED HERE. Four negatives were drafted to",
+    "guard the vocabulary rules, and three of them are absent on purpose, which is",
+    "worth recording rather than quietly dropping. Measured against the live corpus",
+    "with decomposition on, threshold 0.0013:",
+    "",
+    "  'how do I register my company in the UK'        ICO guide     0.0032",
+    "  'where do I register a trademark for my brand'  Google Ads    0.0017",
+    "  'what should I pay my first team members'       influencer    0.0017",
+    "",
+    "They are not filed as cases for the reason `scope_negatives` exists at all:",
+    "putting them here would fail the retrieval gate permanently for something",
+    "retrieval cannot be asked to do. Each leaks on genuinely related-ish material",
+    "(a UK regulator document for a UK question, Google's own trademark policy for",
+    "a trademark question, a document about what to pay a collaborator for a",
+    "question about what to pay a person). That is the 'right field-ish, wrong",
+    "question' shape, which is the groundedness gate's job and not the threshold's.",
+    "",
+    "They also do NOT test what they were drafted to test. `vocabulary.py` runs",
+    "before retrieval, and a dry run over every query in this file confirms all",
+    "eight negatives and all six scope negatives pass through it UNCHANGED. So the",
+    "guards are pinned in tests/test_vocabulary.py, per rule, which is the level a",
+    "code rule belongs at. `neg-vat-registration` is kept because it passes and",
+    "because it exercises the tax exclusion.",
+    "",
+    "The underlying cause is the one ADR-0009 already names: the local threshold's",
+    "1.76x margin 'is not headroom to spend, and the corpus can consume it without",
+    "the threshold being able to buy it back'. This change grew the corpus by three",
+    "documents and removed seven chunks of navigation chrome from the crawled ones,",
+    "and hard adjacent negatives are what got squeezed. Do not answer that by",
+    "raising RERANK_LOCAL_MIN_SCORE; rag-knowledge.md measures that as trading a",
+    "leak for refusals of legitimate goals at random.",
+    "",
+    "PROMOTED, and worth recording rather than quietly editing: scope-influencer-",
+    "rates and scope-affiliate-program were scope negatives until the corpus grew",
+    "documents that answer them, and they are now the positives infl-pricing and",
+    "aff-structure. A scope negative that has become covered does not merely stop",
+    "testing anything, it fails `--gate` on block rate for being answered",
+    "correctly. Their replacements (scope-influencer-platforms, scope-affiliate-",
+    "networks) keep the same near-miss shape: the corpus covers choosing partners",
+    "and structuring commission, and says nothing about which vendor to use."
   ],
   "cases": [
     {
@@ -133,6 +184,110 @@
       "expect_docs": ["ICO guide to PECR: electronic and telephone marketing"]
     },
     {
+      "id": "vocab-registrations-broad",
+      "query": "I need a marketing plan to get registrations for my web app",
+      "expect_docs": [
+        "Positioning and ICP for a solo founder",
+        "Landing pages and conversion for early-stage traffic",
+        "Controlling CPA on paid social for early-stage products"
+      ],
+      "notes": "The measured failure, pinned end to end. This exact request returned refusing-v0 with 25 candidates and nothing above threshold, while the identical request saying 'signups' returned a full six-stage plan. Deliberately shaped like broad-first-customers, because the failure was worst on the broad goal the product is built around."
+    },
+    {
+      "id": "vocab-enquiries",
+      "query": "my website gets visitors but I never get any enquiries",
+      "expect_docs": [
+        "Landing pages and conversion for early-stage traffic",
+        "Positioning and ICP for a solo founder"
+      ],
+      "notes": "Same ambiguity as signup-dropoff: the page may be at fault or the promise may be. Uses the noun deliberately. The verb ('nobody enquires') is not mapped, because 'nobody leads' is not English and a rule whose output is nonsense is worse than a missing rule."
+    },
+    {
+      "id": "vocab-bookings",
+      "query": "how do I get more people to book a call with me from my site",
+      "expect_docs": ["Landing pages and conversion for early-stage traffic"],
+      "notes": "Covered corpus-side rather than by a rewrite rule. If this ever fails, add a bookings row to vocabulary.py rather than editing the corpus a second time."
+    },
+    {
+      "id": "vocab-subscribers",
+      "query": "how do I grow my newsletter list when nobody knows who I am",
+      "expect_docs": [
+        "Content strategy for a small product with no audience",
+        "Lifecycle email for a small paid product"
+      ]
+    },
+    {
+      "id": "vocab-installs",
+      "query": "people visit my landing page but I get very few installs",
+      "expect_docs": ["Landing pages and conversion for early-stage traffic"],
+      "notes": "The noun, not the verb. 'hardly anyone installs the app' also normalises, ungrammatically but harmlessly, and that trade is recorded in vocabulary.py rather than tested here."
+    },
+    {
+      "id": "vocab-clients",
+      "query": "I freelance and have no budget, where do my first clients come from",
+      "expect_docs": [
+        "Positioning and ICP for a solo founder",
+        "Organic social for a founder-led product"
+      ]
+    },
+    {
+      "id": "vocab-enrollments",
+      "query": "how do I get more enrollments for my online course",
+      "expect_docs": [
+        "Landing pages and conversion for early-stage traffic",
+        "Designing the offer for an early-stage product"
+      ]
+    },
+    {
+      "id": "vocab-mrr",
+      "query": "my MRR has been flat for three months, what do I change",
+      "expect_docs": [
+        "Designing the offer for an early-stage product",
+        "Lifecycle email for a small paid product"
+      ]
+    },
+    {
+      "id": "meas-what-to-track",
+      "query": "what numbers should I actually be watching in my first three months",
+      "expect_docs": ["Measurement and attribution for an early-stage product"]
+    },
+    {
+      "id": "meas-attribution-disagree",
+      "query": "the ad platform says it drove 40 sales but I only see 25, who do I believe",
+      "expect_docs": [
+        "Measurement and attribution for an early-stage product",
+        "Controlling CPA on paid social for early-stage products"
+      ],
+      "notes": "Either is a correct retrieval. The measurement document covers why the numbers disagree, the CPA document covers what to do about it once you have picked a number of record. The two are deliberately reference-level distinct rather than duplicated."
+    },
+    {
+      "id": "meas-vanity",
+      "query": "my follower numbers keep going up but revenue doesn't move",
+      "expect_docs": ["Measurement and attribution for an early-stage product"]
+    },
+    {
+      "id": "infl-pricing",
+      "query": "how much should I offer a creator to post about my product",
+      "expect_docs": ["Influencer and partnership outreach for a small product"],
+      "notes": "Was scope-influencer-rates, a scope negative, until the corpus grew a document that answers it. Promoted rather than deleted so the case that recorded the gap now records it being closed."
+    },
+    {
+      "id": "infl-outreach",
+      "query": "influencers never reply to my messages, what am I doing wrong",
+      "expect_docs": ["Influencer and partnership outreach for a small product"]
+    },
+    {
+      "id": "aff-structure",
+      "query": "what commission should I give people who promote my product",
+      "expect_docs": ["Referral and affiliate programs for an early-stage product"],
+      "notes": "Was scope-affiliate-program. Promoted for the same reason as infl-pricing."
+    },
+    {
+      "id": "ref-program",
+      "query": "how do I get my existing customers to bring in their friends",
+      "expect_docs": ["Referral and affiliate programs for an early-stage product"]
+    },
+    {
       "id": "neg-liquor-licence",
       "query": "how do I get a restaurant liquor licence in Tbilisi",
       "expect_docs": [],
@@ -154,6 +309,12 @@
       "id": "neg-car-licence",
       "query": "how to get a car licence",
       "expect_docs": []
+    },
+    {
+      "id": "neg-vat-registration",
+      "query": "do I need to register for VAT when I start selling",
+      "expect_docs": [],
+      "notes": "The preposition form with a tax object, which is formation paperwork wearing a marketing-shaped verb, so it is the one new negative that exercises the vocabulary rule's exclusion list AND passes retrieval. It leaked once during development, on the referral document's fraud section, and was cleared by making that section speak about affiliates specifically rather than about incentives in general."
     }
   ],
   "scope_negatives": [
@@ -165,7 +326,7 @@
     {
       "id": "scope-ga4-tracking",
       "query": "how do I set up conversion tracking in GA4",
-      "notes": "Measured leak: 0.0211 local, 0.281 Cohere. The strongest leak in the set, and it outscores the legitimate broad goal by 12x. Measurement is the one funnel stage with no dedicated document, and this is what that gap feels like to a user."
+      "notes": "Measured leak: 0.0211 local, 0.281 Cohere. The strongest leak in the set, outscoring the legitimate broad goal by 12x. What it guards has CHANGED and the case is deliberately kept rather than retired. It used to mean 'measurement is the one stage with no document'; measurement-attribution.md now closes that stage, and that document names no analytics platform anywhere, on purpose. So this now guards the sharper thing: we cover measurement principles, and stretching them into a platform setup question is the failure. Same role scope-ad-specs plays for Google specs against a Meta question."
     },
     {
       "id": "scope-app-store",
@@ -178,14 +339,14 @@
       "notes": "Still uncovered, but no longer uncovered on purpose, and the distinction matters. The crawl registry now carries Google's responsive search ad format spec, so SOME platform specifics are in the corpus with a real source and a read date. Facebook's are not: the Meta ads guide builds its spec tables in the browser, so a fetch returns navigation, and one attempt stored a menu localised to the crawler's own IP. A confident answer here is therefore still a fabrication, and this case is the thing that would catch the Google document being stretched to cover a question about Meta."
     },
     {
-      "id": "scope-influencer-rates",
-      "query": "how much should I pay an influencer for a sponsored post",
-      "notes": "Deliberately near-miss: ftc-disclosure-basics covers DISCLOSING a paid partnership and says nothing about pricing one. A gate that waves this through is matching on topic rather than on question, which is exactly the failure being tested."
+      "id": "scope-influencer-platforms",
+      "query": "which influencer marketing platform should I use to find creators",
+      "notes": "Replaces scope-influencer-rates, which became covered and was promoted to the positive infl-pricing. Same near-miss shape, moved one step along: the corpus now covers how to choose a partner and what to pay them, and says nothing about which vendor or marketplace to use. A gate that waves this through is matching on topic rather than on question."
     },
     {
-      "id": "scope-affiliate-program",
-      "query": "should I start an affiliate program and how do I structure the commission",
-      "notes": "A recognised acquisition channel the corpus has no document for. Offer-design covers pricing to a buyer, not commission to a partner."
+      "id": "scope-affiliate-networks",
+      "query": "which affiliate network should I join and how do I get accepted",
+      "notes": "Replaces scope-affiliate-program, promoted to aff-structure. The corpus covers structuring a program of your own, including commission and fraud, and says nothing about joining somebody else's network or being approved by one."
     }
   ]
 }

@@ -63,6 +63,10 @@ Views measure distribution, not interest. The signals worth watching are the
 ones closest to intent: how many readers reached the end, how many took the next
 step offered, and how many joined something you own, such as an email list.
 
+Those are the numbers to count per piece: subscribers gained, signups started,
+enquiries received. Attributing them to the piece that produced them is what
+turns a content plan from a schedule into a decision about what to write next.
+
 A piece with modest traffic and a high next-step rate is more valuable than a
 popular piece that converts nobody, and it tells you what to write next.
 
