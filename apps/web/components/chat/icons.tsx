@@ -13,16 +13,12 @@ const base = (p: P): P => ({
   ...p,
 });
 
-/** Octopus mark — a head dome with a wavy tentacle base + two eyes. */
-export function OctopusMark(p: P) {
-  return (
-    <svg {...base({ strokeWidth: 1.6, ...p })}>
-      <path d="M5 13a7 7 0 0 1 14 0v1c0 1-1 1.5-2 1s-1-1.4-2-1-1 1.4-2 1-1-1.4-2-1-1 1.4-2 1-1-1.4-2-1-2 .5-2-1z" />
-      <circle cx="9.6" cy="11.4" r="1" fill="currentColor" stroke="none" />
-      <circle cx="14.4" cy="11.4" r="1" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
+/**
+ * The mark lives in components/brand/Logo.tsx and is re-exported here so the
+ * chat's existing imports keep working. One drawing, one place: the stylesheet
+ * already learned this lesson when two copies of `.sr-only` drifted apart.
+ */
+export { OctopusMark } from '../brand/Logo';
 
 export function IconHash(p: P) {
   return (

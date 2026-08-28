@@ -35,10 +35,20 @@
   --teal-600: #0e9488;
   --teal-700: #0b736b;
 
-  /* ---- Coral (human / CTA) ---- */
+  /* ---- Coral (human / CTA) ----
+     Two steps below the mid tone, for the same reason the amber ramp needed
+     them: one coral cannot clear AA on both skins. --coral-600 was the light
+     skin's --human and measures 3.93 on --surface and 3.47 on its own
+     --human-quiet wash, so every "a person does this" label failed AA on the
+     skin the design system calls primary. It is used as a text colour in seven
+     places in the shell. --coral-700 measures 5.83 and 5.14. On dark,
+     --coral-400 already measures 7.88 and 6.14 and is left alone.
+     Found by sweeping the landing page; the fourth token in this file to have
+     been written by eye and measured wrong afterwards. */
   --coral-400: #ff8a73;
   --coral-500: #f96b52;
   --coral-600: #e14e35;
+  --coral-700: #b8371f;
 
   /* ---- Status ---- */
   --green-500: #3f9d5a;
@@ -52,15 +62,31 @@
   --amber-500: #d69128;
   --amber-700: #8a5a12;
   --red-500: #d9524a;
+}
 
-  /* ---- Semantic (LIGHT / editorial default) ---- */
+/* ---- Semantic (LIGHT / editorial default) ----
+   Declared for `:root` AND for any `[data-skin='light']` subtree. Custom
+   properties inherit and the nearest declaring ancestor wins, so a section can
+   carry a skin the page does not: the landing is Light Editorial whatever the
+   operating system prefers, because design-system.md reserves Dark Command Deck
+   for work surfaces and calls Light Editorial the face of Octopus, while the
+   cinematic hero band inside it is its own dark world. Before this, a skin could
+   only be set on the root element and a page was all one thing. */
+:root,
+[data-skin='light'] {
   --bg: var(--ink-25);
   --bg-sunken: var(--ink-50);
   --surface: var(--ink-0);
   --surface-2: var(--ink-50);
   --surface-hover: var(--ink-100);
-  --border: var(--ink-200);
-  --border-strong: var(--ink-300);
+  /* Hairlines are alpha, not a fixed ramp step. A solid --ink-200 is correct on
+     the canvas and wrong on every other surface: too heavy on a sunken panel,
+     too faint on a raised card, so each new surface needed its own border value
+     and the structure stopped reading as one system. Alpha lets one token adapt
+     to whatever it sits on. mercury.com does exactly this: its dominant border
+     is rgba(175,178,206,0.36) and it never uses a solid colour for a hairline. */
+  --border: color-mix(in oklab, var(--ink-600) 22%, transparent);
+  --border-strong: color-mix(in oklab, var(--ink-600) 38%, transparent);
   --text: var(--ink-900);
   /* Every level clears WCAG AA (4.5) on --bg, including "faint". Measured:
      10.54 / 7.02 / 4.82. The previous ramp put muted at 4.42 and faint at 2.64,
@@ -72,7 +98,7 @@
   --accent: var(--teal-600);
   --accent-quiet: color-mix(in oklab, var(--teal-500) 12%, transparent);
   --accent-text: var(--teal-700);
-  --human: var(--coral-600);
+  --human: var(--coral-700);
   --human-quiet: color-mix(in oklab, var(--coral-500) 12%, transparent);
   /* Caution, for a plan step that spends, publishes or connects an account.
      Deliberately not coral, which already means "a human does this": a step the
@@ -88,10 +114,24 @@
      would not. */
   --on-accent: var(--ink-950);
 
+  /* ---- Interaction state, as a colour layer rather than opacity ----
+     Twelve places in the shell fade the whole element on hover. Fading an
+     element fades its label with it, so the text loses contrast at the exact
+     moment the person is pointing at it: a hover state that makes something
+     harder to read is working against itself. A wash over the surface leaves
+     text at full strength. Also composites correctly on any surface, which a
+     hardcoded hover colour does not. */
+  --state-hover: color-mix(in oklab, var(--ink-950) 5%, transparent);
+  --state-active: color-mix(in oklab, var(--ink-950) 9%, transparent);
+  --state-selected: color-mix(in oklab, var(--teal-500) 10%, transparent);
+
   /* ---- Role tokens (always paired with a badge/icon, never color alone) ---- */
   --role-you: var(--ink-700);
   --role-agent: var(--teal-600);
-  --role-node: var(--coral-600);
+  /* Role tokens name text on a badge, so they answer to AA the same way --human
+     does. Not referenced anywhere in the shell yet, which is worth knowing: the
+     badges read --human and --accent directly. */
+  --role-node: var(--coral-700);
   --role-admin: var(--ink-500);
 
   /* ---- Typography (families injected by next/font in layout.tsx) ---- */
@@ -107,6 +147,47 @@
   --text-xl: 1.875rem;
   --text-2xl: 2.5rem;
   --text-3xl: 3.5rem;
+  /* Fluid display step for the landing hero. mercury.com sets its h1 at 45px on
+     a 1280 viewport, well under the 64-80px most software marketing pages use.
+     The restraint is itself the trust signal, so this lands near 50px at 1280
+     and tops out at 56px rather than the 72px the hand-written hero was using. */
+  --text-display: clamp(2.25rem, 1.35rem + 2.2vw, 3.5rem);
+  /* Section headings are nearly as large as the hero on mercury.com (42 against
+     45), which is what gives its sections presence rather than the look of a
+     long article. --text-xl at a flat 30px was too quiet next to a 50px hero.
+     This lands at 38px on desktop and 28px on a phone. */
+  --text-title: clamp(1.75rem, 1.1rem + 1.6vw, 2.5rem);
+
+  /* Line height is a function of size, not of component. Measured on
+     mercury.com: 1.10 at display, then 1.15, 1.20, and 1.40 for body text. The
+     shell stylesheet previously carried 15 ad hoc line-heights and no token, so
+     the vertical rhythm was decided 15 separate times and agreed nowhere. */
+  --lh-display: 1.1;
+  --lh-title: 1.15;
+  --lh-heading: 1.25;
+  --lh-ui: 1.4;
+  --lh-prose: 1.6;
+
+  /* Tracking is also a function of size. mercury.com adds POSITIVE tracking on
+     display (+0.01 to +0.02em) because Arcadia Display is drawn for large use.
+     Fraunces has a real optical-size axis, so opsz does that job and the
+     remaining correction is slightly negative. The decision taken from the
+     reference is that tracking is tokenised per step, not the sign of it. */
+  --ls-display: -0.015em;
+  --ls-title: -0.01em;
+  --ls-heading: 0em;
+  --ls-body: 0em;
+  --ls-label: 0.02em;
+  --ls-eyebrow: 0.16em;
+
+  /* A narrow weight band is most of what separates calm from loud. mercury.com
+     never exceeds 480 and its whole band is 120 points wide; ours ran 400 to
+     700, and a 700 in a system whose own doc asks for "light weights at large
+     sizes" was a contradiction nobody had noticed. Both faces are variable, so
+     the in-between steps are real rather than synthesised. */
+  --fw-normal: 400;
+  --fw-medium: 460;
+  --fw-strong: 520;
 
   /* ---- Spacing (4px grid) ---- */
   --sp-1: 4px;
@@ -118,44 +199,91 @@
   --sp-8: 32px;
   --sp-10: 40px;
   --sp-12: 48px;
+  /* Section scale. The grid used to stop at 48px, which is why every margin on
+     the landing page was hand-written: there was no token for the distance
+     between two sections, so the page had no vertical rhythm to inherit.
+     Measured on mercury.com the section rhythm runs 72 / 80 / 112 / 128. */
+  --sp-14: 56px;
+  --sp-18: 72px;
+  --sp-24: 96px;
+  --sp-32: 128px;
 
-  /* ---- Radius ---- */
-  --r-sm: 6px;
-  --r-md: 10px;
-  --r-lg: 14px;
+  /* Page frame. A landing needs a measure and a gutter as tokens, or every
+     section invents its own and the columns stop lining up. */
+  --container: 1180px;
+  --gutter: clamp(24px, 5vw, 72px);
+
+  /* ---- Radius ----
+     Tightened after measuring mercury.com: 4px is the radius on 108 of its
+     rounded elements, 12px is the largest a card gets, and the big numbers are
+     reserved for full-bleed feature panels. A tight radius reads as engineered
+     rather than friendly, which is the register software that holds somebody's
+     money should be in. Ours started at 6/10/14 and read softer than intended. */
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
   --r-xl: 20px;
+  --r-2xl: 32px;
   --r-full: 999px;
 
-  /* ---- Elevation (hairline does the work; soft shadow for real layering) ---- */
-  --shadow-sm: 0 1px 2px color-mix(in oklab, var(--ink-950) 6%, transparent);
+  /* ---- Elevation (hairline does the work; soft shadow for real layering) ----
+     Three layers each, at very low alpha, rather than two heavier ones. The
+     contact shadow (0 0 Npx) is what stops a card looking pasted on; the middle
+     layer gives it weight; the wide layer gives it distance. Measured on
+     mercury.com, whose card shadow is three layers at 2% / 4% / 9% -- lower
+     than anything we had, and the reason its surfaces read as lifted rather
+     than as drawn. */
+  --shadow-sm:
+    0 0 2px color-mix(in oklab, var(--ink-950) 5%, transparent),
+    0 1px 2px color-mix(in oklab, var(--ink-950) 4%, transparent),
+    0 2px 6px color-mix(in oklab, var(--ink-950) 3%, transparent);
   --shadow-md:
-    0 2px 4px color-mix(in oklab, var(--ink-950) 5%, transparent),
-    0 8px 24px color-mix(in oklab, var(--ink-950) 7%, transparent);
+    0 0 3px color-mix(in oklab, var(--ink-950) 6%, transparent),
+    0 6px 10px color-mix(in oklab, var(--ink-950) 4%, transparent),
+    0 10px 16px color-mix(in oklab, var(--ink-950) 3%, transparent);
   --shadow-pop:
-    0 4px 12px color-mix(in oklab, var(--ink-950) 8%, transparent),
-    0 16px 48px color-mix(in oklab, var(--ink-950) 12%, transparent);
+    0 0 3px color-mix(in oklab, var(--ink-950) 7%, transparent),
+    0 8px 12px color-mix(in oklab, var(--ink-950) 6%, transparent),
+    0 16px 28px color-mix(in oklab, var(--ink-950) 5%, transparent);
   /* Glow — RESERVED for live agent / presence only. */
   --glow-agent:
     0 0 0 1px color-mix(in oklab, var(--teal-400) 40%, transparent),
     0 0 16px color-mix(in oklab, var(--teal-400) 35%, transparent);
 
-  /* ---- Motion ---- */
-  --dur-fast: 120ms;
+  /* ---- Motion ----
+     Durations measured on mercury.com, where the vocabulary is three deep and
+     each duration has one job: 0.15s on state changes (23 uses), 0.3s on things
+     entering (21 uses), 0.5s on large media. Ours were close but the easing was
+     shared, so a hover and a panel opening moved with the same curve. A state
+     change is symmetrical and wants ease-in-out; something arriving has no
+     history and wants pure ease-out. */
+  --dur-fast: 150ms;
   --dur: 200ms;
-  --dur-slow: 340ms;
+  --dur-slow: 300ms;
+  --dur-slower: 500ms;
+  --ease-state: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-enter: cubic-bezier(0, 0, 0.2, 1);
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* ---- DARK: "Command Deck" (not pure #000) ---- */
-:root[data-theme='dark'] {
+:root[data-theme='dark'],
+[data-skin='dark'] {
   --bg: var(--ink-950);
   --bg-sunken: #0a0b0e;
   --surface: #14161a;
   --surface-2: #191c21;
   --surface-hover: #1f232a;
-  --border: #24272e;
-  --border-strong: #313640;
+  /* Alpha hairlines here too, for the reason given on the light skin. The dark
+     deck is where a fixed border hurt most: the same #24272e sat on four
+     different surfaces (bg, sunken, surface, surface-2) and only looked right
+     on one of them. */
+  --border: color-mix(in oklab, var(--ink-300) 14%, transparent);
+  --border-strong: color-mix(in oklab, var(--ink-300) 26%, transparent);
+  --state-hover: color-mix(in oklab, var(--ink-0) 6%, transparent);
+  --state-active: color-mix(in oklab, var(--ink-0) 10%, transparent);
+  --state-selected: color-mix(in oklab, var(--teal-400) 14%, transparent);
   --text: var(--ink-50);
   /* Measured on --bg: 11.11 / 7.06 / 6.08. Faint was ink-500 at 4.21, below AA. */
   --text-secondary: var(--ink-300);
@@ -172,9 +300,12 @@
   --role-agent: var(--teal-400);
   --role-node: var(--coral-400);
   --role-admin: var(--ink-400);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), 0 12px 32px rgba(0, 0, 0, 0.4);
-  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.55), 0 24px 64px rgba(0, 0, 0, 0.5);
+  --shadow-sm:
+    0 0 2px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-md:
+    0 0 3px rgba(0, 0, 0, 0.5), 0 6px 10px rgba(0, 0, 0, 0.4), 0 10px 16px rgba(0, 0, 0, 0.3);
+  --shadow-pop:
+    0 0 3px rgba(0, 0, 0, 0.6), 0 8px 12px rgba(0, 0, 0, 0.5), 0 16px 28px rgba(0, 0, 0, 0.45);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -184,8 +315,11 @@
     --surface: #14161a;
     --surface-2: #191c21;
     --surface-hover: #1f232a;
-    --border: #24272e;
-    --border-strong: #313640;
+    --border: color-mix(in oklab, var(--ink-300) 14%, transparent);
+    --border-strong: color-mix(in oklab, var(--ink-300) 26%, transparent);
+    --state-hover: color-mix(in oklab, var(--ink-0) 6%, transparent);
+    --state-active: color-mix(in oklab, var(--ink-0) 10%, transparent);
+    --state-selected: color-mix(in oklab, var(--teal-400) 14%, transparent);
     --text: var(--ink-50);
     --text-secondary: var(--ink-300);
     --text-muted: var(--ink-400);
@@ -201,9 +335,12 @@
     --role-agent: var(--teal-400);
     --role-node: var(--coral-400);
     --role-admin: var(--ink-400);
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), 0 12px 32px rgba(0, 0, 0, 0.4);
-    --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.55), 0 24px 64px rgba(0, 0, 0, 0.5);
+    --shadow-sm:
+      0 0 2px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.3);
+    --shadow-md:
+      0 0 3px rgba(0, 0, 0, 0.5), 0 6px 10px rgba(0, 0, 0, 0.4), 0 10px 16px rgba(0, 0, 0, 0.3);
+    --shadow-pop:
+      0 0 3px rgba(0, 0, 0, 0.6), 0 8px 12px rgba(0, 0, 0, 0.5), 0 16px 28px rgba(0, 0, 0, 0.45);
   }
 }
 
@@ -226,7 +363,7 @@ body {
   color: var(--text);
   font-family: var(--font-sans);
   font-size: var(--text-base);
-  line-height: 1.55;
+  line-height: var(--lh-ui);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -250,10 +387,78 @@ a {
 }
 .display {
   font-family: var(--font-display);
+  /* Only does anything because layout.tsx now requests the opsz axis. It was
+     declared here from the start and was a no-op: next/font ships the wght axis
+     alone unless the others are named, so the browser had no optical size to
+     select and this line was decoration. */
   font-optical-sizing: auto;
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-title);
+  line-height: var(--lh-title);
 }
 .tnum {
   font-variant-numeric: tabular-nums;
+}
+
+/* Type steps, so a size and its line-height and tracking travel together. The
+   point of the ramp is that choosing a size is one decision, not three. */
+.t-display {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-size: var(--text-display);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-display);
+  letter-spacing: var(--ls-display);
+}
+.t-title {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-size: var(--text-title);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-title);
+  letter-spacing: var(--ls-title);
+}
+.t-heading {
+  font-size: var(--text-md);
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-heading);
+  letter-spacing: var(--ls-heading);
+}
+.t-prose {
+  font-size: var(--text-md);
+  font-weight: var(--fw-normal);
+  line-height: var(--lh-prose);
+  color: var(--text-secondary);
+}
+.t-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--fw-normal);
+  line-height: var(--lh-ui);
+  letter-spacing: var(--ls-label);
+}
+.t-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-ui);
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+}
+
+/* Visually hidden, still announced. For the places where an icon carries
+   meaning and rule 15 needs a word beside it. Moved here from chat.css, which
+   is loaded on /app only: the landing needs it too, and two copies of an
+   accessibility primitive is how one of them drifts. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 :focus-visible {
@@ -314,8 +519,12 @@ a {
   transition: opacity var(--dur-fast) var(--ease);
 }
 
+/* A wash over the accent, not a fade of the whole button. Fading dropped the
+   label's contrast at the moment somebody pointed at it, which is the opposite
+   of what a hover state is for; the layered gradient darkens the fill and leaves
+   --on-accent at full strength. */
 .auth-submit:hover:not(:disabled) {
-  opacity: 0.9;
+  background: linear-gradient(var(--state-active), var(--state-active)), var(--accent);
 }
 
 .auth-submit:disabled {

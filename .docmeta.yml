@@ -98,6 +98,26 @@ mappings:
   - path: '.github/workflows/**'
     owner: 'docs/30-modules/infra-devops.md'
 
+  # Developer instruments that read the corpus and the eval's own output. Owned by
+  # the RAG module doc rather than by infra: `rag-lens` parses the funnel-stage
+  # coverage table out of that doc instead of keeping its own copy, so a change to
+  # the tool and a change to the table are the same review.
+  #
+  # Scoped to `tools/rag-lens/**`, not `tools/**`. It was the broader glob until
+  # `tools/art` arrived, and because this checker tests every mapping independently,
+  # a wildcard here would have demanded an edit to the RAG doc every time somebody
+  # re-lit the landing hero.
+  - path: 'tools/rag-lens/**'
+    owner: 'docs/30-modules/rag-knowledge.md'
+    also_touch: ['docs/10-architecture/rag.md']
+
+  # The Blender scene that renders the landing art. Owned by the frontend module doc
+  # because the thing it produces is a shipped asset in `apps/web/public`, and the
+  # exposure it renders at is an accessibility decision argued out in that doc.
+  - path: 'tools/art/**'
+    owner: 'docs/30-modules/design-system-frontend.md'
+    also_touch: ['docs/20-design/design-system.md']
+
 # Domain areas without a single code root — reviewers verify these manually.
 manual_review:
   - area: 'payments / escrow / ledger'

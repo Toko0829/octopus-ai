@@ -1,6 +1,8 @@
 # Design System — "Ink & Bioluminescence"
 
-> The house style and full token architecture: the ownable brand system, three adaptive skins, motion, typography, and the explicit anti-pattern list that keeps Octopus off the AI-slop path. **Primary aesthetic: editorial / calm minimal.** Owner of `packages/ui/**` design decisions alongside [design-system-frontend.md](../30-modules/design-system-frontend.md). Update on any token, type, motion, or component-spec change.
+> The house style and full token architecture: the ownable brand system, three adaptive skins, motion, typography, and the explicit anti-pattern list that keeps Octopus off the AI-slop path. **Primary aesthetic: editorial / calm minimal.** Owner of the design decisions implemented in `apps/web/**` alongside [design-system-frontend.md](../30-modules/design-system-frontend.md). Update on any token, type, motion, or component-spec change.
+
+> **`packages/ui` does not exist, and is not the next step.** Both docs named it as the owner path from the start. There is exactly one consumer, `apps/web`, so extracting nineteen components into a workspace package today buys nothing and costs build wiring; the tokens live in `apps/web/app/globals.css` and the component library is the set of stylesheets beside it. Revisit when a second consumer appears.
 
 ## The one-line brief
 
@@ -10,18 +12,37 @@
 
 Octopus asks a person to let software run their business and move their money. That is an **anxiety-forward** ask. The antidote is the design language of the most _trusted_ software on the web — Stripe, Vercel, Framer: generous whitespace, refined type, restrained color, confident-but-quiet. Density and power (Linear/Superhuman/Raycast) are earned **inside** the product for power users; delight and warmth (Family/Arc) are reserved for the chat and onboarding. We lead with trust.
 
+## How a reference enters this system
+
+References are read for **system decisions, not for looks**. From each one we measure the same six things in the browser, on real computed values rather than by eye: spacing rhythm, type ratio and tracking, border and elevation treatment, the interaction-state model, motion durations and their easings, and density. What comes back is a **diff to the token layer plus a line in this doc**, so the system sharpens each round instead of accumulating one-off screens.
+
+What we deliberately do **not** take: brand colour, page length, and any structure that only works because the reference has social proof we do not have yet. An empty testimonial block does not build trust, it spends it.
+
+**Measure the picture, not only the type.** The first pass over mercury.com measured spacing, type, colour and easing, and produced a page that was still a document: no image, nothing that moved. Three quarters of that reference is picture and movement, and the parts that were skipped were the parts that made it feel expensive. A reference pass that has not counted the images and the animations has not been done. Two things that pass also got wrong by sampling the whole page instead of the surface in question: the hero is a **full-viewport photograph**, not a product screenshot, and its **CTAs are 32-40px pills** while only its menu rows are 4px.
+
+**Art direction is a decision, not an output of the token layer.** No amount of spacing and type work reaches a commissioned image. Ours is deep water, light from above, and a bioluminescent presence below the frame, carried by **eight arcs of light** rather than a literal octopus. A mark optimised for 13px scaled to 1100px is a large icon, not an image.
+
+**It is rendered rather than bought, generated, or drawn.** Three routes were weighed. Stock photography of people is the generic option and we do not want it. AI image generation was rejected on brand grounds rather than cost: "bioluminescent underwater" is one of the most over-generated prompts there is, and the output would land inside the exact genre [ADR-0005](../40-adr/0005-house-style-not-purple-gradient.md) exists to ban, one hue over from the purple gradient. So the water is a **Cycles render** from a committed scene script ([`tools/art/hero-scene.py`](../../tools/art/hero-scene.py)): ours, directable, and it looks like nobody else's output.
+
+**The split is that the render owns the photograph and SVG owns what moves.** Volumetric depth, shafts, falloff and grain are photographic properties that stacked gradients only imitate. Drifting motes and breathing arms are motion, which a still frame cannot supply. Neither layer substitutes for the other, and the arms were built in 3D first and thrown away: emissive geometry needs glare compositing to read as light rather than as wire, and the drawn ones already animate.
+
+**Text over a photograph gets a scrim, and the scrim is a measured value.** The instinct is to darken the image until the copy clears AA. That was tried and it produced a plate that passed every check and had no shafts and no bloom left in it. Contrast bought by deleting the picture is a regression the checker cannot see. Measure the **composited** surface, never the plate alone, and keep the scrim as light as the margins allow.
+
+The sign of a value is not the decision. mercury.com adds _positive_ tracking to its display face because Arcadia Display is drawn for large use; Fraunces has a real `opsz` axis that does the same job, so our correction stays slightly negative. The decision taken from the reference is that **tracking is tokenised per step at all**.
+
 ## Reference map (real products, what we take)
 
-| Reference                                  | What we take                                                                                                                                                                                    |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Stripe** (stripe.com)                    | Premium editorial trust; _disciplined_ multi-stop gradients as rare brand connective tissue (never the clichéd 2-stop purple); confident **light** display weights; tabular numerics for money. |
-| **Vercel / Geist** (vercel.com/geist)      | Token architecture rigor + mono-for-labels — but a **baseline to diverge from** (everyone ships Geist), so we add a characterful display face, our own accent, and radii.                       |
-| **Framer** (framer.com)                    | Marketing-site motion vocabulary + the actual animation library (Framer Motion): spring, scroll-linked, layout transitions.                                                                     |
-| **Linear** (linear.app)                    | The command-deck: hairline borders do the structural work, low font-weight band, tight radii, ⌘K, color as a rare functional flashlight.                                                        |
-| **Superhuman** (superhuman.com)            | Speed-as-product; the centered ⌘K palette with a monospaced surface that feels like directing a machine; "learn the shortcut once."                                                             |
-| **Raycast** (raycast.com)                  | Per-item ActionPanels + shortcut-per-action; excellent light/dark parity in a tiny surface.                                                                                                     |
-| **Family** (family.co) / **Arc** (arc.net) | Tactile spring choreography, earned micro-delight, per-space theming — for chat + onboarding, where warmth lowers the "AI runs my business" anxiety.                                            |
-| **Discord / Slack / Zulip**                | The 5-region chat model, roles/mentions/presence, interactive embeds, Zulip-style named topics.                                                                                                 |
+| Reference                                  | What we take                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Stripe** (stripe.com)                    | Premium editorial trust; _disciplined_ multi-stop gradients as rare brand connective tissue (never the clichéd 2-stop purple); confident **light** display weights; tabular numerics for money.                                                                                                            |
+| **Vercel / Geist** (vercel.com/geist)      | Token architecture rigor + mono-for-labels — but a **baseline to diverge from** (everyone ships Geist), so we add a characterful display face, our own accent, and radii.                                                                                                                                  |
+| **Framer** (framer.com)                    | Marketing-site motion vocabulary + the actual animation library (Framer Motion): spring, scroll-linked, layout transitions.                                                                                                                                                                                |
+| **Linear** (linear.app)                    | The command-deck: hairline borders do the structural work, low font-weight band, tight radii, ⌘K, color as a rare functional flashlight.                                                                                                                                                                   |
+| **Superhuman** (superhuman.com)            | Speed-as-product; the centered ⌘K palette with a monospaced surface that feels like directing a machine; "learn the shortcut once."                                                                                                                                                                        |
+| **Raycast** (raycast.com)                  | Per-item ActionPanels + shortcut-per-action; excellent light/dark parity in a tiny surface.                                                                                                                                                                                                                |
+| **Family** (family.co) / **Arc** (arc.net) | Tactile spring choreography, earned micro-delight, per-space theming — for chat + onboarding, where warmth lowers the "AI runs my business" anxiety.                                                                                                                                                       |
+| **Discord / Slack / Zulip**                | The 5-region chat model, roles/mentions/presence, interactive embeds, Zulip-style named topics.                                                                                                                                                                                                            |
+| **Mercury** (mercury.com)                  | Measured 2026-08-28. A 120-point weight band that never exceeds 480; 4px as the default radius; alpha hairlines; three-layer shadows at 2-9% alpha; line-height and tracking as functions of size; a 72-128px section rhythm; and the regulatory disclaimer placed **in the hero** rather than the footer. |
 
 ## Three adaptive skins ("chromatophore" theming)
 
@@ -33,31 +54,43 @@ The product changes color to fit the task, like an octopus:
 
 Plus a **per-business accent** so each venture the user runs feels distinct.
 
+**A skin applies to a subtree, not only to the root.** `:root` and `[data-skin='light' | 'dark']` both declare the semantic layer, and custom properties resolve from the nearest declaring ancestor, so a page can be Light Editorial while one band inside it is dark. The landing uses this: it is light whatever the operating system prefers, because Dark Command Deck is reserved for work surfaces, and its cinematic hero band is its own dark world inside that. Two things a subtree skin must do that the root gets for free: **paint its own `background` and `color`**, because `body` sits outside it and still resolves from `:root`, and set **`color-scheme`**, which scrollbars and form controls read instead of custom properties.
+
 ## Color
 
 - **Ink neutral ramp** (primary structure). Layered, warm-cool-neutral, **not** zinc/gray-default. Light shell built on paper-white; dark deck on layered ink (`~#0d0f12` base, never `#000`).
 - **One signal accent — bioluminescent teal.** Used sparingly and functionally: primary actions, active/live states. **Glow is reserved for live agent/presence only.**
-- **Coral — human / CTA.** Marks human-node presence and high-intent CTAs; a warm counterpoint to the cool teal.
-- **Semantic tokens** over primitives: `--color-bg`, `--color-surface`, `--color-border-hairline`, `--color-text`, `--color-text-muted`, `--color-accent`, `--color-human`, `--color-success|warning|danger|info`.
-- **Chat role tokens:** `--role-you`, `--role-agent`, `--role-node`, `--role-pro`, `--role-admin` — **always paired with a badge/icon, never color alone** (accessibility).
+- **Coral — human / CTA.** Marks human-node presence and high-intent CTAs; a warm counterpoint to the cool teal. Like amber, it needs **two steps below the mid tone**, because one coral cannot clear AA on both skins: `--coral-700` carries `--human` on light, `--coral-400` on dark. See the measurements in [design-system-frontend.md](../30-modules/design-system-frontend.md#accessibility-enforcement).
+- **A hue that names a thing carries a word too.** Teal is "the agent", coral is "a person does this", amber is "this needs your approval". Three claims, three hues, and never a hue asserting two of them: that is how a badge stops meaning anything.
+- **Semantic tokens** over primitives. As implemented: `--bg`, `--bg-sunken`, `--surface`, `--surface-2`, `--surface-hover`, `--border`, `--border-strong`, `--text`, `--text-secondary`, `--text-muted`, `--text-faint`, `--accent`, `--accent-quiet`, `--accent-text`, `--human`, `--human-quiet`, `--warn`, `--warn-quiet`, `--on-accent`. _(This list previously read `--color-bg`, `--color-surface`, `--color-border-hairline` and so on, none of which have ever existed in the stylesheet.)_
+- **Chat role tokens:** `--role-you`, `--role-agent`, `--role-node`, `--role-admin` — **always paired with a badge/icon, never color alone** (accessibility). `--role-pro` was removed: it was `#7a5cff`, the only violet in the repository, referenced zero times. The badges read `--human` and `--accent` directly, so the role tokens are currently unused; they are kept because the roles are real and a badge component will want them.
 
 ## Typography
 
 - **Pairing:** one **characterful display** face (editorial confidence, used at light weights in large sizes — Stripe/Söhne energy, _not_ Inter-default), a clean **body** grotesque, and a **mono** for labels/code/command surfaces and all monetary/tabular contexts.
-- **Type scale:** 12 · 14 · 16 · 18 · 20 · 24 · 32 · 40 · 48 · 64.
+- **Type scale:** 12 · 13 · 15 · 17 · 22 · 30 · 40 · 56, plus two fluid steps: `--text-title` (28→40) for section headings and `--text-display` (36→56) for the landing hero.
+- **Line height is a function of size, not of component.** Five steps, bound to the size they serve: `--lh-display` 1.10 · `--lh-title` 1.15 · `--lh-heading` 1.25 · `--lh-ui` 1.40 · `--lh-prose` 1.60. Choosing a size is one decision, not three.
+- **Tracking is likewise tokenised per step:** `--ls-display` -0.015em · `--ls-title` -0.01em · `--ls-heading`/`--ls-body` 0 · `--ls-label` +0.02em · `--ls-eyebrow` +0.16em.
+- **Narrow weight band:** `--fw-normal` 400 · `--fw-medium` 460 · `--fw-strong` 520. **Nothing above 520.** A wide weight band is most of what makes an interface read as loud; both faces are variable, so the in-between steps are real rather than synthesised.
 - **Tabular numerics for all money** — non-negotiable (`font-variant-numeric: tabular-nums`).
-- Tight tracking on display; comfortable measure on body (editorial).
+- **The display face's optical-size axis must be requested by name.** `next/font` ships `wght` alone unless the others are listed, so `font-optical-sizing: auto` is a no-op until the loader asks for `opsz`.
 
 ## Spacing, radius, elevation
 
-- **Spacing:** 4px grid (`--space-1..12`).
-- **Radius scale:** 6 / 10 / 14 / 20 / 999 (`--radius-sm..full`).
-- **Elevation:** hairline borders do the structural work (Linear); soft shadow for genuine layering; **glow strictly for live agent/presence**, nowhere else.
-- **Density modes:** `compact` / `cozy` / `spacious` — command deck defaults compact; editorial defaults spacious.
+- **Spacing:** 4px grid, `--sp-1..12` (4→48) for component space and `--sp-14 / 18 / 24 / 32` (56 / 72 / 96 / 128) for **section rhythm**. Page frame as tokens too: `--container` and `--gutter`.
+- **Radius scale:** 4 / 8 / 12 / 20 / 32 / 999 (`--r-sm` … `--r-2xl`, `--r-full`). **4px is the default**, not the exception: a tight radius reads as engineered rather than friendly, which is the register software that holds somebody's money belongs in.
+- **Hairlines are alpha, never a fixed ramp step.** A solid border is right on one surface and wrong on the next, so each surface ends up with its own value and the structure stops reading as one system. `--border` / `--border-strong` are `color-mix` against transparent and composite onto whatever they sit on.
+- **Elevation:** hairline borders do the structural work (Linear); shadows are **three layers at very low alpha** (a contact layer so the card is not pasted on, a middle layer for weight, a wide layer for distance); **glow strictly for live agent/presence**, nowhere else.
+- **Interaction state is a colour layer, not opacity.** `--state-hover` / `--state-active` / `--state-selected` wash over the surface. Fading an element fades its label with it, so the text loses contrast at the exact moment somebody points at it.
+- **Density modes:** `compact` / `cozy` / `spacious` — command deck defaults compact; editorial defaults spacious. _(Not implemented yet.)_
 
 ## Motion
 
-- **Tokens:** `--dur-fast` (~120ms) / `--dur` (~200ms) / `--dur-slow` (~320ms); `--ease-out` for UI; **spring** (Framer Motion) for tactile surfaces (chat, onboarding).
+- **Tokens:** `--dur-fast` 150ms (state changes) / `--dur` 200ms / `--dur-slow` 300ms (things entering) / `--dur-slower` 500ms (large media). Easing is per purpose, not shared: `--ease-state` (`cubic-bezier(0.4,0,0.2,1)`) for a symmetrical state change, `--ease-enter` (`cubic-bezier(0,0,0.2,1)`) for something arriving, which has no history and wants pure ease-out. **Spring** (Framer Motion, installed) for tactile surfaces (chat, onboarding).
+
+- **Nothing the server renders may be invisible.** A reveal animation must be opt-in from the client: the root element carries `js` before first paint, and only under `html.js` does anything start hidden. A page whose client never runs, whose hydration fails, or whose `IntersectionObserver` never reports must render as the finished page. This is a hard rule rather than a preference, because the failure is silent: the markup is all present and only the paint is missing, so nothing looks broken to anyone except the reader, who sees nothing at all.
+- **Reveal has a backstop.** An observer that has said nothing after a second is treated as an observer that never will (a background tab, a hidden pane, a headless capture), and the content is shown. Waiting longer only risks showing none of it.
+- **Ambient motion is for one thing.** The agent working pulse. Everything else moves in response to arrival or to input, and stops.
 - **Rules:** motion serves perceived speed and continuity, never spectacle. Command-deck motion is near-instant; chat/onboarding motion is spring and delightful. Respect `prefers-reduced-motion`.
 - The **live agent working pulse** (a gentle bioluminescent breathing state) is the one place ambient motion is encouraged — it signals the AI is doing something.
 

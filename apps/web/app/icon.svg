@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
+  <!--
+    Favicon. Next's App Router picks this up from app/icon.svg on its own, so
+    there is no <link> to keep in sync and no public/ directory to invent.
+
+    An SVG favicon can carry its own colour-scheme query, and browser chrome is
+    the one surface whose background we do not control: ink on a light tab bar,
+    paper on a dark one. Browsers that ignore the query get the ink default,
+    which is the more common tab bar.
+
+    The geometry is the mark from components/brand/Logo.tsx, with the lobes 0.4
+    deeper. At 16px the optical weight of the base reads lighter than the dome,
+    and the correction is what keeps it from looking top-heavy in a tab.
+  -->
+  <style>
+    path { fill: #17171a }
+    @media (prefers-color-scheme: dark) { path { fill: #f6f6f2 } }
+  </style>
+  <path fill-rule="evenodd" clip-rule="evenodd" d="M4.6 15.2C4.6 8.6 7.9 4.6 12 4.6C16.1 4.6 19.4 8.6 19.4 15.2Q16.93 19.8 14.47 15.2Q12 19.8 9.53 15.2Q7.07 19.8 4.6 15.2ZM10.85 11.6A1.35 1.35 0 1 1 8.15 11.6A1.35 1.35 0 1 1 10.85 11.6ZM15.85 11.6A1.35 1.35 0 1 1 13.15 11.6A1.35 1.35 0 1 1 15.85 11.6Z"/>
+</svg>
