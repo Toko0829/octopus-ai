@@ -98,6 +98,18 @@ mappings:
   - path: '.github/workflows/**'
     owner: 'docs/30-modules/infra-devops.md'
 
+  # The root compose file, which had no mapping at all until a change to it went
+  # unnoticed by every doc: how the stack is run is a deployment-shaped decision
+  # and belongs to the infra doc, exactly like the workflows above it.
+  #
+  # Deliberately only the compose file, not the three Dockerfiles. Two of them sit
+  # under `apps/**`, which is already owned, and because this checker tests every
+  # mapping independently, a glob covering them would demand an edit to two docs
+  # for one Dockerfile line. `services/ai/Dockerfile` is likewise already carried
+  # by the `services/ai/**` entry.
+  - path: 'docker-compose.yml'
+    owner: 'docs/30-modules/infra-devops.md'
+
   # Developer instruments that read the corpus and the eval's own output. Owned by
   # the RAG module doc rather than by infra: `rag-lens` parses the funnel-stage
   # coverage table out of that doc instead of keeping its own copy, so a change to

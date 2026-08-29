@@ -138,6 +138,35 @@ Owner-only, membership by RLS as the caller with the 404-not-403 idiom, and exac
 
 URL fetching lives here rather than in `services/ai`, which talks to Postgres and to providers and to nothing else. It is the first outbound call either service makes on a user's instruction, so it is guarded on protocol, host, size, time and content type, with the redirect target re-vetted. DNS rebinding is explicitly not defended against and is recorded as a known limit in the module rather than left to be assumed.
 
+### The ticker publishes as well as walking the graph
+
+The same pass that walks the task DAG also sends the campaigns an owner has
+already approved ([ADR-0013](../40-adr/0013-approving-a-campaign-publishes-it.md)).
+`publishSweep` reads campaigns at `ready` or `publishing`, takes the ones whose
+project is still active, and publishes the campaign-level entity through the
+provider on the room's channel connection.
+
+**It runs after the graph and before the crawl**, and that ordering is a claim
+about who is waiting: somebody who approved a campaign is watching for it to go
+live, and nobody is waiting on a regulator's page being re-read. Its own
+try/catch, for the reason every sweep on this pass has one.
+
+**Freshly approved campaigns outrank retries.** A row at `publishing` is a resume
+or a retry and can recur for as long as a platform stays unhappy; draining those
+first would let one failing campaign hold the per-pass cap and starve every
+approval behind it.
+
+**The durability argument is ADR-0010's, unchanged.** No new orchestration was
+added: the intent row plus a unique idempotency key make each attempt
+re-enterable, so a crash loses a worker rather than a publish. The sequence and
+its failure map live in
+[marketing-growth-engine.md](../30-modules/marketing-growth-engine.md).
+
+`PUBLISH_ENABLED` gates it and defaults to **on**, which inverts `CRAWL_ENABLED`
+below deliberately: crawling is off by default to protect somebody else's
+servers, and publishing has no stranger to protect, since nothing happens until a
+workspace connects an account and an owner approves a budget.
+
 ### The ticker crawls as well as walking the graph
 
 The same pass that walks the task DAG ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)) now also re-reads the external source registry, under the claim it already holds. Off by default (`CRAWL_ENABLED`), because the registry names real public pages and a dozen developers fetching them on boot is traffic aimed at somebody else's servers for no benefit.
@@ -282,6 +311,98 @@ An approval calls `public.materialise_plan(embedId)`, which creates a `projects`
 What changed is the planner, not the inference: `PlanStep` carries an `id` and a `dependsOn`, so a step can say which other step's output it consumes, and a second pass over the stages turns those into `hard` edges once every task exists. The function still derives nothing from stage order. An unresolvable reference or a duplicate id **raises**, on the same reasoning as the owner mapping above, and a cycle is refused by the acyclicity trigger rather than re-checked here. All three raise inside the same transaction, so a card that fails on its edges leaves no project behind even though its tasks were already written. `services/ai` drops what it can safely drop before proposing, so those raises are for cards that came from somewhere else.
 
 `PlanEmbedPayload` gained `goal` for this, carrying the request in the person's own words. It also repairs the flywheel label, since `feedback_events.subject` stores this payload and an output with no input is not a training pair.
+
+## Authorising a campaign
+
+The first card whose approval commits money rather than work, and it exists
+because a high-risk step had nowhere to go. `routeTask`'s first rule parks
+`create_campaign` at `needs_user` whatever the planner proposed, and until now
+that was the end of the road: the owner was told a step needed them and given
+nothing to approve.
+
+**Node asks, the core usually declines.** After each tick, `produceCampaignCards`
+takes the results whose outcome is `needs_user` **and** whose rule is
+`high_risk_needs_authorisation`, reading the router's own recorded verdict rather
+than re-deriving it from the step's words. For each, `POST /campaign` on the
+reasoning service drafts a campaign or declines. Declining is the common answer
+and is a `post_message`, not a card: an account connection and a publish are both
+`high_risk` and neither is a campaign. One card per task forever, keyed
+`campaign-card:${taskId}` on the message, so a replayed tick collides rather than
+asking a person to authorise the same spend twice.
+
+**`ProposeCampaignProposal` carries no budget**, in the pydantic model and in its
+Zod mirror. The owner types the cap on the card, and
+`POST /api/rooms/:roomId/embeds/:embedId/actions` accepts a `budgetCap` for a
+campaign card only, refusing it on any other component rather than ignoring it: a
+number silently dropped on the way to an authorisation is the failure that field
+exists to prevent. The route writes their figure into the card payload in the
+**same conditional UPDATE** that records the verdict, so `feedback_events.subject`
+and the payload `materialise_campaign` reads both carry what the person actually
+entered.
+
+**The spend cap is checked in the route and again in the writer**, which is a
+deliberate duplication argued in [ADR-0011](../40-adr/0011-spend-cap-checked-twice.md).
+The route refuses readably with the verdict's own sentence and leaves the card
+`pending`; the writer re-checks under `for update`, because two cards approved in
+the same instant both pass a check made here. `readSpendInputs` does the IO and
+`checkSpendCap` in `packages/marketing` does the arithmetic.
+
+Approving calls `public.materialise_campaign(embedId)`, the third sibling of
+`materialise_plan` and `apply_plan_diff` with the same four properties. It returns
+the **campaign**, not the project, so `EmbedActionResponse` gained `campaignId`;
+the project is read back off the payload so the panel can be refreshed. The
+scheduler ticks afterwards for a campaign exactly as for a plan, because the
+writer closes the authorising step and that is what makes its dependents ready.
+
+**`PATCH /api/projects/:projectId` sets the ceiling**, owner-only and audited as
+`project.budget_set`. Before it, `projects.budget_ceiling` had no writer anywhere
+in TypeScript and `checkSpendCap` would have refused every campaign forever.
+`ProjectDetail` gained `budgetCeiling`, `currency`, `committedBudget` and
+`campaigns` so the panel can show the same arithmetic the approval performs.
+
+## Connecting a channel account
+
+The writer `channel_connections` was built for, and the second dead end of the
+shape the campaign card closed. `risk.py` clamps on `connect`, `authorise` and
+`credentials`, so a "connect your ad account" step is parked at `needs_user`; the
+campaign drafter is asked and correctly declines, because an account connection
+is not a campaign. The owner was told a step needed them and given nowhere to go.
+
+**The redirect lands on the web origin, not here**
+([ADR-0012](../40-adr/0012-oauth-callback-on-the-web-origin.md)). A platform
+redirects a browser, and that browser carries the Supabase session, so
+`/connections/callback` in `apps/web` can prove who is finishing the flow and
+hand the code inward through the BFF. Terminating at Fastify would have made this
+the only unauthenticated mutating route in the system, holding one HMAC and
+writing to the one table with no RLS behind it.
+
+Four routes, all authenticated. `POST /api/rooms/:roomId/connections/start` signs
+the state and returns the provider's authorize URL; the caller names only the
+provider and the channel, because a client that could name its own redirect URI
+could send somebody's code wherever it liked. `POST …/connections/callback`
+verifies the state, exchanges the code and writes the row.
+`GET …/connections` is the member projection. `DELETE …/connections/:id` revokes.
+Reading is open to any member; the other three are owner-only.
+
+**The state is signed rather than stored** (`lib/oauth-state.ts`): an HMAC over
+the room, the user, the provider, the channel, an expiry and a nonce. No
+`oauth_states` table, because a row written by one request and read by one other
+is a schema whose only reader is itself. Verification order is the safety
+property and is the opposite of the convenient one: signature first, since every
+field is attacker-supplied until it checks out, then expiry so a stale-but-genuine
+state gets its own answer, then the bindings.
+
+**This is the one route group where RLS defends nothing.** `channel_connections`
+has no grant to `authenticated`, so the read cannot run as the caller. Membership
+is established separately first, by reading the room as the caller so RLS decides
+visibility, and only then does a service-role client touch the table through
+`lib/connections.ts`, whose column list omits both token columns and is asserted
+in the tests.
+
+`ChannelConnection` in `packages/contracts` **has no token field**, so a
+projection that started returning one would fail to typecheck before it reached a
+browser. `packages/marketing` gained `ChannelAuthProvider`, its fake, a registry
+whose `carriesRealCredentials` flag the writer refuses on, and `checkScopes`.
 
 ## Changing a plan that is already running
 

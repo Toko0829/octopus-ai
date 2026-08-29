@@ -10,6 +10,14 @@
 >
 > **Implementation status (Phase 1, in progress):** the **Discord-style chat shell** at `/app` now runs on **live data, with no mock or demo content anywhere**. Sign-in (`/sign-in`, Supabase GoTrue) gates the workspace via middleware; reads happen in the Server Component; the browser talks to Fastify only through the thin BFF at `/api/bff/*`; messages arrive over Realtime and sends are optimistic, reconciled on the server copy. House style via design tokens in `app/globals.css` + `app/app/chat.css`, type (Fraunces / Hanken Grotesk / JetBrains Mono via `next/font`), light + dark skins.
 >
+> **The campaign card** (`CampaignCard.tsx`) renders a `campaign` embed, and it is the first card on this surface whose approval commits money. It reuses `PlanCard`'s classes and footer and holds three rules of its own.
+>
+> - **The budget is an input, not a display.** Every other card shows what a model proposed and asks yes or no; this one has a field the owner fills in, because the reasoning core is never given a budget to propose ([ADR-0011](../40-adr/0011-spend-cap-checked-twice.md)). The empty field is explained on the card in as many words, since an unexplained blank reads as something the agent forgot rather than something it refuses to do. Approve stays disabled until the number parses, and **zero is accepted**: email and organic social genuinely spend nothing, and refusing zero would force a fictitious figure onto the one card whose whole point is that the number is true.
+> - **What happens next is stated as plainly as what just happened, and this sentence has now changed once.** It used to read "nothing is published or spent", which was true while the campaign stopped at `ready`. Approving now publishes it on the next pass ([ADR-0013](../40-adr/0013-approving-a-campaign-publishes-it.md)), so the card, the approval notice in the room, the chat intro and the connect callback were all rewritten in the same commit. **A promise on a trust surface is altered where it was made, or not at all**: leaving any one of them saying "nothing is published" while the sweep published would be the worst copy defect this surface can carry. The callback's line was the least obvious of the four, since connecting an account can now unblock a campaign already approved and waiting, so its old "Octopus will ask you before anything uses this connection" stopped being true without anybody editing that page. The approved banner still repeats the figure and the currency, because the cap is the reassurance that survives.
+> - **Money is tabular** (rule 14), on the card and in the panel, because the figure a person typed is read against the headroom they have left. The channel is a labelled chip rather than a colour, since "which channel" is exactly the fact being authorised (rule 15). An uncited campaign gets the same "Not backed by a retrieved source" treatment `PlanCard` gives an uncited step: rule 10 applies to a spend proposal at least as much as to a plan step.
+>
+> **The project panel gained a budget block**, showing authorised, committed and available in tabular numerics, with owner-only editing. A null ceiling renders as "Nothing yet" and says plainly that no campaign can be approved until a budget is authorised, never as "no limit": that is the column's documented stance, and a panel reading it the other way would describe an open account. Clearing the ceiling is its own button rather than an empty field, because it is a different decision from lowering a number and should not be reachable by deleting one.
+>
 > **The plan-change card** (`ReplanCard.tsx`) renders a `replan` embed: a diff against a project that is already running. It reuses `PlanCard`'s classes and its approve / request-changes footer, and holds three rules of its own.
 >
 > - **Every op is shown and labelled with a word.** A person is authorising the removal of planned work, so the card cannot summarise: "3 changes" is not something anybody can agree to. `Add` / `Cancel` / `Update` each carry their own label, their own explanation, and a tint that is a second signal on top of the word rather than the thing carrying it (rule 15). The strike-through on a cancelled title is decoration on top of the `Cancel` label, never the only cue.
@@ -237,6 +245,49 @@ The first version of this page had **no visual and no motion at all**, which was
 The reveals are **CSS transitions driven by one class**, not per-element JavaScript animation. A staggered list is one observer and a set of `nth-child` delays rather than forty animated components. Framer Motion drives only the theatre, and it costs the landing 44 kB (`/` went from 3.5 kB to 47.3 kB, first load 106 kB to 150 kB): worth flagging, and worth revisiting if the theatre is the only thing that ever needs it.
 
 **Not verified in this pass:** the animation itself. The browser pane was hidden while this was built, so the page produced no frames, which means `IntersectionObserver` never fired, CSS transitions never advanced, and screenshots timed out. Structure, computed styles, contrast, layout at 375 and 1280, and the build were all checked; **the motion was confirmed only by observing the component's state advance through its loop in the DOM**, not by watching it. Worth re-checking by eye.
+
+## The connect flow's two pages
+
+`/connections/fake-consent` and `/connections/callback` are the first surfaces
+outside `/app` and `/sign-in`, and they follow the sign-in precedent rather than
+the landing one: Light Editorial, quiet, no picture. **The moment somebody is
+deciding whether to hand over access to an account is not the moment for an
+interface with opinions.**
+
+**Cancel comes before Approve, in the DOM and on screen.** On a page whose entire
+job is asking permission, the refusal has to be at least as reachable as the
+approval. They are the same size; only weight distinguishes them.
+
+**The consent screen lets scopes be unticked**, and says what that costs in
+words. A person who removes a permission is told the steps needing it will stop
+and ask them, rather than discovering it as a failure three days later.
+
+`ConnectedAccounts` lives in the **room rail**, and it started out in the wrong
+place. It was first built into the project panel, which was structurally
+defensible (a connection is room-scoped and that panel was the only other
+room-scoped surface) and wrong in practice for a reason the structure hid: that
+panel is called "The work", it opens as a modal from the top bar, and nobody
+looking for account settings opens it. The first person to use the feature could
+not find it. Putting it behind a project view also implies a connection belongs
+to a project, which is the exact impression room-scoping exists to avoid.
+
+The rail is the room's own column, always visible, already holding the other
+room-level fact: who is in it. An account the workspace is connected to is the
+same kind of fact, so it sits beside the members rather than behind a button.
+**This is the second surface in this module to move for the same reason**, and
+the pattern is worth naming: a placement that is defensible from the data model
+can still be unreachable in the product, and only the second question is the one
+a user experiences.
+
+Status is a word plus a dot and never a colour alone (rule 15), and expired reads
+differently from disconnected because the actions differ. An empty list says
+plainly that Octopus cannot publish or spend anywhere until an account is
+connected, which is the honest version of an empty state on a surface about
+permissions.
+
+**The fake is labelled as a test provider on both surfaces.** Somebody about to
+click through a consent screen should know what is on the other side of it, and
+"fake" appearing as a provider string in a row is not that.
 
 ## Token implementation
 

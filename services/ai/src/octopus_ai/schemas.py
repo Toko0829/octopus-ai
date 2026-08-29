@@ -293,8 +293,55 @@ class ProposeReplanProposal(BaseModel):
     )
 
 
+# --------------------------------------------------------------- campaign ----
+#
+# The first proposal whose approval commits money rather than work.
+
+
+class ProposeCampaignProposal(BaseModel):
+    """Propose that Node render a campaign card the owner can authorise.
+
+    Approving it is what creates the campaign, exactly as approving a plan card
+    creates the project. The card is the authorisation boundary, so this service
+    proposes a campaign and never starts one.
+
+    **There is no budget field, and its absence is the design rather than an
+    omission.** This service says what to run and where; how much to spend is the
+    owner's to enter on the card. Once both are `budget_cap` on a row, a number a
+    model produced and a number a person authorised are indistinguishable, and
+    this is the one surface where that difference is the entire point. Anyone
+    adding the field later should read this paragraph first: it would remove the
+    property silently, and every test here would still pass.
+
+    `citations` are 1-based indices into the response's own citation list, like
+    `PlanStep` and unlike `WriteArtifactProposal`. The card renders the sources
+    beside the claim, so an index the reader can follow is what it needs.
+    """
+
+    kind: Literal["propose_campaign"] = "propose_campaign"
+    task_id: str
+    name: str = Field(min_length=1, max_length=200)
+    objective: str | None = Field(default=None, max_length=500)
+    channel: Literal["meta", "google", "email", "organic_social"] = Field(
+        description=(
+            "Where this runs. Mirrors public.marketing_channel. There is no "
+            "'fake' member: fake is a PROVIDER, and this is a channel."
+        )
+    )
+    summary: str = Field(
+        min_length=1,
+        max_length=800,
+        description="Why this channel for this step, in the owner's terms. Rendered on the card.",
+    )
+    citations: list[int] = Field(default_factory=list, max_length=8)
+
+
 Proposal = (
-    PostMessageProposal | ProposePlanProposal | WriteArtifactProposal | ProposeReplanProposal
+    PostMessageProposal
+    | ProposePlanProposal
+    | WriteArtifactProposal
+    | ProposeReplanProposal
+    | ProposeCampaignProposal
 )
 
 

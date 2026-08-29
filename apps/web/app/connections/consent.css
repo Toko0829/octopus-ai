@@ -1,0 +1,100 @@
+/* The connect flow's two standalone pages: the fake provider's consent screen
+   and the callback that finishes an authorisation.
+
+   Light Editorial and deliberately quiet, on the sign-in precedent: these are
+   trust surfaces, and the moment somebody is deciding whether to hand over
+   access to an account is not the moment for an interface with opinions.
+   See docs/20-design/design-system.md. */
+
+/* Full-bleed ground with a centred column inside it, rather than a 460px block
+   with `margin: 0 auto`.
+
+   **A subtree skin has to paint its own ground**, and it has to paint all of it.
+   `data-skin="light"` on this element resolves the tokens beneath it, but `body`
+   sits outside and still resolves from `:root`, so a centred narrow block leaves
+   the OS-dark body showing down both sides. That is the same defect the landing
+   slice recorded when its light page inherited near-white text onto paper white,
+   and it is why the grid is what carries `--bg` while the column only carries
+   the content. */
+.consent {
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  display: grid;
+  grid-template-columns: minmax(0, 460px);
+  justify-content: center;
+  align-content: start;
+  gap: 14px;
+  padding: 15vh 24px 24px;
+}
+
+.consent-eyebrow {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.consent-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.consent-body {
+  margin: 0;
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+}
+
+.consent-scopes {
+  width: 100%;
+  margin: 4px 0 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.consent-legend {
+  padding: 0 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.consent-scope {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.consent-note {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Cancel is first in the DOM and stays first here. On a screen whose whole job
+   is asking permission, the refusal must be at least as reachable as the
+   approval, so the two are the same size and neither is hidden by weight. */
+.consent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* The back-to-workspace link on the callback page is an `<a>` wearing `.btn`,
+   so it needs the width it would have as a button rather than as a grid item. */
+.consent > .btn {
+  justify-self: start;
+}

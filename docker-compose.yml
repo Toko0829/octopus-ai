@@ -2,10 +2,23 @@
 # network. Postgres is not here: Supabase is managed and the services reach it
 # over the internet, so there is nothing to stand up locally.
 #
-#   docker compose up --build
+#   docker compose up
 #
 # Then http://localhost:3000. The API is on :3011 and the reasoning core on
 # :8000, both published so they can be probed directly while testing.
+#
+# **Every service carries `pull_policy: build`, and the reason is a stack that
+# lied.** Compose's default is `missing`: it builds only when no image with the
+# tag exists, so once `octopus-web:latest` has been built one time, every later
+# `docker compose up` starts that image again and rebuilds nothing. The stack
+# comes up healthy, the ports answer, and the code is whatever it was on the day
+# the image was built. That is not hypothetical here: three images sat six hours
+# and six commits behind `main`, serving the previous landing page while `git
+# status` was clean, which reads as a caching bug in the app rather than as a
+# stale image. `build` rebuilds on every `up`. The layer cache makes that cheap,
+# the model weights in `services/ai` are their own layer and are not re-fetched,
+# and `--build` still works and is now the same thing. The trade is a few seconds
+# of cache evaluation against a service that claims to be current and is not.
 #
 # **Sizing, because one of these is not like the others.** `services/ai` holds
 # bge-m3 and bge-reranker-v2-m3 resident and measures ~5.15 GB peak RSS
@@ -22,6 +35,7 @@ services:
     build:
       context: ./services/ai
     image: octopus-ai:latest
+    pull_policy: build
     env_file:
       # `apps/api/.env`, NOT `services/ai/.env`, and the choice is the
       # identity-versus-location split ADR-0008 draws rather than convenience.
@@ -45,6 +59,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     image: octopus-api:latest
+    pull_policy: build
     env_file:
       # The one place the secrets already live. Read rather than copied, so there
       # is no second copy of a service key to drift or to commit by accident.
@@ -77,6 +92,7 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
     image: octopus-web:latest
+    pull_policy: build
     environment:
       # Server-side only: the browser talks to the BFF at /api/bff/*, and the BFF
       # talks to the API. So this is a service name and never needs to resolve

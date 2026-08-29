@@ -14,6 +14,7 @@
     "@octopus/config": "workspace:*",
     "@octopus/contracts": "workspace:*",
     "@octopus/core": "workspace:*",
+    "@octopus/marketing": "workspace:*",
     "@supabase/supabase-js": "^2.111.0",
     "fastify": "^5.1.0",
     "jose": "^5.9.6",

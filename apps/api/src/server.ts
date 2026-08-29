@@ -10,7 +10,9 @@ import { roomRoutes } from './routes/rooms';
 import { agentRunRoutes } from './routes/agent-runs';
 import { embedRoutes } from './routes/embeds';
 import { sourceRoutes } from './routes/sources';
+import { connectionRoutes } from './routes/connections';
 import { createAuthVerifier } from './plugins/auth';
+import { stateConfigFrom } from './lib/oauth-state';
 import { startTicker } from './lib/ticker';
 import { createServiceClient, requireSupabaseConfig } from './lib/supabase';
 
@@ -92,6 +94,18 @@ export async function buildServer(): Promise<FastifyInstance> {
     aiServiceUrl: env.AI_SERVICE_URL,
   });
 
+  // Connecting the workspace's own ad, social and email accounts. Takes the web
+  // URL because the OAuth redirect lands on the web origin rather than here
+  // (ADR-0012), and a state config that is null when no secret is set: a
+  // deployment that never connects an account boots normally, and one that tries
+  // to is refused with the variable named.
+  await app.register(connectionRoutes, {
+    verify,
+    supabase,
+    webUrl: env.WEB_URL,
+    state: stateConfigFrom(env),
+  });
+
   // The durable backbone (ADR-0010). Started here rather than as a separate
   // process because there is nothing to separate yet: a run's state is rows, so
   // the ticker is a loop that wakes up, recovers what died, and walks the graph.
@@ -119,6 +133,11 @@ export async function buildServer(): Promise<FastifyInstance> {
           maxPerPass: env.CRAWL_MAX_PER_TICK,
         }
       : undefined,
+    // Publishing what an owner already authorised. The two human gates are the
+    // real control (an account has to be connected, and a campaign has to be
+    // approved with a budget typed on it), so this flag is the deployment-shaped
+    // off switch rather than the authorisation. It is on unless set to `false`.
+    publish: env.PUBLISH_ENABLED ? { maxPerPass: env.PUBLISH_MAX_PER_TICK } : undefined,
     log: app.log,
   });
   app.addHook('onClose', async () => stopTicker());

@@ -476,6 +476,21 @@
   background: var(--surface-hover);
   border-color: var(--border);
 }
+/* Where a campaign runs, on the same chip the step owner uses because it answers
+   the same kind of question. Each carries its label as a word: rule 15 forbids
+   conveying anything by colour alone, and "which channel" is exactly the fact
+   somebody is being asked to authorise. */
+.chan-meta,
+.chan-google {
+  color: var(--accent-text);
+  background: var(--accent-quiet);
+}
+.chan-email,
+.chan-organic {
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
 /* Shown only on the two tiers that change what happens to the person. A chip on
    every step is a wall of badges nobody reads, which is worse than none on the
    one surface built for checking. */
@@ -634,41 +649,11 @@
   font-weight: 500;
 }
 
-/* ============================ Buttons ============================ */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--text-sm);
-  font-weight: 500;
-  padding: 8px 14px;
-  border-radius: var(--r-md);
-  border: 1px solid transparent;
-  transition:
-    background var(--dur-fast),
-    border-color var(--dur-fast),
-    transform var(--dur-fast);
-}
-.btn:active {
-  transform: translateY(1px);
-}
-.btn-primary {
-  background: var(--accent);
-  color: var(--on-accent);
-}
-.btn-primary:hover {
-  background: var(--teal-500);
-}
-.btn-ghost {
-  background: transparent;
-  border-color: var(--border);
-  color: var(--text-secondary);
-}
-.btn-ghost:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
-  background: var(--surface-hover);
-}
+/* The `.btn` family moved to globals.css when the connect flow's two pages
+   needed it. It is a design-system primitive that the chat shell merely happened
+   to own first, and duplicating it would have been two copies of a button that
+   must agree. `.icon-btn` stays here: it is chat chrome. */
+
 .icon-btn {
   width: 32px;
   height: 32px;
@@ -1645,6 +1630,32 @@
   border-color: var(--border);
 }
 
+/* What the owner authorised, what is committed, what is left. Tabular numerics
+   throughout (rule 14): the three figures are read against each other, and
+   proportional digits make that comparison harder than it needs to be. */
+.work-budget {
+  margin: 10px 0 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-hover);
+}
+.work-budget-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.work-budget-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.work-budget-label {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
 .work-tasks {
   list-style: none;
   margin: 12px 0 0;
@@ -1839,4 +1850,125 @@ a.work-action {
   margin: 0;
   font-size: var(--text-xs);
   color: var(--red-500);
+}
+
+/* ---------------------------------------------- connected accounts
+
+   Sits in the room rail (`.context`) rather than in the project panel. It was
+   built into the panel first, which satisfied the room-scoping argument and
+   failed in practice: that panel is a modal called "The work" and nobody
+   looking for account settings opens it. A structurally correct home nobody
+   opens is not a home.
+
+   Sized for a narrow always-visible column, so the box and the surface fill the
+   panel version had are gone: this is a section of the rail, not a card dropped
+   into one. Status is a word plus a dot and never a colour alone (rule 15). */
+.ctx-connections {
+  margin-top: var(--sp-6);
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-2);
+}
+.ctx-conn-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.ctx-conn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ctx-conn-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.ctx-conn-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+.ctx-conn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: right;
+}
+.ctx-conn-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.ctx-conn-status.active .ctx-conn-dot {
+  background: var(--accent);
+}
+.ctx-conn-status.expired .ctx-conn-dot {
+  background: var(--warn);
+}
+.ctx-conn-detail {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.ctx-conn-error {
+  margin: 0 0 var(--sp-2);
+  font-size: 11px;
+  color: var(--human);
+}
+
+/* Text buttons rather than `.btn`. In a column this narrow a row of bordered
+   pills is more furniture than the actions deserve, and these are read far more
+   often than they are clicked. */
+.ctx-conn-link {
+  align-self: flex-start;
+  padding: 2px 0;
+  background: none;
+  border: 0;
+  font-size: 11px;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.ctx-conn-link:hover {
+  text-decoration: underline;
+}
+.ctx-conn-link:disabled {
+  color: var(--text-faint);
+  cursor: default;
+  text-decoration: none;
+}
+.ctx-conn-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: var(--sp-3);
+}
+.ctx-conn-choice {
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.ctx-conn-choice:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.ctx-conn-choice:disabled {
+  color: var(--text-faint);
+  cursor: default;
 }

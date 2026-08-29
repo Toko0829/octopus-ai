@@ -3,7 +3,9 @@ import { decideRecovery, summarise, tick, type ReclaimedRun } from '@octopus/cor
 import { randomUUID } from 'node:crypto';
 import { createSchedulerPorts } from './scheduler';
 import { crawlSweep } from './crawl';
+import { publishSweep } from './publish';
 import { notifyWaiting } from './waiting';
+import { produceCampaignCards } from './campaign-cards';
 import type { ExecutorDeps } from './executor';
 
 /**
@@ -42,6 +44,14 @@ export interface TickerOptions {
    * pointless traffic aimed at somebody else's servers.
    */
   crawl?: { aiServiceUrl: string; aiTimeoutMs?: number; maxPerPass: number };
+  /**
+   * Publish campaigns an owner has already approved. Absent means this deployment
+   * does not publish, which is a supported configuration rather than an
+   * oversight, exactly as `crawl` is. Unlike `crawl` it is on by default, because
+   * a deployment that shows people a campaign card and then never publishes what
+   * they approve is telling them something untrue (see `PUBLISH_ENABLED`).
+   */
+  publish?: { maxPerPass: number };
   log: {
     info: (obj: unknown, msg: string) => void;
     warn: (obj: unknown, msg: string) => void;
@@ -187,8 +197,42 @@ export function startTicker(opts: TickerOptions): () => void {
           // digest is a projection of them, so a failure to speak cannot undo
           // work that already landed.
           await notifyWaiting(opts.admin, report, opts.log);
+
+          // A step that stopped specifically for an AUTHORISATION gets a card
+          // the owner can act on, rather than only a line saying it needs them.
+          // Without this a high-risk step is a dead end: `routeTask` parks it at
+          // `needs_user` by design and there is no surface on which to say yes.
+          //
+          // Only when an executor is configured, because that is what carries the
+          // reasoning core's address and the card is drafted there. A ticker
+          // running without one still schedules and still announces; it just
+          // cannot ask for a draft.
+          if (opts.executor) {
+            await produceCampaignCards(opts.admin, report, {
+              aiServiceUrl: opts.executor.aiServiceUrl,
+              aiTimeoutMs: opts.executor.aiTimeoutMs,
+              log: opts.log,
+            });
+          }
         } catch (err) {
           opts.log.error({ err, projectId: project.id }, 'tick failed for a project');
+        }
+      }
+
+      // Publishing goes after the graph and BEFORE the crawl, and the ordering
+      // is a claim about who is waiting. A person who approved a campaign is
+      // watching for it to go live; nobody is waiting on a regulator's page
+      // being re-read. Its own try/catch for the reason every other sweep has
+      // one: a failure here must not take the tick with it (rule 16).
+      if (opts.publish) {
+        try {
+          await publishSweep({
+            admin: opts.admin,
+            maxPerPass: opts.publish.maxPerPass,
+            log: opts.log,
+          });
+        } catch (err) {
+          opts.log.error({ err, worker }, 'publish sweep failed');
         }
       }
 

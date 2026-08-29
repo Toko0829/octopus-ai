@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./fake-consent-code": "./src/fake-consent-code.ts"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -13,6 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@octopus/contracts": "workspace:*",
     "zod": "^3.24.0"
   },
   "devDependencies": {

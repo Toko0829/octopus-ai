@@ -36,10 +36,26 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json .
 COPY apps/web/package.json apps/web/
 COPY packages/config/package.json packages/config/
 COPY packages/contracts/package.json packages/contracts/
+# The fake provider's consent screen imports `@octopus/marketing/fake-consent-code`,
+# because the authorization-code format has to agree with the server that decodes
+# it and two copies of an encoding are two copies that can disagree.
+COPY packages/marketing/package.json packages/marketing/
 
 RUN --mount=type=cache,target=/pnpm-store \
     pnpm config set store-dir /pnpm-store && \
     pnpm install --frozen-lockfile
+
+# The same assertion `apps/api/Dockerfile` carries, now that this image has more
+# than two workspace dependencies to forget one of.
+#
+# Its commit message said "apps/web needs no equivalent today, declaring only
+# @octopus/config and @octopus/contracts. If it grows a third, the guard belongs
+# there too." It grew a third in the next slice. A missing COPY above does not
+# fail the install: pnpm links a workspace dependency by path, a symlink to a
+# directory that does not exist yet is legal, and `COPY packages/` below then
+# creates it, so the image builds green and the failure arrives at runtime naming
+# a third-party module that is not the problem.
+RUN node -e "const fs=require('fs'),pkg=require('/app/apps/web/package.json'),deps=Object.entries({...pkg.dependencies,...pkg.devDependencies}).filter(([,v])=>String(v).startsWith('workspace:')).map(([k])=>k),missing=deps.filter(d=>!fs.existsSync('/app/apps/web/node_modules/'+d+'/package.json'));if(missing.length){console.error('\n  Not installed: '+missing.join(', ')+'\n  Add a COPY line for each above the install step in this Dockerfile.\n');process.exit(1)}console.log('workspace deps installed: '+deps.join(', '))"
 
 COPY packages/ packages/
 COPY apps/web/ apps/web/

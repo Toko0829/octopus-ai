@@ -7,6 +7,7 @@ import { OctopusMark } from './icons';
 import { PlanCard } from './PlanCard';
 import { ArtifactCard } from './ArtifactCard';
 import { ReplanCard } from './ReplanCard';
+import { CampaignCard } from './CampaignCard';
 
 interface Props {
   channelName: string | null;
@@ -18,6 +19,8 @@ interface Props {
     embedId: string,
     action: 'approve' | 'request_changes',
     note?: string,
+    /** Only a campaign card sends one. The route refuses it on any other component. */
+    budgetCap?: number,
   ) => Promise<void>;
 }
 
@@ -82,8 +85,8 @@ export function MessageStream({
       <div className="stream-intro">
         <h2 className="display">{channelName ? `#${channelName}` : 'Workspace'}</h2>
         <p>
-          This is where Octopus plans your growth. Nothing goes live (no spend, no publishing)
-          without your approval.
+          This is where Octopus plans your growth. Nothing goes live (no spend, no publishing) until
+          you approve it.
         </p>
       </div>
 
@@ -132,6 +135,9 @@ export function MessageStream({
               {m.embed?.component === 'artifact' && <ArtifactCard embed={m.embed} />}
               {m.embed?.component === 'replan' && (
                 <ReplanCard embed={m.embed} canAct={canAct} onAct={onEmbedAction} />
+              )}
+              {m.embed?.component === 'campaign' && (
+                <CampaignCard embed={m.embed} canAct={canAct} onAct={onEmbedAction} />
               )}
             </div>
           </div>

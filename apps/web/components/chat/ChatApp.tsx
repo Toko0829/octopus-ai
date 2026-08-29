@@ -108,8 +108,13 @@ export function ChatApp({
    * stream would scroll the reader away from what they just acted on.
    */
   const handleEmbedAction = useCallback(
-    async (embedId: string, action: 'approve' | 'request_changes', note?: string) => {
-      const res = await actOnEmbed(roomId, embedId, { action, note });
+    async (
+      embedId: string,
+      action: 'approve' | 'request_changes',
+      note?: string,
+      budgetCap?: number,
+    ) => {
+      const res = await actOnEmbed(roomId, embedId, { action, note, budgetCap });
       setMessages((cur) =>
         cur.map((m) =>
           m.embed?.id === embedId ? { ...m, embed: { ...m.embed, state: res.state } } : m,
@@ -386,7 +391,7 @@ export function ChatApp({
           onAddSource={canAct ? () => setSourceOpen(true) : undefined}
         />
       </div>
-      <ContextPanel members={uiMembers} />
+      <ContextPanel members={uiMembers} roomId={roomId} canAct={canAct} />
       <CommandPalette
         open={cmdkOpen}
         channels={uiChannels}

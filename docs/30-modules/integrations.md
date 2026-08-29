@@ -28,6 +28,32 @@ Every provider sits behind a **typed adapter** with Zod-validated I/O. Callers d
 | Maps / geo              | maps provider                                                   | location scouting, service-geo checks                                                                                                                                                                                                                                                       |
 | Email / push / SMS      | Resend/Postmark · Expo · Twilio                                 | behind the notifications abstraction                                                                                                                                                                                                                                                        |
 
+## Connecting a customer's own account
+
+Everything above is a provider **we** hold credentials for. Channel connections
+are the other kind: the credential belongs to the customer, arrives through a
+three-legged OAuth round trip, and authorises action on their account rather than
+ours. That difference is why it has its own seam, `ChannelAuthProvider` in
+`packages/marketing`, rather than sitting behind `AdChannelAdapter`: an ad
+adapter acts **with** a credential that exists, and this is how one comes to
+exist. A platform can rewrite its campaign API without touching its OAuth
+endpoints, and the reverse.
+
+Two registries, both checked in rather than stored, on the stance this document's
+adapter pattern already takes: which implementation may touch somebody's ad
+account is an editorial and security judgement, and a file gets reviewed in a
+diff while a row does not. `AUTH_PROVIDER_REGISTRY` carries one field its sibling
+does not, `carriesRealCredentials`, which `writeConnection` refuses on until
+envelope encryption exists (see the accepted risk in
+[security-compliance.md](../10-architecture/security-compliance.md)).
+
+Only the in-repo `fake` is registered. Its consent screen is a page in our own
+web app, which is what makes the whole round trip, including a person clicking
+Cancel, exercisable without an account anywhere. **Meta Ads and Google Ads are
+named in the table above as intent, not as integrations that exist.** The
+redirect URI every real provider will register is fixed by
+[ADR-0012](../40-adr/0012-oauth-callback-on-the-web-origin.md).
+
 ## Untrusted-content quarantine
 
 **All external results — web pages, crawled documents, supplier emails, provider responses — are data, never instructions.** They are kept off the agent's instruction channel; the orchestrator never executes directives found inside them. PII is kept out of URLs, logs, and the RAG index.

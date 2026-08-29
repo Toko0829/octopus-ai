@@ -3,8 +3,10 @@
 import type {
   ArtifactFileUrl,
   Channel,
+  ChannelConnection,
   EmbedActionResponse,
   ListMessagesResponse,
+  MarketingChannel,
   Message,
   ProjectDetail,
   ProjectSummary,
@@ -165,10 +167,69 @@ export function postMessage(
  * disables what the caller cannot do, but that is presentation: this call can be
  * made by anyone and is expected to be refused when it should be.
  */
+/**
+ * Set or clear what the owner authorises for a project.
+ *
+ * `null` clears the ceiling, which blocks new campaign approvals and leaves every
+ * campaign already authorised exactly as it was.
+ */
+export function setProjectBudget(projectId: string, budgetCeiling: number | null) {
+  return bff<ProjectDetail>(`/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ budgetCeiling }),
+  });
+}
+
+/* ------------------------------------------------- channel connections */
+
+/**
+ * What accounts this workspace has connected.
+ *
+ * The response carries no token and cannot: `ChannelConnection` has no field for
+ * one, so a projection that started returning credentials would fail to
+ * typecheck here rather than quietly reaching a browser.
+ */
+export function getConnections(roomId: string) {
+  return bff<{ connections: ChannelConnection[] }>(`/rooms/${roomId}/connections`);
+}
+
+/**
+ * Begin an authorisation and get back where to send the browser.
+ *
+ * The caller chooses the provider and the channel and nothing else. The redirect
+ * URI, the scopes and the signed state are all decided by the API, because a
+ * client that could name its own redirect URI could send somebody's
+ * authorisation code wherever it liked.
+ */
+export function startConnection(roomId: string, provider: string, channel: MarketingChannel) {
+  return bff<{ authorizeUrl: string }>(`/rooms/${roomId}/connections/start`, {
+    method: 'POST',
+    body: JSON.stringify({ provider, channel }),
+  });
+}
+
+/** Finish one. Called by the callback page with whatever the platform returned. */
+export function completeConnection(
+  roomId: string,
+  input: { state: string; code?: string; error?: string },
+) {
+  return bff<{ connection: ChannelConnection }>(`/rooms/${roomId}/connections/callback`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/** Disconnect. A revocation rather than a delete, whatever the verb says. */
+export function disconnectConnection(roomId: string, connectionId: string) {
+  return bff<{ connection: ChannelConnection }>(`/rooms/${roomId}/connections/${connectionId}`, {
+    method: 'DELETE',
+  });
+}
+
 export function actOnEmbed(
   roomId: string,
   embedId: string,
-  input: { action: 'approve' | 'request_changes'; note?: string },
+  input: { action: 'approve' | 'request_changes'; note?: string; budgetCap?: number },
 ) {
   return bff<EmbedActionResponse>(`/rooms/${roomId}/embeds/${embedId}/actions`, {
     method: 'POST',

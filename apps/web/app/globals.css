@@ -553,3 +553,46 @@ a {
   border-color: color-mix(in oklab, var(--teal-500) 45%, transparent);
   color: var(--accent-text);
 }
+
+/* ============================ Buttons ============================
+
+   Lives here rather than in chat.css because three surfaces use it now: the
+   chat shell, the fake provider's consent screen and the connect callback. It
+   was only ever in the chat stylesheet because the chat needed it first. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  /* An `<a>` wearing `.btn` is a button, not a link in a sentence. Needed the
+     moment the callback page used one for "Back to the workspace". */
+  text-decoration: none;
+  transition:
+    background var(--dur-fast),
+    border-color var(--dur-fast),
+    transform var(--dur-fast);
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.btn-primary:hover {
+  background: var(--teal-500);
+}
+.btn-ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+.btn-ghost:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: var(--surface-hover);
+}

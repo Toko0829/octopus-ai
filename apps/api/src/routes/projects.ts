@@ -7,9 +7,12 @@ import type {
   ProjectSummary,
   Task,
 } from '@octopus/contracts';
+import { CampaignState, MarketingChannel, SetProjectBudgetBody } from '@octopus/contracts';
+import type { CampaignSummary } from '@octopus/contracts';
 import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
 import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
 import { citationTitles, summariseProjects } from '../lib/project-progress';
+import { resolveProjectOwner } from '../lib/project-owner';
 
 /**
  * Reading what an approved plan became: the project, its tasks, and what those
@@ -48,7 +51,25 @@ const ProjectRow = z.object({
   status: z.enum(['draft', 'planning', 'active', 'paused', 'completed', 'cancelled']),
   created_at: z.string(),
   source_embed_id: z.string().nullable(),
+  // numeric(12,2) arrives from PostgREST as a string. Coerced rather than cast,
+  // because `'900' > 1000` is false in JavaScript for the wrong reason and this
+  // number is the one a spend decision is made against.
+  budget_ceiling: z.coerce.number().nullable(),
+  currency: z.string(),
 });
+
+const CampaignRow = z.object({
+  id: z.string(),
+  name: z.string(),
+  channel: MarketingChannel,
+  state: CampaignState,
+  budget_cap: z.coerce.number().nullable(),
+  currency: z.string(),
+  created_at: z.string(),
+});
+
+/** Terminal campaigns hold none of the ceiling. Mirrors `private.campaign_state_is_terminal`. */
+const TERMINAL_CAMPAIGN_STATES = new Set(['completed', 'cancelled', 'failed']);
 
 const TaskRow = z.object({
   id: z.string(),
@@ -229,101 +250,256 @@ export async function projectRoutes(
       const db = createUserClient(opts.supabase, request.accessToken as string);
 
       try {
-        const { data: projectRow, error: projectErr } = await db
-          .from('projects')
-          .select('id, goal, status, created_at, source_embed_id')
-          .eq('id', projectId)
-          .maybeSingle();
-        if (projectErr) throw projectErr;
+        const detail = await buildProjectDetail(db, projectId);
         // Invisible and absent are the same answer on purpose, the same way a
         // non-member gets 404 on a room: the API does not confirm that a project
         // it will not show you exists.
-        if (!projectRow) return fail(reply, 404, 'not_found', 'Project not found.');
-        const project = ProjectRow.parse(projectRow);
-
-        const [{ data: taskRows, error: taskErr }, { data: artifactRows, error: artErr }] =
-          await Promise.all([
-            db
-              .from('tasks')
-              .select(
-                'id, project_id, title, detail, stage, owner_type, state, risk_tier, position, created_at, updated_at',
-              )
-              .eq('project_id', projectId)
-              .order('position', { ascending: true }),
-            db
-              .from('artifacts')
-              .select(
-                'id, task_id, kind, title, body, storage_path, citations, created_by, created_at',
-              )
-              .eq('project_id', projectId)
-              .order('created_at', { ascending: true }),
-          ]);
-        if (taskErr) throw taskErr;
-        if (artErr) throw artErr;
-
-        const byTask = new Map<string, Artifact[]>();
-        for (const row of artifactRows ?? []) {
-          const a = ArtifactRow.parse(row);
-          const list = byTask.get(a.task_id) ?? [];
-          list.push({
-            id: a.id,
-            taskId: a.task_id,
-            kind: a.kind,
-            title: a.title,
-            body: a.body,
-            storagePath: a.storage_path,
-            citations: citationTitles(a.citations),
-            createdBy: a.created_by,
-            createdAt: a.created_at,
-          });
-          byTask.set(a.task_id, list);
-        }
-
-        const tasks: Task[] = (taskRows ?? []).map((row) => {
-          const t = TaskRow.parse(row);
-          return {
-            id: t.id,
-            projectId: t.project_id,
-            title: t.title,
-            detail: t.detail,
-            stage: t.stage,
-            ownerType: t.owner_type,
-            state: t.state as Task['state'],
-            riskTier: t.risk_tier,
-            position: t.position,
-            createdAt: t.created_at,
-            updatedAt: t.updated_at,
-            artifacts: byTask.get(t.id) ?? [],
-          };
-        });
-
-        // The room is read through the card, matching both the delivery path and
-        // the RLS predicate. Null is a legacy project rather than an error.
-        let roomId: string | null = null;
-        if (project.source_embed_id) {
-          const { data: embed, error: embedErr } = await db
-            .from('action_embeds')
-            .select('room_id')
-            .eq('id', project.source_embed_id)
-            .maybeSingle<{ room_id: string }>();
-          if (embedErr) throw embedErr;
-          roomId = embed?.room_id ?? null;
-        }
-
-        return {
-          id: project.id,
-          goal: project.goal,
-          status: project.status,
-          createdAt: project.created_at,
-          roomId,
-          tasks,
-        };
+        if (!detail) return fail(reply, 404, 'not_found', 'Project not found.');
+        return detail;
       } catch (err) {
         request.log.error({ err, projectId, userId: request.user?.sub }, 'getProject failed');
         return fail(reply, 500, 'internal_error', 'Could not load the project.');
       }
     },
   );
+
+  /**
+   * Set or clear what the owner authorises for this project.
+   *
+   * **This route is why the spend cap is reachable at all.** `budget_ceiling` has
+   * existed since `20260813120000` with no reader and no writer anywhere in
+   * TypeScript, so `checkSpendCap` would have refused every campaign forever with
+   * `no_ceiling_authorised`. That is the defect class this repository has now paid
+   * for twice, with `risk_tier` unreachable for its whole life and `task_deps`
+   * enforcing an empty set for two weeks: a guard whose input nothing supplies.
+   *
+   * **Owner only, and checked here rather than by RLS.** Clients hold no UPDATE
+   * grant on `projects` at all, so the write goes through the service client and
+   * the authorisation has to be made in this handler. `resolveProjectOwner` reads
+   * with the caller's own client, so a person who cannot see the project cannot
+   * learn who owns it.
+   *
+   * **Clearing is legal and deliberately narrow.** `null` blocks every future
+   * campaign approval and touches no campaign already authorised: withdrawing
+   * permission to commit more is not the same act as stopping spend that is
+   * already committed, and doing both here would pause campaigns nobody asked to
+   * pause.
+   */
+  app.patch(
+    '/api/projects/:projectId',
+    { preHandler: requireAuth },
+    async (request, reply): Promise<ProjectDetail | FastifyReply> => {
+      const params = ProjectParams.safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'projectId must be a UUID.');
+      const body = SetProjectBudgetBody.safeParse(request.body);
+      if (!body.success) {
+        return fail(
+          reply,
+          400,
+          'bad_request',
+          'budgetCeiling must be a number of at least 0, or null to clear it.',
+        );
+      }
+
+      const projectId = params.data.projectId;
+      const userId = (request.user as NonNullable<typeof request.user>).sub;
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+
+      try {
+        const { ownerId } = await resolveProjectOwner(db, projectId);
+        if (!ownerId) return fail(reply, 404, 'not_found', 'Project not found.');
+        if (ownerId !== userId) {
+          return fail(reply, 403, 'forbidden', 'Only the workspace owner can authorise a budget.');
+        }
+
+        const admin = createServiceClient(opts.supabase);
+        const { data: before, error: beforeErr } = await admin
+          .from('projects')
+          .select('budget_ceiling, currency')
+          .eq('id', projectId)
+          .maybeSingle<{ budget_ceiling: number | string | null; currency: string }>();
+        if (beforeErr) throw beforeErr;
+        if (!before) return fail(reply, 404, 'not_found', 'Project not found.');
+
+        const { error: updateErr } = await admin
+          .from('projects')
+          .update({ budget_ceiling: body.data.budgetCeiling })
+          .eq('id', projectId);
+        if (updateErr) throw updateErr;
+
+        // Audited, because this is an authorisation rather than a preference.
+        // `actor_id` is passed explicitly: the `auth.uid()` idiom the SQL writers
+        // use reads null under the service key, which would record a person's
+        // decision as the system's.
+        const { error: eventErr } = await admin.from('events').insert({
+          project_id: projectId,
+          actor_id: userId,
+          actor_kind: 'user',
+          verb: 'project.budget_set',
+          subject_type: 'project',
+          subject_id: projectId,
+          payload: {
+            from: before.budget_ceiling === null ? null : Number(before.budget_ceiling),
+            to: body.data.budgetCeiling,
+            currency: before.currency,
+          },
+        });
+        if (eventErr) {
+          request.log.error(
+            { err: eventErr, projectId },
+            'budget set but not audited; the ceiling stands and the event is missing',
+          );
+        }
+
+        const detail = await buildProjectDetail(db, projectId);
+        if (!detail) return fail(reply, 404, 'not_found', 'Project not found.');
+        request.log.info(
+          { projectId, userId, budgetCeiling: body.data.budgetCeiling },
+          'project budget ceiling set',
+        );
+        return detail;
+      } catch (err) {
+        request.log.error({ err, projectId, userId }, 'setProjectBudget failed');
+        return fail(reply, 500, 'internal_error', 'Could not set the budget.');
+      }
+    },
+  );
+
+  /**
+   * One project, as both the detail route and the budget route return it.
+   *
+   * Shared rather than duplicated so a PATCH cannot answer with a different shape
+   * from the GET that follows it, which is how a panel ends up showing a stale
+   * headroom figure next to a fresh ceiling.
+   *
+   * Reads with the caller's client throughout, so RLS decides what is visible and
+   * `committedBudget` counts only campaigns this person may see.
+   */
+  async function buildProjectDetail(
+    db: ReturnType<typeof createUserClient>,
+    projectId: string,
+  ): Promise<ProjectDetail | null> {
+    {
+      const { data: projectRow, error: projectErr } = await db
+        .from('projects')
+        .select('id, goal, status, created_at, source_embed_id, budget_ceiling, currency')
+        .eq('id', projectId)
+        .maybeSingle();
+      if (projectErr) throw projectErr;
+      if (!projectRow) return null;
+      const project = ProjectRow.parse(projectRow);
+
+      const [{ data: taskRows, error: taskErr }, { data: artifactRows, error: artErr }] =
+        await Promise.all([
+          db
+            .from('tasks')
+            .select(
+              'id, project_id, title, detail, stage, owner_type, state, risk_tier, position, created_at, updated_at',
+            )
+            .eq('project_id', projectId)
+            .order('position', { ascending: true }),
+          db
+            .from('artifacts')
+            .select(
+              'id, task_id, kind, title, body, storage_path, citations, created_by, created_at',
+            )
+            .eq('project_id', projectId)
+            .order('created_at', { ascending: true }),
+        ]);
+      if (taskErr) throw taskErr;
+      if (artErr) throw artErr;
+
+      const byTask = new Map<string, Artifact[]>();
+      for (const row of artifactRows ?? []) {
+        const a = ArtifactRow.parse(row);
+        const list = byTask.get(a.task_id) ?? [];
+        list.push({
+          id: a.id,
+          taskId: a.task_id,
+          kind: a.kind,
+          title: a.title,
+          body: a.body,
+          storagePath: a.storage_path,
+          citations: citationTitles(a.citations),
+          createdBy: a.created_by,
+          createdAt: a.created_at,
+        });
+        byTask.set(a.task_id, list);
+      }
+
+      const tasks: Task[] = (taskRows ?? []).map((row) => {
+        const t = TaskRow.parse(row);
+        return {
+          id: t.id,
+          projectId: t.project_id,
+          title: t.title,
+          detail: t.detail,
+          stage: t.stage,
+          ownerType: t.owner_type,
+          state: t.state as Task['state'],
+          riskTier: t.risk_tier,
+          position: t.position,
+          createdAt: t.created_at,
+          updatedAt: t.updated_at,
+          artifacts: byTask.get(t.id) ?? [],
+        };
+      });
+
+      // The room is read through the card, matching both the delivery path and
+      // the RLS predicate. Null is a legacy project rather than an error.
+      let roomId: string | null = null;
+      if (project.source_embed_id) {
+        const { data: embed, error: embedErr } = await db
+          .from('action_embeds')
+          .select('room_id')
+          .eq('id', project.source_embed_id)
+          .maybeSingle<{ room_id: string }>();
+        if (embedErr) throw embedErr;
+        roomId = embed?.room_id ?? null;
+      }
+
+      const { data: campaignRows, error: campaignErr } = await db
+        .from('campaigns')
+        .select('id, name, channel, state, budget_cap, currency, created_at')
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false });
+      if (campaignErr) throw campaignErr;
+
+      const campaigns: CampaignSummary[] = (campaignRows ?? []).map((row) => {
+        const c = CampaignRow.parse(row);
+        return {
+          id: c.id,
+          name: c.name,
+          channel: c.channel,
+          state: c.state,
+          budgetCap: c.budget_cap,
+          currency: c.currency,
+          createdAt: c.created_at,
+        };
+      });
+
+      // The same two conditions `readSpendInputs` and `materialise_campaign`
+      // apply, so the headroom a person reads is the arithmetic the approval
+      // performs rather than a friendlier version of it: terminal campaigns
+      // hold none of the ceiling, and one with no cap contributes nothing.
+      const committedBudget = campaigns
+        .filter((c) => !TERMINAL_CAMPAIGN_STATES.has(c.state) && c.budgetCap !== null)
+        .reduce((sum, c) => sum + (c.budgetCap ?? 0), 0);
+
+      return {
+        id: project.id,
+        goal: project.goal,
+        status: project.status,
+        createdAt: project.created_at,
+        roomId,
+        budgetCeiling: project.budget_ceiling,
+        currency: project.currency,
+        committedBudget,
+        tasks,
+        campaigns,
+      };
+    }
+  }
 
   /**
    * A short-lived download link for one file artifact.

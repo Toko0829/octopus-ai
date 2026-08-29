@@ -60,3 +60,28 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ path: s
 export async function POST(request: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
   return proxy(request, (await ctx.params).path);
 }
+
+/**
+ * Setting a project's budget ceiling is the first PATCH this proxy carries.
+ *
+ * Exported explicitly rather than by widening `proxy`, because a Next route
+ * handler answers 405 for any verb it does not export: adding the method to the
+ * contract and the client without this line produces a failure in the browser
+ * that names nothing on the server, which is a long afternoon.
+ */
+export async function PATCH(request: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
+  return proxy(request, (await ctx.params).path);
+}
+
+/**
+ * Disconnecting a channel account is the first DELETE, and it walked straight
+ * into the trap the note above describes.
+ *
+ * Worth keeping both lines rather than merging them into one comment about
+ * verbs: the PATCH note was written as a warning and this is the warning coming
+ * true one slice later, which is a better argument for reading it than the
+ * warning was.
+ */
+export async function DELETE(request: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
+  return proxy(request, (await ctx.params).path);
+}

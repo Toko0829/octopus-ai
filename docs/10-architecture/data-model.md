@@ -10,6 +10,77 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### The marketing domain gets its first writer (`20260829130000`, `20260829140000`)
+
+Four marketing tables landed with their guards and **no writer at all**, which was
+deliberate and is now resolved for the first of them. `embed_component` gains
+`campaign`, in its own migration so the value is never used in the transaction
+that adds it (the rule `20260828130000` records), and `public.materialise_campaign(uuid)`
+turns an approved campaign card into exactly one `campaigns` row at state `ready`.
+
+**It is the third sibling of `materialise_plan` and `apply_plan_diff`**, sharing
+all four of their properties: one transaction, the payload read from the card
+rather than taken as arguments, idempotent by its own provenance
+(`campaigns.source_embed_id`, unique, declared for this at `20260829120000:87`),
+and unknown values raise. Same attributes too: `security invoker` in `public` with
+`EXECUTE` granted to `service_role` alone, `search_path` pinned, which is what
+keeps it clear of lints 0011, 0028 and 0029.
+
+**What is new is a spend check, and it exists twice on purpose.** The approval
+route runs `checkSpendCap` before recording the verdict, which is the readable
+refusal; this function runs the same arithmetic again under
+`select budget_ceiling ... for update`. Two cards approved in the same instant
+both pass a check made in the API, because each reads the committed total before
+either writes, and the result would be a sum of authorised caps exceeding the
+ceiling **inside the table whose whole purpose is recording what was authorised**.
+The duplication, its mitigation and the alternatives are argued in
+[ADR-0011](../40-adr/0011-spend-cap-checked-twice.md). This does not contradict
+"the spend cap is enforced in tool code, not by a constraint" below: that forbids
+a CHECK constraint, and this is the transactional arm of the tool.
+
+**The insert audits itself, because the trigger cannot.** `campaigns_guard_transition`
+fires `before update ... when (old.state is distinct from new.state)`, so a row
+created at `ready` writes no `campaign.transitioned` event. Without an explicit
+one, the authorisation of money would be the only act in this domain with no
+event, and `campaign.transitioned` would first appear when a campaign left a state
+nothing recorded it entering. `campaign.materialised` carries the embed, the room,
+the task, the channel, the cap, the currency, the committed total and ceiling at
+the time, and what the originating task's state was.
+
+**Closing the step is conditional and never raises.** The campaign is the step's
+deliverable, so the function moves the task `needs_user -> approved`, the arc
+`20260815220000` added for the answered-question path. If the step already moved,
+because the owner answered its question card or a replan cancelled it, the
+campaign is still created and the skip is recorded in the event. Raising there
+would strand the approval permanently: the card already reads `approved`, so every
+retry meets the same state and the campaign the owner authorised would never
+exist.
+
+**One defect shipped and the suite caught it.** The budget guard was written as
+`jsonb_typeof(payload->'budgetCap') <> 'number'`. For an absent key that is
+`NULL <> 'number'`, which is NULL and not true, so the guard did not fire, every
+later comparison inherited the NULL, and the insert wrote `budget_cap = NULL` at
+state `ready`: a campaign that authorised nothing while reporting itself
+authorised. It is `is distinct from` now, fixed at source and re-applied rather
+than patched by a follow-up so the migration replays from scratch. This is the
+NULL twin of the `NaN` case `spend.ts` guards on the TypeScript side, and both
+have the same shape, which is the one this repository keeps meeting: not an error,
+not a type mismatch, a wrong answer wearing the shape of a right one.
+
+**Applied and verified against the live database: `supabase/tests/materialise_campaign.sql`,
+41/41**, including both directions of the ceiling boundary (exactly on it is
+authorised, one cent past it is refused), that a terminal sibling holds none of
+the ceiling and a null-cap sibling contributes nothing, cross-room tenancy raising
+`42501`, and that every refusal leaves no campaign behind. Advisors clean with no
+new lints.
+
+`private.campaign_state_is_terminal` also gains `EXECUTE` for `service_role`. It
+was revoked from `public` when created and never granted to anybody, which was
+correct while only a definer trigger called it; a `security invoker` function
+needs it in its own right, and without the grant every commit would have failed
+with `permission denied for function` at the spend check. The same pairing
+`20260813130000` had to correct after `20260813120000`.
+
 ### Artifacts can be files now (`20260829124000`)
 
 `artifacts.storage_path` has existed since `20260813160000` and travelled the whole way: the column, `Artifact.storagePath` in `packages/contracts`, the read in `apps/api/src/routes/projects.ts`, and an arm in the project panel that said "This one is a file rather than text." **Nothing could ever put anything there.** There was no bucket, no policy on `storage.objects`, no route that could hand a file back, and no writer, so that UI arm was reachable only by a row nobody could create.
@@ -77,6 +148,40 @@ campaign project exists, and one room carries many projects. Project scoping
 would mean re-authorising the same account for every goal posted in the same
 workspace.
 
+**It has its writer now, and no migration came with it.** The connect flow uses
+the table, the enum, the index, the grants and the unique constraint exactly as
+they landed: the guards arrived before the writer on purpose and needed no
+adjustment when it came, which is the outcome that ordering is supposed to
+produce. Three things about the writer belong here rather than in the module doc.
+
+`unique (room_id, provider, external_account_id)` is what the write relies on:
+`writeConnection` upserts on it, so a second authorisation for an account already
+connected updates the row instead of creating a rival, and "which token do we
+use" keeps one answer. It is also the bound on replaying a signed `state` inside
+its lifetime, since a repeated successful exchange lands on the same row.
+
+**Reconnecting is the same write.** The upsert states `status = 'active'` rather
+than leaving whatever was there, because an expired or revoked connection coming
+back is the ordinary path and a row that stayed `revoked` after a fresh grant
+would be refused by `checkScopes` on a credential that is perfectly good.
+
+**Disconnecting is an update, never a delete.** `status = 'revoked'` with
+`access_token`, `refresh_token` and `token_expires_at` all nulled. The row is the
+record that this account was connected, on this date, by this person; the
+credential is not. Deleting would destroy the first to achieve the second.
+
+**The table audits itself from `apps/api`, because it has no trigger.**
+`campaigns` records its transitions through `private.guard_campaign_transition`;
+this table has nothing equivalent, so connecting and disconnecting would
+otherwise be the only acts in the marketing domain with no `events` row.
+`auditConnection` writes `channel.connected` / `channel.revoked` with
+`project_id` **null**, which is the case that column is nullable for: a
+connection belongs to a room and no project. `actor_id` is passed explicitly,
+since the `auth.uid()` idiom reads null under the service key and this whole path
+runs under it. The payload carries the scopes and the account id and never a
+token, because an audit trail holding the credential would reintroduce, in a
+table with no policy of its own, exactly what the projection withholds.
+
 **`campaign_outcomes` is append-only by grant, including for `service_role`.** An
 outcome row is flywheel training evidence, and a training signal that can be
 rewritten after the fact is not evidence of anything. A correction is a new row
@@ -116,12 +221,46 @@ than regenerating: a second generation is a different artifact from the one a
 person said yes to, and the difference would reach the world before anyone saw
 it.
 
+**`20260829150000` adds the lifecycle guard the table shipped without**, in the
+same change as its first writer. There was no state machine on `ad_entities`
+originally and that was right at the time: no writer existed whose transitions
+could be wrong, and a machine enforcing arcs nobody could take is the `task_deps`
+defect this repository has already paid for. The map is
+`draft -> publishing|archived`, `publishing -> live|failed|rejected`,
+`live -> paused|rejected|archived`, `paused -> live|archived`,
+`rejected -> archived`, with `archived` and `failed` terminal.
+
+**`rejected` is deliberately not terminal.** Revise-and-resubmit produces a new
+entity, so the disapproved one is closed out rather than resurrected; making it
+terminal would strand a row forever in a state that reads like an unanswered
+question. `rejected` is reachable from `live` as well as from `publishing`,
+because a platform can disapprove an entity that is already running.
+
+The same migration makes **`external_id` write-once**, which had been a column
+comment since the table was created and is now a second BEFORE UPDATE trigger.
+Separate from the lifecycle guard because the two bind on different conditions:
+the lifecycle guard fires only on a state change, and write-once has to hold on
+every update. Its `when` clause is the whole check, which is what keeps the
+resume path free: a publisher re-driving a crashed publish writes the **same** id
+back, and an identical value is not a change. Overwriting it with a different one
+orphans a live object that is still spending, with nothing left in our database
+pointing at it.
+
+Neither helper is granted to `service_role`. Both trigger functions are
+`SECURITY DEFINER`, so the writer never needs EXECUTE on their internals, which
+is the `20260813130000` / `20260815200000` trap avoided by construction rather
+than by a grant. Note `private.campaign_transition_allowed` is still granted to
+nobody for the same reason, so Node relies on the trigger and never consults the
+map directly.
+
 Two idempotency keys are declared now and written later, so their writers arrive
 to a column instead of to a migration: `campaigns.source_embed_id` (one approved
 card, one campaign) and the unique
 `(campaign_id, period_start, period_end, source)` on `campaign_outcomes` (the
 same period pulled twice is one row). `ad_entities.idempotency_key` is the DB
-half of rules 9 and 12 for the publish side effect.
+half of rules 9 and 12 for the publish side effect, **and it has its writer now**:
+the sweep derives `publish:<campaignId>:campaign` from the campaign id alone, so a
+retry collides here instead of creating a second row.
 
 **`campaigns.budget_cap` is nullable and NULL means nothing authorised, never
 unlimited**, verbatim the stance `projects.budget_ceiling` takes. The two compose

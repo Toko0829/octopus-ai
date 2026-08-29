@@ -136,11 +136,39 @@ export const ProposeReplanProposal = z.object({
 });
 export type ProposeReplanProposal = z.infer<typeof ProposeReplanProposal>;
 
+/**
+ * A campaign the core proposes for the owner's authorisation.
+ *
+ * **There is no budget field, and its absence is the design.** The core says what
+ * to run and where; how much to spend is the owner's to type onto the card. A
+ * number a model produced and a number a person authorised are indistinguishable
+ * once they are both `budget_cap` on a row, and this is the one surface where
+ * that difference is the entire point. Adding the field "for convenience" later
+ * would remove the property silently, so it is stated here rather than left to be
+ * inferred from the fact that nothing sets it.
+ *
+ * `citations` are 1-based indices into the response's own `citations`, matching
+ * `ProposePlanProposal` rather than `WriteArtifactProposal`'s labels: this card
+ * renders the sources beside the claim, so an index the reader can follow is what
+ * it needs.
+ */
+export const ProposeCampaignProposal = z.object({
+  kind: z.literal('propose_campaign'),
+  task_id: z.string().uuid(),
+  name: z.string().min(1).max(200),
+  objective: z.string().max(500).optional(),
+  channel: z.enum(['meta', 'google', 'email', 'organic_social']),
+  summary: z.string().min(1).max(800),
+  citations: z.array(z.number().int().positive()).max(8).default([]),
+});
+export type ProposeCampaignProposal = z.infer<typeof ProposeCampaignProposal>;
+
 export const Proposal = z.discriminatedUnion('kind', [
   PostMessageProposal,
   ProposePlanProposal,
   WriteArtifactProposal,
   ProposeReplanProposal,
+  ProposeCampaignProposal,
 ]);
 export type Proposal = z.infer<typeof Proposal>;
 
@@ -150,6 +178,7 @@ export const Citation = z.object({
   url: z.string().nullable().optional(),
   effective_date: z.string().nullable().optional(),
 });
+export type Citation = z.infer<typeof Citation>;
 
 export const PlanResponse = z.object({
   proposals: z.array(Proposal),
@@ -525,6 +554,68 @@ export async function requestExecution(
           project_id: input.projectId,
           // The retrieval scope, so a step is written from this workspace's own
           // business documents as well as the shared corpus.
+          room_id: input.roomId ?? null,
+        },
+      }),
+    });
+
+    if (!res.ok) throw new AiServiceError(`AI service returned ${res.status}`, 'status');
+
+    const parsed = PlanResponse.safeParse(await res.json());
+    if (!parsed.success) {
+      throw new AiServiceError(
+        `AI service response did not match the contract: ${parsed.error}`,
+        'contract',
+      );
+    }
+    return parsed.data;
+  } catch (err) {
+    if (err instanceof AiServiceError) throw err;
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new AiServiceError(`AI service timed out after ${timeoutMs}ms`, 'timeout');
+    }
+    throw new AiServiceError(
+      err instanceof Error ? err.message : 'AI service unreachable',
+      'unreachable',
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Ask the reasoning core to draft a campaign for one step that is waiting on the
+ * owner's authorisation.
+ *
+ * Shaped like `requestExecution` rather than `requestReplan` because the input is
+ * one task: the core retrieves narrowly for that step, room-scoped, exactly as
+ * `/execute` does. The difference is what comes back. `/execute` produces a
+ * deliverable the critic reviews; this produces a proposal only a person can
+ * accept, so the core is expected to decline rather than guess when the step is
+ * not a campaign or the sources do not support a channel.
+ */
+export async function requestCampaignDraft(
+  baseUrl: string,
+  input: ExecuteInput,
+  timeoutMs = DEFAULT_PLAN_TIMEOUT_MS,
+): Promise<PlanResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${baseUrl}/campaign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        task_id: input.taskId,
+        title: input.title,
+        detail: input.detail,
+        stage: input.stage,
+        context: input.context ?? [],
+        trace: {
+          agent_run_id: input.agentRunId,
+          project_id: input.projectId,
           room_id: input.roomId ?? null,
         },
       }),
