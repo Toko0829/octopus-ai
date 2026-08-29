@@ -649,41 +649,11 @@
   font-weight: 500;
 }
 
-/* ============================ Buttons ============================ */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--text-sm);
-  font-weight: 500;
-  padding: 8px 14px;
-  border-radius: var(--r-md);
-  border: 1px solid transparent;
-  transition:
-    background var(--dur-fast),
-    border-color var(--dur-fast),
-    transform var(--dur-fast);
-}
-.btn:active {
-  transform: translateY(1px);
-}
-.btn-primary {
-  background: var(--accent);
-  color: var(--on-accent);
-}
-.btn-primary:hover {
-  background: var(--teal-500);
-}
-.btn-ghost {
-  background: transparent;
-  border-color: var(--border);
-  color: var(--text-secondary);
-}
-.btn-ghost:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
-  background: var(--surface-hover);
-}
+/* The `.btn` family moved to globals.css when the connect flow's two pages
+   needed it. It is a design-system primitive that the chat shell merely happened
+   to own first, and duplicating it would have been two copies of a button that
+   must agree. `.icon-btn` stays here: it is chat chrome. */
+
 .icon-btn {
   width: 32px;
   height: 32px;
@@ -1880,4 +1850,90 @@ a.work-action {
   margin: 0;
   font-size: var(--text-xs);
   color: var(--red-500);
+}
+
+/* ---------------------------------------------- connected accounts
+
+   Room-scoped rather than per project, because one workspace connects an ad
+   account once and every project in it uses that connection. Sits above the
+   project list for the same reason.
+
+   Status is a word plus a shape, never a colour on its own (rule 15): the dot
+   changes fill AND the label changes text, so the two carry the same meaning
+   independently. */
+.work-connections {
+  margin: 0 0 18px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-hover);
+}
+.work-connections-title {
+  margin: 0 0 8px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+.work-connection-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.work-connection {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.work-connection:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.work-connection-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.work-connection-name {
+  font-weight: 600;
+  font-size: var(--text-base);
+}
+.work-connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.work-connection-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.work-connection-status.active .work-connection-dot {
+  background: var(--accent);
+}
+.work-connection-status.expired .work-connection-dot {
+  background: var(--warn);
+}
+.work-connection-detail {
+  margin: 4px 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.work-connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.work-connection-actions .work-empty {
+  flex-basis: 100%;
+  margin: 0;
 }

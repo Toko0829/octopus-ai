@@ -10,6 +10,7 @@ import {
   resolveStep,
   setProjectBudget,
 } from '../../lib/api-client';
+import { ConnectedAccounts } from './ConnectedAccounts';
 
 /**
  * What happened after a plan was approved.
@@ -168,6 +169,12 @@ export function ProjectPanel({ roomId, canAct, onClose }: Props) {
             {error}
           </p>
         )}
+
+        {/* Room-scoped, so it sits outside the project list rather than inside
+            it. One workspace connects an ad account once and every project in it
+            uses that connection; rendering this per project would suggest
+            otherwise and invite somebody to connect the same account twice. */}
+        <ConnectedAccounts roomId={roomId} canAct={canAct} />
 
         {/* Loading and empty are different answers and are never collapsed into
             one. "Nothing here" while a request is still in flight is a false

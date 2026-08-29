@@ -854,6 +854,73 @@ export const SetProjectBudgetBody = z.object({
 });
 export type SetProjectBudgetBody = z.infer<typeof SetProjectBudgetBody>;
 
+/* ----------------------------------------------- channel connections */
+
+/** Mirrors `public.channel_connection_status`. */
+export const ChannelConnectionStatus = z.enum(['active', 'expired', 'revoked']);
+export type ChannelConnectionStatus = z.infer<typeof ChannelConnectionStatus>;
+
+/**
+ * A connected account, **as a member is allowed to see it**.
+ *
+ * This is the projection `20260829121000` promised and deliberately did not
+ * build: `channel_connections` holds `access_token` and `refresh_token`, RLS
+ * filters rows and not columns, and so the table carries no client policy and no
+ * client grant at all. A member's legitimate view, "Meta connected, scopes X,
+ * expires Y", could therefore only ever be an API projection.
+ *
+ * **The absence of the token fields is the security property**, not an
+ * abbreviation for the panel's convenience. Because this type is what the route
+ * returns, adding a token to the response later is a change somebody has to make
+ * on purpose, in this file, where it reads as what it is. Keep it that way: if a
+ * future column needs showing, add the column, never the credential.
+ */
+export const ChannelConnection = z.object({
+  id: z.string().uuid(),
+  /** The registry key in `packages/marketing`, not a channel. `fake` lives here. */
+  provider: z.string(),
+  channel: MarketingChannel,
+  /** The platform's own account id. Null until a provider reveals one. */
+  externalAccountId: z.string().nullable(),
+  /** What the platform granted, which is not always what was asked for. */
+  grantedScopes: z.array(z.string()),
+  status: ChannelConnectionStatus,
+  /** Null when the provider issues a token that does not age out. */
+  tokenExpiresAt: z.string().nullable(),
+  connectedAt: z.string(),
+});
+export type ChannelConnection = z.infer<typeof ChannelConnection>;
+
+/**
+ * Beginning an authorisation. The provider and channel are the only things the
+ * caller chooses; everything that makes the round trip safe (the signed state,
+ * the redirect URI, the scopes asked for) is decided server-side, because a
+ * client that could name its own redirect URI could send the code somewhere else.
+ */
+export const StartConnectionBody = z.object({
+  provider: z.string().min(1),
+  channel: MarketingChannel,
+});
+export type StartConnectionBody = z.infer<typeof StartConnectionBody>;
+
+export const StartConnectionResponse = z.object({
+  /** Where to send the browser. Opaque to the client. */
+  authorizeUrl: z.string().url(),
+});
+export type StartConnectionResponse = z.infer<typeof StartConnectionResponse>;
+
+/**
+ * Finishing one. `error` carries the platform's own refusal, which for a person
+ * clicking Cancel is `access_denied` and arrives with no code at all, so both
+ * are optional and the route refuses a body carrying neither.
+ */
+export const CompleteConnectionBody = z.object({
+  state: z.string().min(1),
+  code: z.string().min(1).optional(),
+  error: z.string().min(1).optional(),
+});
+export type CompleteConnectionBody = z.infer<typeof CompleteConnectionBody>;
+
 const ProjectParams = z.object({ projectId: z.string().uuid() });
 
 export const contract = c.router(

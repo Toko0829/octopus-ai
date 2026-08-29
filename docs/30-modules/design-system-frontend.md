@@ -246,6 +246,34 @@ The reveals are **CSS transitions driven by one class**, not per-element JavaScr
 
 **Not verified in this pass:** the animation itself. The browser pane was hidden while this was built, so the page produced no frames, which means `IntersectionObserver` never fired, CSS transitions never advanced, and screenshots timed out. Structure, computed styles, contrast, layout at 375 and 1280, and the build were all checked; **the motion was confirmed only by observing the component's state advance through its loop in the DOM**, not by watching it. Worth re-checking by eye.
 
+## The connect flow's two pages
+
+`/connections/fake-consent` and `/connections/callback` are the first surfaces
+outside `/app` and `/sign-in`, and they follow the sign-in precedent rather than
+the landing one: Light Editorial, quiet, no picture. **The moment somebody is
+deciding whether to hand over access to an account is not the moment for an
+interface with opinions.**
+
+**Cancel comes before Approve, in the DOM and on screen.** On a page whose entire
+job is asking permission, the refusal has to be at least as reachable as the
+approval. They are the same size; only weight distinguishes them.
+
+**The consent screen lets scopes be unticked**, and says what that costs in
+words. A person who removes a permission is told the steps needing it will stop
+and ask them, rather than discovering it as a failure three days later.
+
+In the panel, `ConnectedAccounts` sits **above** the project list because a
+connection is room-scoped: one workspace connects an account once and every
+project uses it. Status is a word plus a dot and never a colour alone (rule 15),
+and expired reads differently from disconnected because the actions differ. An
+empty list says plainly that Octopus cannot publish or spend anywhere until an
+account is connected, which is the honest version of an empty state on a surface
+about permissions.
+
+**The fake is labelled as a test provider on both surfaces.** Somebody about to
+click through a consent screen should know what is on the other side of it, and
+"fake" appearing as a provider string in a row is not that.
+
 ## Token implementation
 
 CSS variables in **two** layers today, primitive → semantic. Two skins exist (**Light Editorial** default, **Dark Command Deck**); **Warm Chat** and the per-business accent are specified and not built. Components never hardcode primitives.

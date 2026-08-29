@@ -331,6 +331,50 @@ in TypeScript and `checkSpendCap` would have refused every campaign forever.
 `ProjectDetail` gained `budgetCeiling`, `currency`, `committedBudget` and
 `campaigns` so the panel can show the same arithmetic the approval performs.
 
+## Connecting a channel account
+
+The writer `channel_connections` was built for, and the second dead end of the
+shape the campaign card closed. `risk.py` clamps on `connect`, `authorise` and
+`credentials`, so a "connect your ad account" step is parked at `needs_user`; the
+campaign drafter is asked and correctly declines, because an account connection
+is not a campaign. The owner was told a step needed them and given nowhere to go.
+
+**The redirect lands on the web origin, not here**
+([ADR-0012](../40-adr/0012-oauth-callback-on-the-web-origin.md)). A platform
+redirects a browser, and that browser carries the Supabase session, so
+`/connections/callback` in `apps/web` can prove who is finishing the flow and
+hand the code inward through the BFF. Terminating at Fastify would have made this
+the only unauthenticated mutating route in the system, holding one HMAC and
+writing to the one table with no RLS behind it.
+
+Four routes, all authenticated. `POST /api/rooms/:roomId/connections/start` signs
+the state and returns the provider's authorize URL; the caller names only the
+provider and the channel, because a client that could name its own redirect URI
+could send somebody's code wherever it liked. `POST …/connections/callback`
+verifies the state, exchanges the code and writes the row.
+`GET …/connections` is the member projection. `DELETE …/connections/:id` revokes.
+Reading is open to any member; the other three are owner-only.
+
+**The state is signed rather than stored** (`lib/oauth-state.ts`): an HMAC over
+the room, the user, the provider, the channel, an expiry and a nonce. No
+`oauth_states` table, because a row written by one request and read by one other
+is a schema whose only reader is itself. Verification order is the safety
+property and is the opposite of the convenient one: signature first, since every
+field is attacker-supplied until it checks out, then expiry so a stale-but-genuine
+state gets its own answer, then the bindings.
+
+**This is the one route group where RLS defends nothing.** `channel_connections`
+has no grant to `authenticated`, so the read cannot run as the caller. Membership
+is established separately first, by reading the room as the caller so RLS decides
+visibility, and only then does a service-role client touch the table through
+`lib/connections.ts`, whose column list omits both token columns and is asserted
+in the tests.
+
+`ChannelConnection` in `packages/contracts` **has no token field**, so a
+projection that started returning one would fail to typecheck before it reached a
+browser. `packages/marketing` gained `ChannelAuthProvider`, its fake, a registry
+whose `carriesRealCredentials` flag the writer refuses on, and `checkScopes`.
+
 ## Changing a plan that is already running
 
 `POST /api/projects/:projectId/replan` takes the owner's reason and returns `202`.

@@ -75,6 +75,30 @@ const EnvSchema = z.object({
    */
   CRAWL_MAX_PER_TICK: z.coerce.number().int().positive().default(2),
 
+  /**
+   * Signing key for the OAuth `state` parameter.
+   *
+   * **Optional in this schema and required at the point of use**, which is a
+   * deliberate pair rather than an oversight. Making it required would stop
+   * every deployment from booting for a feature most of them are not using;
+   * giving it a default would be worse than either, because a constant checked
+   * into a repository signs a state anybody can forge, and the forgery is
+   * exactly what this value exists to prevent. So a missing secret disables
+   * connecting an account, loudly, and breaks nothing else.
+   *
+   * 32 bytes minimum. `openssl rand -hex 32` or `crypto.randomBytes(32)`.
+   */
+  OAUTH_STATE_SECRET: z.string().min(32).optional(),
+  /**
+   * How long an authorisation may sit half-finished before the state expires.
+   *
+   * Ten minutes covers a person reading a consent screen carefully; it does not
+   * cover a state pasted out of a log a day later. Short because there is no
+   * server-side record to revoke: the signature is the whole control, so its
+   * lifetime is the whole window.
+   */
+  OAUTH_STATE_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+
   // Services.
   API_PORT: z.coerce.number().int().positive().default(3001),
   API_HOST: z.string().default('0.0.0.0'),

@@ -60,12 +60,17 @@ The `@octopus/core` split applied here: reasoning a reader can check without run
 
 `@octopus/contracts` became a dependency with the campaign card, and exactly one type moved: **`MarketingChannel`**, which the card payload carries, the action route reads back and the project panel renders, so it finally has a boundary to share. `adapter.ts` re-exports it rather than declaring a second copy, because two enums that must agree are two enums that can disagree, and this one is checked against a Postgres enum on one side and a card payload on the other. `CreateCampaignSpec` and the rest of the seam still face an adapter rather than a wire and stay here; moving them now would be the unused edge rule 20 asks us not to add.
 
-| File                  | What it decides                                                                  |
-| --------------------- | -------------------------------------------------------------------------------- |
-| `spend.ts`            | `checkSpendCap`: may this campaign be authorised for this amount                 |
-| `adapter.ts`          | `AdChannelAdapter`, the seam every platform sits behind, and its Zod I/O shapes  |
-| `fake-adapter.ts`     | A complete deterministic implementation of that seam, with no platform behind it |
-| `adapter-registry.ts` | Which providers exist, checked in rather than stored                             |
+| File                    | What it decides                                                                  |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `spend.ts`              | `checkSpendCap`: may this campaign be authorised for this amount                 |
+| `adapter.ts`            | `AdChannelAdapter`, the seam every platform sits behind, and its Zod I/O shapes  |
+| `fake-adapter.ts`       | A complete deterministic implementation of that seam, with no platform behind it |
+| `adapter-registry.ts`   | Which providers exist, checked in rather than stored                             |
+| `auth.ts`               | `ChannelAuthProvider`, the seam an account connection sits behind                |
+| `fake-auth-provider.ts` | A deterministic implementation of it, whose consent screen is our own page       |
+| `fake-consent-code.ts`  | The code format, dependency-free because the consent screen runs in a browser    |
+| `auth-registry.ts`      | Which providers may be connected, plus `carriesRealCredentials`                  |
+| `scopes.ts`             | `checkScopes`: may this connection do the thing about to be attempted            |
 
 ### The spend cap
 
@@ -121,7 +126,7 @@ Nine were specified from Phase 0 and this table says which of them exist, becaus
 | Entity                 | Status                                                                           | Notes                                                                                                              |
 | ---------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `campaigns`            | ✅ live `20260829120000`, **written by `materialise_campaign` `20260829140000`** | One channel, one authorised cap, one lifecycle. `budget_cap` NULL means nothing authorised, never unlimited        |
-| `channel_connections`  | ✅ live `20260829121000`                                                         | OAuth tokens, **room-scoped**. No client policy and no client grant: RLS filters rows, not columns                 |
+| `channel_connections`  | ✅ live `20260829121000`, **written by the connect flow**                        | OAuth tokens, **room-scoped**. No client policy and no client grant: RLS filters rows, not columns                 |
 | `ad_entities`          | ✅ live `20260829122000`                                                         | The campaign → ad_set → ad tree. `rejected` is entity-level; `spec` is the approved brief the publisher reads      |
 | `campaign_outcomes`    | ✅ live `20260829123000`                                                         | Measured performance. Append-only including for `service_role`; a correction is a new row with `source = 'manual'` |
 | `content_items`        | ⏳ deferred (slice 6+)                                                           | Needs a producer first. A schema with no writer is this repository's most-documented defect class                  |
@@ -130,7 +135,88 @@ Nine were specified from Phase 0 and this table says which of them exist, becaus
 | `landing_pages`        | ⏳ deferred (slice 6+)                                                           | —                                                                                                                  |
 | `creative_performance` | ⏳ deferred (slice 6+)                                                           | Depends on `creative_assets` existing to attach to                                                                 |
 
-**`campaigns` has its writer now; the other three still do not, and that remains deliberate.** The OAuth callback (`channel_connections`), the publish executor (`ad_entities`) and the metrics puller (`campaign_outcomes`) are the next slices. Guards land with their tables here because the recorded failure in this repository is the other order: `tasks.risk_tier` was unreachable for its entire life, and `task_deps` held no row for two weeks while enforcing an empty set.
+**Two of the four have writers now; `ad_entities` and `campaign_outcomes` still do not, and that remains deliberate.** The publish executor and the metrics puller are the next slices. Guards land with their tables here because the recorded failure in this repository is the other order: `tasks.risk_tier` was unreachable for its entire life, and `task_deps` held no row for two weeks while enforcing an empty set.
+
+## Connecting a channel account
+
+The second dead end of the same shape the campaign card closed, one tool over.
+`risk.py` clamps on `connect`, `authorise` and `credentials`, so a step reading
+"connect your Meta ad account" becomes `high_risk` and `routeTask` parks it at
+`needs_user`. `produceCampaignCards` then asks the reasoning core, which
+correctly declines because an account connection is not a campaign, and logs
+that the step "stays with the owner". The owner was told a step needed them and
+given nowhere to go. There is somewhere now.
+
+**The surface is the project panel, not a card, and that is a decision.**
+Connections are **room-scoped on purpose**: one ad account serves every project
+in a workspace, so a per-task card would mean re-authorising the same account for
+every goal somebody posts. It is the wrong shape a second time as well. Every
+card in this product is approve-or-reject where approving commits through one
+function, and approving a connection cannot commit anything, because the
+credential does not exist until after a redirect round trip. A card whose state
+advanced from somewhere other than the action route would give `action_embeds` a
+second set of semantics for one component. So `ConnectedAccounts` sits in the
+panel, above the project list, and the action route needs no change: its
+allow-list already refuses any component it does not know.
+
+**The callback lands on the web origin** ([ADR-0012](../40-adr/0012-oauth-callback-on-the-web-origin.md)).
+A platform redirects a browser, and that browser carries the person's session, so
+the party finishing the flow is provably the signed-in user and the signed
+`state` can be bound to them. Terminating at Fastify would have created the only
+unauthenticated mutating route in the system, holding one HMAC and writing to the
+one table with no RLS behind it.
+
+**The state is signed, not stored.** `lib/oauth-state.ts` HMACs the room, the
+user, the provider, the channel, an expiry and a nonce. No `oauth_states` table:
+a row written by one request, read by one other and dead ten minutes later is a
+schema whose only reader is itself, which is the defect class this repository has
+paid for twice. What that costs is replay inside the TTL, which is bounded by the
+authorisation code being single-use at the provider and by
+`unique (room_id, provider, external_account_id)` turning a second successful
+exchange into an update rather than a rival row. That trade is written into the
+file rather than assumed.
+
+**The projection is the entire control.** `channel_connections` has no grant to
+`authenticated`, so unlike every other read in this codebase this one cannot run
+as the caller and cannot rely on RLS. Membership is established first by reading
+the room as the caller, and only then does a service-role client touch the table
+through `lib/connections.ts`, whose column list omits both token columns. That
+list is asserted directly in the tests, because a `select *` written while
+debugging would be a silent, total credential leak to every member of the room.
+
+**Disconnecting is a revocation, not a delete.** `status = 'revoked'` with both
+token columns nulled: "this account was connected on this date, by this person"
+is audit trail worth keeping and the credential is not.
+
+### `packages/marketing` grew a second seam
+
+`ChannelAuthProvider` (`auth.ts`) is separate from `AdChannelAdapter` because the
+two change for different reasons: a platform can rewrite its campaign API without
+touching its OAuth endpoints, and can move to a new consent flow without changing
+one ad call. It is written before any real provider for the same reason the ad
+seam was, and `AuthError` extends `AdapterError`'s kinds with `access_denied`,
+which is modelled as a value rather than a throw because somebody declining on a
+consent screen is an ordinary outcome of asking.
+
+`checkScopes` (`scopes.ts`) is rule 7 applied to permission rather than to money,
+and it makes real the promise `granted_scopes` was created with: tool code checks
+a needed scope before the call rather than learning it from a 403. Status
+outranks scopes, so a revoked connection does not send somebody to grant a
+permission they already granted.
+
+**`auth-registry.ts` carries one field its sibling does not.**
+`carriesRealCredentials` is the enforced half of the plaintext-token accepted
+risk, and `writeConnection` refuses on it. What was a sentence in
+[security-compliance.md](../10-architecture/security-compliance.md) is now a
+failing write, so the first person to add Meta hits it before their token reaches
+a plain column rather than after.
+
+**The fake's consent screen is a page in our own web app.** That colocation is
+honest rather than a shortcut: this provider is not pretending to be a platform,
+it is how the whole three-legged round trip, including a person clicking Cancel,
+is exercisable without an account anywhere. Its scopes are tickable, because a
+platform grants what it chooses rather than what was asked, and a fake that
+always granted everything would leave `checkScopes` exercised only by unit tests.
 
 ## The campaign card
 

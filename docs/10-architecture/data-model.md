@@ -148,6 +148,40 @@ campaign project exists, and one room carries many projects. Project scoping
 would mean re-authorising the same account for every goal posted in the same
 workspace.
 
+**It has its writer now, and no migration came with it.** The connect flow uses
+the table, the enum, the index, the grants and the unique constraint exactly as
+they landed: the guards arrived before the writer on purpose and needed no
+adjustment when it came, which is the outcome that ordering is supposed to
+produce. Three things about the writer belong here rather than in the module doc.
+
+`unique (room_id, provider, external_account_id)` is what the write relies on:
+`writeConnection` upserts on it, so a second authorisation for an account already
+connected updates the row instead of creating a rival, and "which token do we
+use" keeps one answer. It is also the bound on replaying a signed `state` inside
+its lifetime, since a repeated successful exchange lands on the same row.
+
+**Reconnecting is the same write.** The upsert states `status = 'active'` rather
+than leaving whatever was there, because an expired or revoked connection coming
+back is the ordinary path and a row that stayed `revoked` after a fresh grant
+would be refused by `checkScopes` on a credential that is perfectly good.
+
+**Disconnecting is an update, never a delete.** `status = 'revoked'` with
+`access_token`, `refresh_token` and `token_expires_at` all nulled. The row is the
+record that this account was connected, on this date, by this person; the
+credential is not. Deleting would destroy the first to achieve the second.
+
+**The table audits itself from `apps/api`, because it has no trigger.**
+`campaigns` records its transitions through `private.guard_campaign_transition`;
+this table has nothing equivalent, so connecting and disconnecting would
+otherwise be the only acts in the marketing domain with no `events` row.
+`auditConnection` writes `channel.connected` / `channel.revoked` with
+`project_id` **null**, which is the case that column is nullable for: a
+connection belongs to a room and no project. `actor_id` is passed explicitly,
+since the `auth.uid()` idiom reads null under the service key and this whole path
+runs under it. The payload carries the scopes and the account id and never a
+token, because an audit trail holding the credential would reintroduce, in a
+table with no policy of its own, exactly what the projection withholds.
+
 **`campaign_outcomes` is append-only by grant, including for `service_role`.** An
 outcome row is flywheel training evidence, and a training signal that can be
 rewritten after the fact is not evidence of anything. A correction is a new row

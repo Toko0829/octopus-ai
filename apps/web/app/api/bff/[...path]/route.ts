@@ -72,3 +72,16 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ path: 
 export async function PATCH(request: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
   return proxy(request, (await ctx.params).path);
 }
+
+/**
+ * Disconnecting a channel account is the first DELETE, and it walked straight
+ * into the trap the note above describes.
+ *
+ * Worth keeping both lines rather than merging them into one comment about
+ * verbs: the PATCH note was written as a warning and this is the warning coming
+ * true one slice later, which is a better argument for reading it than the
+ * warning was.
+ */
+export async function DELETE(request: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
+  return proxy(request, (await ctx.params).path);
+}

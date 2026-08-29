@@ -106,9 +106,28 @@ its `workspace:*` dependencies, and fails the build naming any whose
 another check on every push ([no new CI](../../AGENTS.md) is a standing
 preference), it costs 0.3s, and it was verified in both directions: green listing
 all four packages, and red naming `@octopus/marketing` when the COPY line is
-taken away. `apps/web` needs no equivalent today because it declares only
-`@octopus/config` and `@octopus/contracts`, both copied; if it grows a third, the
-same guard belongs there.
+taken away. `apps/web` grew a third workspace dependency in the very next slice, so it
+carries the same guard now. The connect flow's fake consent screen imports
+`@octopus/marketing/fake-consent-code`, a subpath export that exists precisely
+because the rest of that package reaches for `node:crypto` and a browser bundle
+must not. **The sentence that used to end this paragraph said "if it grows a
+third, the same guard belongs there", and it grew one within the hour**, which is
+a better argument for adding a guard when you notice the gap than for writing
+down that somebody should.
+
+**One variable has no default and is not allowed one.** `OAUTH_STATE_SECRET`
+signs the OAuth `state` parameter, which is the only thing standing between a
+workspace and somebody else's ad account: without it, anybody can send a
+signed-in person's browser to our callback carrying a code for an account they
+never chose. It is **optional in the env schema and required at the point of
+use**, which is a deliberate pair. Requiring it would stop every deployment from
+booting for a feature most of them do not use; defaulting it would be worse than
+either, because a signing key checked into a repository signs a state anyone can
+forge. So a missing secret refuses to connect an account, naming the variable,
+and breaks nothing else. Generate one per deployment with `openssl rand -hex 32`.
+`OAUTH_STATE_TTL_SECONDS` (default 600) bounds how long a half-finished
+authorisation stays valid, and it is short because the signature is the whole
+control: there is no server-side record to revoke.
 
 **Credentials come from `apps/api/.env`, read rather than copied**, so there is
 no second file holding a service key. The `ai` service is deliberately given that
