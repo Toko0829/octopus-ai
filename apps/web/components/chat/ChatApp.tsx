@@ -391,7 +391,7 @@ export function ChatApp({
           onAddSource={canAct ? () => setSourceOpen(true) : undefined}
         />
       </div>
-      <ContextPanel members={uiMembers} />
+      <ContextPanel members={uiMembers} roomId={roomId} canAct={canAct} />
       <CommandPalette
         open={cmdkOpen}
         channels={uiChannels}

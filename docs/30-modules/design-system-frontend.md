@@ -262,13 +262,28 @@ approval. They are the same size; only weight distinguishes them.
 words. A person who removes a permission is told the steps needing it will stop
 and ask them, rather than discovering it as a failure three days later.
 
-In the panel, `ConnectedAccounts` sits **above** the project list because a
-connection is room-scoped: one workspace connects an account once and every
-project uses it. Status is a word plus a dot and never a colour alone (rule 15),
-and expired reads differently from disconnected because the actions differ. An
-empty list says plainly that Octopus cannot publish or spend anywhere until an
-account is connected, which is the honest version of an empty state on a surface
-about permissions.
+`ConnectedAccounts` lives in the **room rail**, and it started out in the wrong
+place. It was first built into the project panel, which was structurally
+defensible (a connection is room-scoped and that panel was the only other
+room-scoped surface) and wrong in practice for a reason the structure hid: that
+panel is called "The work", it opens as a modal from the top bar, and nobody
+looking for account settings opens it. The first person to use the feature could
+not find it. Putting it behind a project view also implies a connection belongs
+to a project, which is the exact impression room-scoping exists to avoid.
+
+The rail is the room's own column, always visible, already holding the other
+room-level fact: who is in it. An account the workspace is connected to is the
+same kind of fact, so it sits beside the members rather than behind a button.
+**This is the second surface in this module to move for the same reason**, and
+the pattern is worth naming: a placement that is defensible from the data model
+can still be unreachable in the product, and only the second question is the one
+a user experiences.
+
+Status is a word plus a dot and never a colour alone (rule 15), and expired reads
+differently from disconnected because the actions differ. An empty list says
+plainly that Octopus cannot publish or spend anywhere until an account is
+connected, which is the honest version of an empty state on a surface about
+permissions.
 
 **The fake is labelled as a test provider on both surfaces.** Somebody about to
 click through a consent screen should know what is on the other side of it, and
