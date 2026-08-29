@@ -42,9 +42,25 @@ supabase/       migrations, RLS policies, seed, edge functions
 ### All three services run under one compose file
 
 `docker-compose.yml` at the repo root stands up `web`, `api` and `ai` on one
-network: `docker compose up --build`, then <http://localhost:3000>. Postgres is
+network: `docker compose up`, then <http://localhost:3000>. Postgres is
 absent on purpose, since Supabase is managed and every service reaches it over
 the internet, so there is nothing local to stand up.
+
+**Every service sets `pull_policy: build`, because the default let a healthy
+stack serve old code.** Compose defaults to `missing`, which builds only when no
+image with the tag exists; each service here names its image (`octopus-web:latest`
+and siblings), so after the first build every plain `docker compose up` started
+that image and compiled nothing. Measured rather than reasoned about: on
+2026-08-28 the three running images were six commits behind `main`, `web` was
+serving the previous landing page, and all three healthchecks were green while
+`git status` was clean. **A healthcheck answers whether the process is up, never
+whether it is the code you wrote**, so nothing in the stack could have reported
+this. `build` rebuilds on every `up`; the layer cache absorbs it, and
+`services/ai`'s ~4.6 GB of weights are their own layer keyed on the model ids, so
+they are not re-fetched. `--build` is now a no-op that still works, and
+`--no-build` is the deliberate escape hatch for starting what is already on disk.
+The cost is a few seconds of cache evaluation per `up`, taken knowingly against a
+failure mode that names nothing and looks like an application bug.
 
 **The two Node images build from the repo root and the Python one does not**,
 which looks inconsistent and is the same rule applied twice. `apps/web` and

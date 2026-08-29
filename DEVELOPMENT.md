@@ -74,13 +74,24 @@ Two ways. Compose if you want it running; three terminals if you want to edit it
 ### All three in Docker
 
 ```bash
-docker compose up --build
+docker compose up
 ```
 
 Then <http://localhost:3000>. The API is published on `:3011` and the reasoning
 core on `:8000`, so both can be probed directly while testing. Credentials are
 read from `apps/api/.env`, which is the file that already holds them, so there is
 nothing extra to create.
+
+**Every `up` rebuilds, and it did not always.** Each service sets
+`pull_policy: build`. Compose's default is `missing`, which builds only when no
+image with the tag exists, so after the first successful build every plain
+`docker compose up` restarted the image already on disk and compiled nothing. The
+stack came up healthy on all three healthchecks while serving code from whenever
+the image happened to be built, which presents as the app ignoring your edits
+rather than as a stale image. `--build` still works and is now the same thing, so
+the flag is optional rather than the difference between current and not. If you
+ever want the old behaviour for one run, `docker compose up --no-build` starts
+what is on disk.
 
 **Memory is the one setting that decides whether this works.** Measured on the
 running stack rather than inherited from the service's own 8 GB deployment floor:
