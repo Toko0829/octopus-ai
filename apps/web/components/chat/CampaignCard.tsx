@@ -140,8 +140,8 @@ export function CampaignCard({ embed, canAct, onAct }: Props) {
       {pending ? (
         <div className="plan-sources">
           <div className="plan-sources-label">
-            Nothing is published or spent when you approve this. The campaign is recorded as ready,
-            and starting it is a separate step.
+            Approving this publishes the campaign through your connected channel account. It will
+            never spend more than the budget you set here, and you can pause it at any time.
           </div>
         </div>
       ) : null}
@@ -149,7 +149,7 @@ export function CampaignCard({ embed, canAct, onAct }: Props) {
       {!pending && (
         <div className={approved ? 'plan-approved-banner' : 'plan-rejected-banner'}>
           {approved
-            ? `Campaign approved at ${campaign.budgetCap ?? 0} ${campaign.currency}. Nothing is published or spent yet.`
+            ? `Campaign approved at ${campaign.budgetCap ?? 0} ${campaign.currency}. Publishing starts shortly.`
             : 'Campaign not approved. The step still needs you.'}
         </div>
       )}

@@ -133,6 +133,11 @@ export async function buildServer(): Promise<FastifyInstance> {
           maxPerPass: env.CRAWL_MAX_PER_TICK,
         }
       : undefined,
+    // Publishing what an owner already authorised. The two human gates are the
+    // real control (an account has to be connected, and a campaign has to be
+    // approved with a budget typed on it), so this flag is the deployment-shaped
+    // off switch rather than the authorisation. It is on unless set to `false`.
+    publish: env.PUBLISH_ENABLED ? { maxPerPass: env.PUBLISH_MAX_PER_TICK } : undefined,
     log: app.log,
   });
   app.addHook('onClose', async () => stopTicker());

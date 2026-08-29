@@ -239,7 +239,8 @@ async function postOneCard(
         author_kind: 'agent',
         body:
           `${payload.data.name}\n\n${payload.data.summary}\n\n` +
-          'Nothing is published or spent until you approve this and set a budget.',
+          'Nothing runs until you approve this and set a budget. ' +
+          'Approving publishes it through your connected channel account.',
         idempotency_key: `campaign-card:${task.id}`,
       })
       .select('id')

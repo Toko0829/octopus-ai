@@ -85,8 +85,8 @@ export function MessageStream({
       <div className="stream-intro">
         <h2 className="display">{channelName ? `#${channelName}` : 'Workspace'}</h2>
         <p>
-          This is where Octopus plans your growth. Nothing goes live (no spend, no publishing)
-          without your approval.
+          This is where Octopus plans your growth. Nothing goes live (no spend, no publishing) until
+          you approve it.
         </p>
       </div>
 

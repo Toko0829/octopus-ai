@@ -67,13 +67,14 @@ export function ConnectionCallback({
       {status === 'done' && (
         <>
           <h1 className="consent-title">Account connected</h1>
-          {/* Says what did not happen as plainly as what did, matching the
-              campaign card. Connecting an account grants access; it does not
-              start using it, and somebody who has just authorised something
-              reasonably wants to know which. */}
+          {/* Changed with the publish sweep, because the old sentence promised
+              Octopus would ask before anything used this connection and that
+              stopped being true the moment connecting could unblock a campaign
+              already approved and waiting. The ask happened on the campaign
+              card; this page must not imply a second one is coming. */}
           <p className="consent-body">
-            Nothing is published or spent. Octopus will ask you before anything uses this
-            connection.
+            Connecting an account spends nothing by itself. Campaigns you have already approved with
+            a budget can now publish through it, and anything else will ask you first.
           </p>
           <a className="btn btn-primary" href="/app">
             Back to the workspace

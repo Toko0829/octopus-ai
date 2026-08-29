@@ -344,11 +344,13 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
         embed.component === 'replan'
           ? 'Plan changes applied.'
           : embed.component === 'campaign'
-            ? // Says what did not happen as plainly as what did. A person who has
-              // just authorised a budget reasonably wonders whether money is now
-              // moving, and in this slice nothing publishes: the campaign is
-              // recorded as ready and stops there.
-              'Campaign approved and recorded. Nothing is published or spent yet.'
+            ? // Says what happens next as plainly as what just happened. This
+              // sentence used to promise that nothing would be published, and it
+              // was true until the publish sweep existed. Approving IS the
+              // authorisation now (ADR-0013), so the promise had to change where
+              // it was made rather than quietly stop being kept.
+              'Campaign approved. Publishing starts on the next pass, usually within half a minute. ' +
+              'It will never spend more than the cap you set.'
             : 'Plan approved.';
       const rejectedCopy =
         embed.component === 'campaign'

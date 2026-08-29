@@ -797,10 +797,16 @@ export const ProjectSummary = z.object({
 export type ProjectSummary = z.infer<typeof ProjectSummary>;
 
 /**
- * A campaign as the project panel needs it. The approved brief and the ad tree
- * are not here: nothing publishes yet, so there is nothing under a campaign to
- * show, and a field with no producer is the defect class this module has already
- * paid for twice.
+ * A campaign as the project panel needs it.
+ *
+ * **The ad tree now exists and is still not here.** The publish sweep writes the
+ * root entity (`20260829150000`), so the old reason for its absence, that nothing
+ * published, has expired. The new reason is narrower: the tree is one row deep
+ * until creative generation lands, so surfacing it would add a field that
+ * restates `state` and an external id nobody can act on. `state` already carries
+ * `publishing`, `live` and `failed` to the panel with no change at all, which is
+ * the whole of what a reader needs today. It gets a shape when there is something
+ * under the root worth rendering.
  */
 export const CampaignSummary = z.object({
   id: z.string().uuid(),

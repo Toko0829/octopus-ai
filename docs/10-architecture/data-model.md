@@ -221,12 +221,46 @@ than regenerating: a second generation is a different artifact from the one a
 person said yes to, and the difference would reach the world before anyone saw
 it.
 
+**`20260829150000` adds the lifecycle guard the table shipped without**, in the
+same change as its first writer. There was no state machine on `ad_entities`
+originally and that was right at the time: no writer existed whose transitions
+could be wrong, and a machine enforcing arcs nobody could take is the `task_deps`
+defect this repository has already paid for. The map is
+`draft -> publishing|archived`, `publishing -> live|failed|rejected`,
+`live -> paused|rejected|archived`, `paused -> live|archived`,
+`rejected -> archived`, with `archived` and `failed` terminal.
+
+**`rejected` is deliberately not terminal.** Revise-and-resubmit produces a new
+entity, so the disapproved one is closed out rather than resurrected; making it
+terminal would strand a row forever in a state that reads like an unanswered
+question. `rejected` is reachable from `live` as well as from `publishing`,
+because a platform can disapprove an entity that is already running.
+
+The same migration makes **`external_id` write-once**, which had been a column
+comment since the table was created and is now a second BEFORE UPDATE trigger.
+Separate from the lifecycle guard because the two bind on different conditions:
+the lifecycle guard fires only on a state change, and write-once has to hold on
+every update. Its `when` clause is the whole check, which is what keeps the
+resume path free: a publisher re-driving a crashed publish writes the **same** id
+back, and an identical value is not a change. Overwriting it with a different one
+orphans a live object that is still spending, with nothing left in our database
+pointing at it.
+
+Neither helper is granted to `service_role`. Both trigger functions are
+`SECURITY DEFINER`, so the writer never needs EXECUTE on their internals, which
+is the `20260813130000` / `20260815200000` trap avoided by construction rather
+than by a grant. Note `private.campaign_transition_allowed` is still granted to
+nobody for the same reason, so Node relies on the trigger and never consults the
+map directly.
+
 Two idempotency keys are declared now and written later, so their writers arrive
 to a column instead of to a migration: `campaigns.source_embed_id` (one approved
 card, one campaign) and the unique
 `(campaign_id, period_start, period_end, source)` on `campaign_outcomes` (the
 same period pulled twice is one row). `ad_entities.idempotency_key` is the DB
-half of rules 9 and 12 for the publish side effect.
+half of rules 9 and 12 for the publish side effect, **and it has its writer now**:
+the sweep derives `publish:<campaignId>:campaign` from the campaign id alone, so a
+retry collides here instead of creating a second row.
 
 **`campaigns.budget_cap` is nullable and NULL means nothing authorised, never
 unlimited**, verbatim the stance `projects.budget_ceiling` takes. The two compose

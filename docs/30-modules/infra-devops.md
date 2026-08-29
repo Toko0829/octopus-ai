@@ -210,6 +210,28 @@ entry, and this one never did, so the env schema could change with no doc
 obliged to notice. That matters more than a tidy-up: a new key there is usually a
 deployment decision, and `CRAWL_ENABLED` is the case that proved it.
 
+### Publishing is on unless it is switched off
+
+`PUBLISH_ENABLED` (default **on**) and `PUBLISH_MAX_PER_TICK` (default 3) control
+the publish sweep the ticker runs
+([ADR-0013](../40-adr/0013-approving-a-campaign-publishes-it.md)). The default
+inverts `CRAWL_ENABLED` below on purpose, and the pair is worth reading together
+because they look alike and the reasoning is opposite.
+
+Crawling is off by default to protect somebody else's servers from every
+developer's laptop. Publishing has no stranger to protect: the sweep does nothing
+until a workspace connects an account **and** an owner approves a campaign with a
+budget typed on it, and the only registered provider makes no network call at
+all. Off by default would also make the product lie, because approving a campaign
+now says publishing starts shortly, and on an unconfigured deployment that
+sentence would be false while the campaign sat at `ready` in silence.
+
+So this key is a **kill switch, not an enablement**: set it to `false` to stop a
+deployment publishing. The authorisation is the two human gates, not the flag.
+The cap is small for the same reason the crawl's is: the sweep shares the
+ticker's claim with the DAG walk and holds it while each platform call is in
+flight.
+
 ### Only one deployment crawls
 
 `CRAWL_ENABLED` (default **off**) and `CRAWL_MAX_PER_TICK` (default 2) control the

@@ -19,6 +19,11 @@
  * than to money: whether a connection may do a thing is answered from what the
  * platform granted, before the call, rather than learned from its 403.
  *
+ * **The publish decisions** (`publish.ts`), which is the seam's first caller and
+ * the reason it was written early. The idempotency key, which account to publish
+ * through, and what to do about what the platform answered: all three are
+ * checkable without a database, a platform account, or a running ticker.
+ *
  * **The adapter seam** (`adapter.ts`), written before any executor so that
  * slice-3 code is written against an interface rather than against whichever
  * provider happened to arrive first.
@@ -101,4 +106,20 @@ export {
   type AuthProviderEntry,
 } from './auth-registry';
 
-export { checkScopes, type ScopeCheckInput, type ScopeRule, type ScopeVerdict } from './scopes';
+export {
+  checkScopes,
+  PUBLISH_REQUIRED_SCOPES,
+  type ScopeCheckInput,
+  type ScopeRule,
+  type ScopeVerdict,
+} from './scopes';
+
+export {
+  chooseConnection,
+  decidePublishOutcome,
+  publishIdempotencyKey,
+  type ConnectionChoice,
+  type ConnectionChoiceRule,
+  type PublishConnectionCandidate,
+  type PublishDecision,
+} from './publish';

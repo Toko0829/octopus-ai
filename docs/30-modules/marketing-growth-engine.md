@@ -63,6 +63,7 @@ The `@octopus/core` split applied here: reasoning a reader can check without run
 | File                    | What it decides                                                                  |
 | ----------------------- | -------------------------------------------------------------------------------- |
 | `spend.ts`              | `checkSpendCap`: may this campaign be authorised for this amount                 |
+| `publish.ts`            | The publish key, which account publishes, and what to do about the answer        |
 | `adapter.ts`            | `AdChannelAdapter`, the seam every platform sits behind, and its Zod I/O shapes  |
 | `fake-adapter.ts`       | A complete deterministic implementation of that seam, with no platform behind it |
 | `adapter-registry.ts`   | Which providers exist, checked in rather than stored                             |
@@ -123,19 +124,21 @@ Expert marketers plug in for: **creative direction & taste**, **high-end video/e
 
 Nine were specified from Phase 0 and this table says which of them exist, because a list that mixes live tables with intentions reads as though all nine are there. Column shapes live in [data-model.md](../10-architecture/data-model.md).
 
-| Entity                 | Status                                                                           | Notes                                                                                                              |
-| ---------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `campaigns`            | ✅ live `20260829120000`, **written by `materialise_campaign` `20260829140000`** | One channel, one authorised cap, one lifecycle. `budget_cap` NULL means nothing authorised, never unlimited        |
-| `channel_connections`  | ✅ live `20260829121000`, **written by the connect flow**                        | OAuth tokens, **room-scoped**. No client policy and no client grant: RLS filters rows, not columns                 |
-| `ad_entities`          | ✅ live `20260829122000`                                                         | The campaign → ad_set → ad tree. `rejected` is entity-level; `spec` is the approved brief the publisher reads      |
-| `campaign_outcomes`    | ✅ live `20260829123000`                                                         | Measured performance. Append-only including for `service_role`; a correction is a new row with `source = 'manual'` |
-| `content_items`        | ⏳ deferred (slice 6+)                                                           | Needs a producer first. A schema with no writer is this repository's most-documented defect class                  |
-| `creative_assets`      | ⏳ deferred (slice 6+)                                                           | Lands with the creative-provider ADR and the first byte-producer; until then creative arrives as a file artifact   |
-| `email_sequences`      | ⏳ deferred (slice 6+)                                                           | —                                                                                                                  |
-| `landing_pages`        | ⏳ deferred (slice 6+)                                                           | —                                                                                                                  |
-| `creative_performance` | ⏳ deferred (slice 6+)                                                           | Depends on `creative_assets` existing to attach to                                                                 |
+| Entity                 | Status                                                                                                 | Notes                                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `campaigns`            | ✅ live `20260829120000`, **written by `materialise_campaign` `20260829140000`**                       | One channel, one authorised cap, one lifecycle. `budget_cap` NULL means nothing authorised, never unlimited        |
+| `channel_connections`  | ✅ live `20260829121000`, **written by the connect flow**                                              | OAuth tokens, **room-scoped**. No client policy and no client grant: RLS filters rows, not columns                 |
+| `ad_entities`          | ✅ live `20260829122000`, **written by the publish sweep** (`20260829150000` adds its lifecycle guard) | The campaign → ad_set → ad tree. `rejected` is entity-level; `spec` is the approved brief the publisher reads      |
+| `campaign_outcomes`    | ✅ live `20260829123000`                                                                               | Measured performance. Append-only including for `service_role`; a correction is a new row with `source = 'manual'` |
+| `content_items`        | ⏳ deferred (slice 6+)                                                                                 | Needs a producer first. A schema with no writer is this repository's most-documented defect class                  |
+| `creative_assets`      | ⏳ deferred (slice 6+)                                                                                 | Lands with the creative-provider ADR and the first byte-producer; until then creative arrives as a file artifact   |
+| `email_sequences`      | ⏳ deferred (slice 6+)                                                                                 | —                                                                                                                  |
+| `landing_pages`        | ⏳ deferred (slice 6+)                                                                                 | —                                                                                                                  |
+| `creative_performance` | ⏳ deferred (slice 6+)                                                                                 | Depends on `creative_assets` existing to attach to                                                                 |
 
-**Two of the four have writers now; `ad_entities` and `campaign_outcomes` still do not, and that remains deliberate.** The publish executor and the metrics puller are the next slices. Guards land with their tables here because the recorded failure in this repository is the other order: `tasks.risk_tier` was unreachable for its entire life, and `task_deps` held no row for two weeks while enforcing an empty set.
+**Three of the four have writers now. `campaign_outcomes` still does not, and that remains deliberate**: the metrics puller is the next slice, and it is the writer that closes the auto-optimize loop. Guards land with their tables here because the recorded failure in this repository is the other order: `tasks.risk_tier` was unreachable for its entire life, and `task_deps` held no row for two weeks while enforcing an empty set.
+
+`ad_entities` is the case where that ordering paid out and then asked for something back. Its hierarchy guard needed no adjustment when the writer arrived, which is the outcome guards-before-writers exists to produce. Its **lifecycle** guard did not exist at all, because in `20260829122000` there was no writer whose transitions could be wrong, so `20260829150000` lands it in the same change as the first writer rather than after it. The same migration makes `external_id` write-once, which had been a column comment since the day the table was created.
 
 ## Connecting a channel account
 
@@ -265,11 +268,107 @@ transition is conditional and never raises: a step that moved while the card sat
 there still yields a campaign, and the skip is recorded in the event rather than
 being silent.
 
-**Nothing publishes.** The campaign lands at `ready`, which means approved by the
-owner and not yet sent, and stops there. No adapter is called, no
-`channel_connections` row is read, and `ad_entities` stays empty. The card says
-so in as many words, because a person who has just authorised a budget reasonably
-wonders whether money is now moving.
+**Approving publishes it** ([ADR-0013](../40-adr/0013-approving-a-campaign-publishes-it.md)).
+The campaign lands at `ready`, and the next ticker pass sends it. There is no
+second button, because the card already named the channel, stated the objective
+and made the owner type a cap: a second control would ask a question that was
+answered, and a confirmation carrying no new information is one people learn to
+click through, which weakens every other confirmation in the product.
+
+That changed four sentences that used to promise the opposite, and they were
+changed in the same commit rather than left to drift: the card's own pending and
+approved copy, the approval reply in the room, and the connect callback's "Octopus
+will ask you before anything uses this connection", which stopped being true the
+moment connecting an account could unblock a campaign already approved and
+waiting. A promise on a trust surface is altered where it was made.
+
+## Publishing a campaign
+
+The first code in this product that acts outside it. `publishSweep`
+(`apps/api/src/lib/publish.ts`) runs on the ticker pass, after the DAG walk and
+**before** the crawl, because a person is waiting on a publish and nobody is
+waiting on a regulator's page being re-read.
+
+**It publishes one entity, and the limit is named rather than implied.**
+`createCampaign` only: one `ad_entities` row of `kind = 'campaign'`, the root of
+the tree. No ad sets and no ads, because `CreateAdSpec` requires creative and
+nothing produces creative until slice 6, and an ad set with no ad under it spends
+nothing and shows nothing. `setBudget` is not called either, since
+`CreateCampaignSpec.budgetCap` already carries the authorised cap into the create.
+
+**The ordering is the crash-safety story, and it exists because Postgres has no
+transaction across a call to somebody else's API.** The intent row is written
+first, at `publishing`, under a key derived from the campaign id alone
+(`publish:<campaignId>:campaign`). Call the platform first and a crash before the
+write leaves an object nothing points at: no id, no way to pause it, and a second
+one created on the next pass. A record of an uncertain request is recoverable; an
+unrecorded certain one is not.
+
+Every gap between two writes resumes, and each has a test that starts from the
+state that gap leaves behind:
+
+| Crash point                   | What the next pass does                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| after the intent row          | the key collides, the row is read back, resume                                                      |
+| after `ready -> publishing`   | the campaign is selected again, at `publishing`                                                     |
+| after the platform answered   | the same key is asked again; the provider returns the same id and reports `alreadyExisted`          |
+| after the entity was finished | `external_id` is present, so the adapter is **not called at all** and only the campaign is finished |
+
+**Which account publishes is a decision, not a lookup.** Connections are
+room-scoped and a room may hold several for one channel, so `chooseConnection`
+takes the newest active one whose provider the registry knows. It deliberately
+returns a **non-active** connection when that is all there is, because refusing
+with "no account connected" when one exists and expired sends somebody to do a
+thing they already did. `checkScopes` then produces the sentence that actually
+unblocks them, and this is that function's first caller: rule 7 says the
+permission is checked in tool code before the call rather than learned from a 403.
+
+**The failure map is chosen by what the owner should do**, and it matters because
+`campaigns.failed` is terminal with no retry arc:
+
+| The platform said                 | Campaign           | Entity                  | The owner is told                                                |
+| --------------------------------- | ------------------ | ----------------------- | ---------------------------------------------------------------- |
+| it worked                         | `live`             | `live`, id written once | it is live, and the cap it will not exceed                       |
+| `policy_rejected`                 | `failed`           | `rejected`              | the platform's own words, and that trying again means a new card |
+| `invalid_spec` / `not_found`      | `failed`           | `failed`                | that this is a fault on our side                                 |
+| `auth_expired`                    | stays `publishing` | stays `publishing`      | to reconnect; the connection is marked `expired`                 |
+| `rate_limited` / `provider_error` | stays `publishing` | stays `publishing`      | nothing                                                          |
+| a transport throw                 | stays `publishing` | stays `publishing`      | nothing                                                          |
+
+A policy rejection is terminal because retrying it unchanged asks the same
+reviewer the same question, which is the silently-keep-spending path this module
+forbids. A provider error is **not**, and the retry is deliberately unbounded at
+tick cadence: a bound tripping on a transient outage would close a campaign
+somebody authorised, and recovering costs them a new card and a re-typed budget.
+Bounded backoff lands with the first real provider, where a failure distribution
+exists to size it. `retryAfterMs` is logged and otherwise ignored for the same
+reason: honouring it needs a persisted not-before column with no realistic writer
+today.
+
+Rate limits and provider errors say nothing in the room on purpose. Neither is
+owner-actionable, and a message every thirty seconds about a condition that fixes
+itself is noise on the surface where the important messages live. They are logged
+and counted in the sweep summary instead.
+
+**Nothing else is dropped in silence.** Every campaign the sweep declines to
+publish leaves a message in the room or a log line, and which one is asserted in
+the tests. The blocked message keys on the campaign **and the rule**, so a
+campaign blocked first on a missing account and later on a missing scope says both
+things once, rather than the first thing forever.
+
+**No token column is read.** The only registered provider takes no credential and
+the seam has no credential-passing convention yet, so reading a secret to hand to
+something that does not accept one would be handling it for no reason.
+`readPublishableConnections` has its own column list, separate from the panel's
+and asserted separately, because each list is independently the entire control.
+Credential plumbing lands with the first real provider, in the same change as the
+envelope encryption its accepted risk already names as the trigger.
+
+**What is deliberately not built:** OpenTelemetry spans (none exist anywhere in
+`apps/api`; rule 16 is met the way `crawlSweep` meets it, with one summary log per
+sweep and a line per failure), a retry counter, an outbox table, and any rendering
+of the ad tree in the project panel, which stays off `CampaignSummary` until there
+is something under the root worth showing.
 
 ## Setting the budget ceiling
 

@@ -13,6 +13,21 @@
  * answering it later means guessing at what the connection held at the time.
  */
 
+/**
+ * What publishing a campaign needs a connection to have been granted.
+ *
+ * A checked-in constant rather than a table, on `adapter-registry.ts`'s
+ * reasoning: which permission an act requires is a security judgement, and a file
+ * gets reviewed in a diff while a row does not. It is deliberately not
+ * per-provider either. Scope vocabularies differ between platforms and the
+ * translation belongs in the adapter that already knows one, so inventing a
+ * mapping here would be this package guessing at names for platforms it has never
+ * called. `defaultScopesFor` in `auth-registry.ts` is what a connection ASKS for;
+ * this is what one CALL needs, and keeping them separate is what lets a narrower
+ * grant than we asked for be caught before the call rather than at a 403.
+ */
+export const PUBLISH_REQUIRED_SCOPES: readonly string[] = Object.freeze(['ads:write']);
+
 export type ScopeRule = 'connection_not_active' | 'missing_scopes';
 
 export type ScopeVerdict =

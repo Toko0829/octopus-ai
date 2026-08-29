@@ -76,6 +76,37 @@ const EnvSchema = z.object({
   CRAWL_MAX_PER_TICK: z.coerce.number().int().positive().default(2),
 
   /**
+   * Whether this deployment publishes approved campaigns.
+   *
+   * **On by default, which inverts `CRAWL_ENABLED` above deliberately.** The two
+   * look alike and the reasoning is opposite. Crawling is off by default to
+   * protect somebody else's servers from every developer's laptop; publishing has
+   * no stranger to protect. The sweep is inert until a workspace connects an
+   * account AND an owner approves a campaign with a budget on it, and the only
+   * registered provider makes no network call at all.
+   *
+   * Off by default would also make the product lie. Approving a campaign card now
+   * says "publishing starts shortly", and on an unconfigured deployment that
+   * sentence would be false while the campaign sat at `ready` in silence, which
+   * is the exact defect shape this module has already paid for twice. So the
+   * knob is a kill switch rather than an enablement: set it to `false` to stop a
+   * deployment publishing, and nothing else changes.
+   */
+  PUBLISH_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
+  /**
+   * How many campaigns one pass may publish.
+   *
+   * Small for the reason the crawl bound is small: a pass shares its lease with
+   * the DAG walk and holds it while each platform call is in flight. Three drains
+   * any realistic backlog within a couple of minutes, since a campaign leaves
+   * `ready` on its first pass and only a retry comes back.
+   */
+  PUBLISH_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
+
+  /**
    * Signing key for the OAuth `state` parameter.
    *
    * **Optional in this schema and required at the point of use**, which is a

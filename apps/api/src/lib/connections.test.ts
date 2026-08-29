@@ -19,7 +19,14 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import * as marketing from '@octopus/marketing';
-import { auditConnection, readConnections, revokeConnection, writeConnection } from './connections';
+import {
+  auditConnection,
+  markConnectionExpired,
+  readConnections,
+  readPublishableConnections,
+  revokeConnection,
+  writeConnection,
+} from './connections';
 
 const ROW = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -291,5 +298,63 @@ describe('auditConnection', () => {
       ),
     ).resolves.toBeUndefined();
     expect(logged).toHaveLength(1);
+  });
+});
+
+describe('the publisher projection', () => {
+  it('never selects a token column either', () => {
+    // A SECOND column list, asserted separately. Merging the two constants would
+    // mean one list answering two questions, and widening it for the publisher
+    // would silently widen what a room member sees.
+    const { client, calls } = stub();
+    void readPublishableConnections(client, 'room', 'meta');
+    const selected = calls.selected.join(' ');
+    expect(selected).not.toContain('access_token');
+    expect(selected).not.toContain('refresh_token');
+    expect(selected).not.toContain('*');
+  });
+
+  it('selects exactly what a publish decision needs', () => {
+    const { client, calls } = stub();
+    void readPublishableConnections(client, 'room', 'meta');
+    const columns = (calls.selected[0] as string)
+      .split(',')
+      .map((c) => c.trim())
+      .sort();
+    expect(columns).toEqual(['created_at', 'granted_scopes', 'id', 'provider', 'status'].sort());
+  });
+
+  it('maps a row to the candidate shape the decision takes', async () => {
+    const [candidate] = await readPublishableConnections(stub().client, 'room', 'meta');
+    expect(candidate).toEqual({
+      id: ROW.id,
+      provider: 'fake',
+      grantedScopes: ['ads:read'],
+      status: 'active',
+      createdAt: ROW.created_at,
+    });
+  });
+
+  it('reads a null scope array as no scopes, never as every scope', () => {
+    // The direction matters: an empty grant makes `checkScopes` refuse, which is
+    // the safe answer for a column that should never have been null.
+    const { client } = stub({ ...ROW, granted_scopes: null });
+    return readPublishableConnections(client, 'room', 'meta').then(([candidate]) => {
+      expect(candidate?.grantedScopes).toEqual([]);
+    });
+  });
+});
+
+describe('expiry is not revocation', () => {
+  it('records the status and leaves both tokens alone', async () => {
+    // `revokeConnection` nulls the tokens because the credential should not
+    // exist; an expiry means it stopped working, and the refresh token is what
+    // reconnecting uses. Nulling here would make a recoverable state final.
+    const { client, calls } = stub();
+    await markConnectionExpired(client, ROW.id, new Date('2026-08-29T13:00:00.000Z'));
+
+    expect(calls.updated[0]).toMatchObject({ status: 'expired' });
+    expect(calls.updated[0]).not.toHaveProperty('access_token');
+    expect(calls.updated[0]).not.toHaveProperty('refresh_token');
   });
 });

@@ -1,6 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ChannelConnection } from '@octopus/contracts';
-import { carriesRealCredentials, type ChannelCredential } from '@octopus/marketing';
+import {
+  carriesRealCredentials,
+  type ChannelCredential,
+  type PublishConnectionCandidate,
+} from '@octopus/marketing';
 
 /**
  * The IO half of connecting a channel account.
@@ -70,6 +74,96 @@ export async function readConnections(
     .order('created_at', { ascending: false });
   if (error) throw error;
   return ((data ?? []) as unknown as ConnectionRow[]).map(toConnection);
+}
+
+/**
+ * What the publisher needs, which is not what the panel needs.
+ *
+ * **A second column list rather than a reuse of the first**, and the duplication
+ * is deliberate. `SELECTED_COLUMNS` is shaped by what a room member may see;
+ * this one is shaped by what a decision needs. Merging them would mean one
+ * constant answering two questions, and the next person widening it for the
+ * publisher would widen it for the panel without noticing. Each list is
+ * independently the entire control, so each gets its own assertion in the tests.
+ *
+ * **No token columns here either, and that is slice 1 rather than an oversight.**
+ * The only registered provider takes no credential: `createFakeAdapter` has
+ * nothing to authenticate with and the seam has no credential-passing convention
+ * yet. Reading a token to pass to something that does not accept one would be
+ * handling a secret for no reason. When a real provider lands it needs the
+ * credential, and that read belongs in the same change as the envelope
+ * encryption the accepted risk in security-compliance.md already names as its
+ * trigger.
+ */
+const PUBLISH_SELECTED_COLUMNS = 'id, provider, granted_scopes, status, created_at';
+
+interface PublishConnectionRow {
+  id: string;
+  provider: string;
+  granted_scopes: string[] | null;
+  status: string;
+  created_at: string;
+}
+
+/**
+ * Every connection in a room for one channel, whatever its status.
+ *
+ * **Expired and revoked rows are returned on purpose.** Filtering to `active`
+ * here would collapse "you have not connected an account" and "the account you
+ * connected expired" into one answer, and they need different sentences: one
+ * sends somebody to connect, the other to reconnect. `chooseConnection` prefers
+ * an active row and `checkScopes` produces the precise refusal for whatever is
+ * left, so the distinction survives all the way to the message in the room.
+ *
+ * Membership is the caller's to have checked, exactly as `readConnections` says:
+ * this table has no grant to `authenticated` and no policy, so nothing about
+ * running as the service role here is unusual for this file.
+ */
+export async function readPublishableConnections(
+  admin: SupabaseClient,
+  roomId: string,
+  channel: string,
+): Promise<PublishConnectionCandidate[]> {
+  const { data, error } = await admin
+    .from('channel_connections')
+    .select(PUBLISH_SELECTED_COLUMNS)
+    .eq('room_id', roomId)
+    .eq('channel', channel)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+
+  return ((data ?? []) as unknown as PublishConnectionRow[]).map((row) => ({
+    id: row.id,
+    provider: row.provider,
+    grantedScopes: row.granted_scopes ?? [],
+    status: row.status as PublishConnectionCandidate['status'],
+    createdAt: row.created_at,
+  }));
+}
+
+/**
+ * Record that the platform said this credential is done.
+ *
+ * **Expiry is not revocation, so the tokens stay.** `revokeConnection` nulls them
+ * because a disconnection means the credential should not exist; an expiry means
+ * it stopped working, and a refresh token that has outlived its access token is
+ * exactly what reconnecting uses. Nulling here would turn a recoverable state
+ * into an unrecoverable one on the platform's say-so.
+ *
+ * Conditional on `active`, so a connection somebody revoked while a publish was
+ * in flight is not quietly resurrected into `expired`.
+ */
+export async function markConnectionExpired(
+  admin: SupabaseClient,
+  connectionId: string,
+  now: Date,
+): Promise<void> {
+  const { error } = await admin
+    .from('channel_connections')
+    .update({ status: 'expired', updated_at: now.toISOString() })
+    .eq('id', connectionId)
+    .eq('status', 'active');
+  if (error) throw error;
 }
 
 export interface WriteConnectionInput {

@@ -138,6 +138,35 @@ Owner-only, membership by RLS as the caller with the 404-not-403 idiom, and exac
 
 URL fetching lives here rather than in `services/ai`, which talks to Postgres and to providers and to nothing else. It is the first outbound call either service makes on a user's instruction, so it is guarded on protocol, host, size, time and content type, with the redirect target re-vetted. DNS rebinding is explicitly not defended against and is recorded as a known limit in the module rather than left to be assumed.
 
+### The ticker publishes as well as walking the graph
+
+The same pass that walks the task DAG also sends the campaigns an owner has
+already approved ([ADR-0013](../40-adr/0013-approving-a-campaign-publishes-it.md)).
+`publishSweep` reads campaigns at `ready` or `publishing`, takes the ones whose
+project is still active, and publishes the campaign-level entity through the
+provider on the room's channel connection.
+
+**It runs after the graph and before the crawl**, and that ordering is a claim
+about who is waiting: somebody who approved a campaign is watching for it to go
+live, and nobody is waiting on a regulator's page being re-read. Its own
+try/catch, for the reason every sweep on this pass has one.
+
+**Freshly approved campaigns outrank retries.** A row at `publishing` is a resume
+or a retry and can recur for as long as a platform stays unhappy; draining those
+first would let one failing campaign hold the per-pass cap and starve every
+approval behind it.
+
+**The durability argument is ADR-0010's, unchanged.** No new orchestration was
+added: the intent row plus a unique idempotency key make each attempt
+re-enterable, so a crash loses a worker rather than a publish. The sequence and
+its failure map live in
+[marketing-growth-engine.md](../30-modules/marketing-growth-engine.md).
+
+`PUBLISH_ENABLED` gates it and defaults to **on**, which inverts `CRAWL_ENABLED`
+below deliberately: crawling is off by default to protect somebody else's
+servers, and publishing has no stranger to protect, since nothing happens until a
+workspace connects an account and an owner approves a budget.
+
 ### The ticker crawls as well as walking the graph
 
 The same pass that walks the task DAG ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)) now also re-reads the external source registry, under the claim it already holds. Off by default (`CRAWL_ENABLED`), because the registry names real public pages and a dozen developers fetching them on boot is traffic aimed at somebody else's servers for no benefit.
