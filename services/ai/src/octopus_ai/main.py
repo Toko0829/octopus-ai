@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from .campaign import draft_campaign
 from .config import ConfigError, Settings, get_settings
 from .db import Database
 from .decompose import decompose
@@ -292,6 +293,36 @@ async def execute(request: ExecuteRequest) -> PlanResponse:
     assert state.retriever and state.providers and state.settings  # set in lifespan
 
     return await execute_task(request, state.retriever, state.providers, state.settings)
+
+
+@app.post("/campaign", response_model=PlanResponse, tags=["reasoning"])
+async def campaign(request: ExecuteRequest) -> PlanResponse:
+    """Propose a campaign for one step waiting on the owner, or decline.
+
+    Takes the same request shape as `/execute` because the input is the same
+    thing: one task, retrieved for narrowly. What differs is the output and who
+    acts on it. A step tiered `high_risk` never reaches `/execute` at all, since
+    `routeTask` sends it to `needs_user`, so this is the only path by which such a
+    step can be offered to a person as something approvable.
+
+    Declining is expected and cheap. Node asks about every step the router stopped
+    for an authorisation, and most of them are not campaigns.
+
+    **This service proposes no budget.** The owner enters it on the card, and
+    `materialise_campaign` refuses a card that carries none.
+    """
+    logger.info(
+        "campaign draft requested",
+        extra={
+            "task_id": request.task_id,
+            "agent_run_id": request.trace.agent_run_id,
+            "project_id": request.trace.project_id,
+        },
+    )
+
+    assert state.retriever and state.providers and state.settings  # set in lifespan
+
+    return await draft_campaign(request, state.retriever, state.providers, state.settings)
 
 
 @app.post("/replan", response_model=PlanResponse, tags=["reasoning"])

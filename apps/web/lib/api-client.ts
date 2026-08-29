@@ -165,10 +165,23 @@ export function postMessage(
  * disables what the caller cannot do, but that is presentation: this call can be
  * made by anyone and is expected to be refused when it should be.
  */
+/**
+ * Set or clear what the owner authorises for a project.
+ *
+ * `null` clears the ceiling, which blocks new campaign approvals and leaves every
+ * campaign already authorised exactly as it was.
+ */
+export function setProjectBudget(projectId: string, budgetCeiling: number | null) {
+  return bff<ProjectDetail>(`/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ budgetCeiling }),
+  });
+}
+
 export function actOnEmbed(
   roomId: string,
   embedId: string,
-  input: { action: 'approve' | 'request_changes'; note?: string },
+  input: { action: 'approve' | 'request_changes'; note?: string; budgetCap?: number },
 ) {
   return bff<EmbedActionResponse>(`/rooms/${roomId}/embeds/${embedId}/actions`, {
     method: 'POST',

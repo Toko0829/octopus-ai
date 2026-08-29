@@ -476,6 +476,21 @@
   background: var(--surface-hover);
   border-color: var(--border);
 }
+/* Where a campaign runs, on the same chip the step owner uses because it answers
+   the same kind of question. Each carries its label as a word: rule 15 forbids
+   conveying anything by colour alone, and "which channel" is exactly the fact
+   somebody is being asked to authorise. */
+.chan-meta,
+.chan-google {
+  color: var(--accent-text);
+  background: var(--accent-quiet);
+}
+.chan-email,
+.chan-organic {
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
 /* Shown only on the two tiers that change what happens to the person. A chip on
    every step is a wall of badges nobody reads, which is worse than none on the
    one surface built for checking. */
@@ -1643,6 +1658,32 @@
   color: var(--text-muted);
   background: var(--surface-hover);
   border-color: var(--border);
+}
+
+/* What the owner authorised, what is committed, what is left. Tabular numerics
+   throughout (rule 14): the three figures are read against each other, and
+   proportional digits make that comparison harder than it needs to be. */
+.work-budget {
+  margin: 10px 0 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-hover);
+}
+.work-budget-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.work-budget-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.work-budget-label {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }
 
 .work-tasks {

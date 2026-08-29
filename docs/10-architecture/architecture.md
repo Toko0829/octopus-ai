@@ -283,6 +283,54 @@ What changed is the planner, not the inference: `PlanStep` carries an `id` and a
 
 `PlanEmbedPayload` gained `goal` for this, carrying the request in the person's own words. It also repairs the flywheel label, since `feedback_events.subject` stores this payload and an output with no input is not a training pair.
 
+## Authorising a campaign
+
+The first card whose approval commits money rather than work, and it exists
+because a high-risk step had nowhere to go. `routeTask`'s first rule parks
+`create_campaign` at `needs_user` whatever the planner proposed, and until now
+that was the end of the road: the owner was told a step needed them and given
+nothing to approve.
+
+**Node asks, the core usually declines.** After each tick, `produceCampaignCards`
+takes the results whose outcome is `needs_user` **and** whose rule is
+`high_risk_needs_authorisation`, reading the router's own recorded verdict rather
+than re-deriving it from the step's words. For each, `POST /campaign` on the
+reasoning service drafts a campaign or declines. Declining is the common answer
+and is a `post_message`, not a card: an account connection and a publish are both
+`high_risk` and neither is a campaign. One card per task forever, keyed
+`campaign-card:${taskId}` on the message, so a replayed tick collides rather than
+asking a person to authorise the same spend twice.
+
+**`ProposeCampaignProposal` carries no budget**, in the pydantic model and in its
+Zod mirror. The owner types the cap on the card, and
+`POST /api/rooms/:roomId/embeds/:embedId/actions` accepts a `budgetCap` for a
+campaign card only, refusing it on any other component rather than ignoring it: a
+number silently dropped on the way to an authorisation is the failure that field
+exists to prevent. The route writes their figure into the card payload in the
+**same conditional UPDATE** that records the verdict, so `feedback_events.subject`
+and the payload `materialise_campaign` reads both carry what the person actually
+entered.
+
+**The spend cap is checked in the route and again in the writer**, which is a
+deliberate duplication argued in [ADR-0011](../40-adr/0011-spend-cap-checked-twice.md).
+The route refuses readably with the verdict's own sentence and leaves the card
+`pending`; the writer re-checks under `for update`, because two cards approved in
+the same instant both pass a check made here. `readSpendInputs` does the IO and
+`checkSpendCap` in `packages/marketing` does the arithmetic.
+
+Approving calls `public.materialise_campaign(embedId)`, the third sibling of
+`materialise_plan` and `apply_plan_diff` with the same four properties. It returns
+the **campaign**, not the project, so `EmbedActionResponse` gained `campaignId`;
+the project is read back off the payload so the panel can be refreshed. The
+scheduler ticks afterwards for a campaign exactly as for a plan, because the
+writer closes the authorising step and that is what makes its dependents ready.
+
+**`PATCH /api/projects/:projectId` sets the ceiling**, owner-only and audited as
+`project.budget_set`. Before it, `projects.budget_ceiling` had no writer anywhere
+in TypeScript and `checkSpendCap` would have refused every campaign forever.
+`ProjectDetail` gained `budgetCeiling`, `currency`, `committedBudget` and
+`campaigns` so the panel can show the same arithmetic the approval performs.
+
 ## Changing a plan that is already running
 
 `POST /api/projects/:projectId/replan` takes the owner's reason and returns `202`.

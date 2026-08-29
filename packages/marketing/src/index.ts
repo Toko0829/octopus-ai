@@ -23,12 +23,13 @@
  * stored, because which implementation may touch somebody's ad account is an
  * editorial and security judgement and a file gets reviewed in a diff.
  *
- * `@octopus/contracts` is deliberately **not** a dependency yet. Nothing in this
- * package crosses a wire: no route accepts these shapes and no card renders
- * them. Rule 9 is about shared boundaries, and declaring a dependency in order
- * to have declared it is the kind of unused edge rule 20 asks us not to add. The
- * types that need to be shared move to `contracts` in the slice that first sends
- * one somewhere, which is the campaign card.
+ * `@octopus/contracts` **is** a dependency now, and it was not before. The
+ * campaign card is the slice this file's previous note named as the moment that
+ * would change: `MarketingChannel` is on a card payload, in an action route and
+ * in the project panel, so it moved to `contracts` and is re-exported from
+ * `adapter.ts`. Only that one type moved. `CreateCampaignSpec` and the rest of
+ * the seam still face an adapter rather than a wire, and moving them now would
+ * be the unused edge rule 20 asks us not to add.
  *
  * See docs/30-modules/marketing-growth-engine.md.
  */

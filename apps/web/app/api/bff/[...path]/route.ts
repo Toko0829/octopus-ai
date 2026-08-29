@@ -60,3 +60,15 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ path: s
 export async function POST(request: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
   return proxy(request, (await ctx.params).path);
 }
+
+/**
+ * Setting a project's budget ceiling is the first PATCH this proxy carries.
+ *
+ * Exported explicitly rather than by widening `proxy`, because a Next route
+ * handler answers 405 for any verb it does not export: adding the method to the
+ * contract and the client without this line produces a failure in the browser
+ * that names nothing on the server, which is a long afternoon.
+ */
+export async function PATCH(request: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
+  return proxy(request, (await ctx.params).path);
+}

@@ -10,6 +10,77 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### The marketing domain gets its first writer (`20260829130000`, `20260829140000`)
+
+Four marketing tables landed with their guards and **no writer at all**, which was
+deliberate and is now resolved for the first of them. `embed_component` gains
+`campaign`, in its own migration so the value is never used in the transaction
+that adds it (the rule `20260828130000` records), and `public.materialise_campaign(uuid)`
+turns an approved campaign card into exactly one `campaigns` row at state `ready`.
+
+**It is the third sibling of `materialise_plan` and `apply_plan_diff`**, sharing
+all four of their properties: one transaction, the payload read from the card
+rather than taken as arguments, idempotent by its own provenance
+(`campaigns.source_embed_id`, unique, declared for this at `20260829120000:87`),
+and unknown values raise. Same attributes too: `security invoker` in `public` with
+`EXECUTE` granted to `service_role` alone, `search_path` pinned, which is what
+keeps it clear of lints 0011, 0028 and 0029.
+
+**What is new is a spend check, and it exists twice on purpose.** The approval
+route runs `checkSpendCap` before recording the verdict, which is the readable
+refusal; this function runs the same arithmetic again under
+`select budget_ceiling ... for update`. Two cards approved in the same instant
+both pass a check made in the API, because each reads the committed total before
+either writes, and the result would be a sum of authorised caps exceeding the
+ceiling **inside the table whose whole purpose is recording what was authorised**.
+The duplication, its mitigation and the alternatives are argued in
+[ADR-0011](../40-adr/0011-spend-cap-checked-twice.md). This does not contradict
+"the spend cap is enforced in tool code, not by a constraint" below: that forbids
+a CHECK constraint, and this is the transactional arm of the tool.
+
+**The insert audits itself, because the trigger cannot.** `campaigns_guard_transition`
+fires `before update ... when (old.state is distinct from new.state)`, so a row
+created at `ready` writes no `campaign.transitioned` event. Without an explicit
+one, the authorisation of money would be the only act in this domain with no
+event, and `campaign.transitioned` would first appear when a campaign left a state
+nothing recorded it entering. `campaign.materialised` carries the embed, the room,
+the task, the channel, the cap, the currency, the committed total and ceiling at
+the time, and what the originating task's state was.
+
+**Closing the step is conditional and never raises.** The campaign is the step's
+deliverable, so the function moves the task `needs_user -> approved`, the arc
+`20260815220000` added for the answered-question path. If the step already moved,
+because the owner answered its question card or a replan cancelled it, the
+campaign is still created and the skip is recorded in the event. Raising there
+would strand the approval permanently: the card already reads `approved`, so every
+retry meets the same state and the campaign the owner authorised would never
+exist.
+
+**One defect shipped and the suite caught it.** The budget guard was written as
+`jsonb_typeof(payload->'budgetCap') <> 'number'`. For an absent key that is
+`NULL <> 'number'`, which is NULL and not true, so the guard did not fire, every
+later comparison inherited the NULL, and the insert wrote `budget_cap = NULL` at
+state `ready`: a campaign that authorised nothing while reporting itself
+authorised. It is `is distinct from` now, fixed at source and re-applied rather
+than patched by a follow-up so the migration replays from scratch. This is the
+NULL twin of the `NaN` case `spend.ts` guards on the TypeScript side, and both
+have the same shape, which is the one this repository keeps meeting: not an error,
+not a type mismatch, a wrong answer wearing the shape of a right one.
+
+**Applied and verified against the live database: `supabase/tests/materialise_campaign.sql`,
+41/41**, including both directions of the ceiling boundary (exactly on it is
+authorised, one cent past it is refused), that a terminal sibling holds none of
+the ceiling and a null-cap sibling contributes nothing, cross-room tenancy raising
+`42501`, and that every refusal leaves no campaign behind. Advisors clean with no
+new lints.
+
+`private.campaign_state_is_terminal` also gains `EXECUTE` for `service_role`. It
+was revoked from `public` when created and never granted to anybody, which was
+correct while only a definer trigger called it; a `security invoker` function
+needs it in its own right, and without the grant every commit would have failed
+with `permission denied for function` at the spend check. The same pairing
+`20260813130000` had to correct after `20260813120000`.
+
 ### Artifacts can be files now (`20260829124000`)
 
 `artifacts.storage_path` has existed since `20260813160000` and travelled the whole way: the column, `Artifact.storagePath` in `packages/contracts`, the read in `apps/api/src/routes/projects.ts`, and an arm in the project panel that said "This one is a file rather than text." **Nothing could ever put anything there.** There was no bucket, no policy on `storage.objects`, no route that could hand a file back, and no writer, so that UI arm was reachable only by a row nobody could create.

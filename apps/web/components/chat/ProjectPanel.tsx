@@ -8,6 +8,7 @@ import {
   getProjects,
   requestReplan,
   resolveStep,
+  setProjectBudget,
 } from '../../lib/api-client';
 
 /**
@@ -218,6 +219,11 @@ export function ProjectPanel({ roomId, canAct, onClose }: Props) {
                   {open && detail === null && <p className="work-empty">Loading the steps.</p>}
                   {open && detail !== null && detail.id === p.id && (
                     <>
+                      <Budget
+                        detail={detail}
+                        canAct={canAct}
+                        onChanged={() => setRefresh((n) => n + 1)}
+                      />
                       <TaskList
                         tasks={detail.tasks}
                         projectId={detail.id}
@@ -233,6 +239,142 @@ export function ProjectPanel({ roomId, canAct, onClose }: Props) {
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * What the owner has authorised, what is committed against it, and what is left.
+ *
+ * **This exists because the number had no writer.** `projects.budget_ceiling` was
+ * added with the workflow schema and nothing in the product ever set it, so
+ * `checkSpendCap` would have refused every campaign forever with
+ * `no_ceiling_authorised`. A guard whose input nothing supplies is the defect this
+ * repository has now paid for twice.
+ *
+ * **Null is shown as "nothing authorised", never as "no limit".** That is the
+ * column's documented stance and the one the spend check enforces. A panel
+ * rendering an empty ceiling as unlimited would describe an open account.
+ *
+ * The three figures are the same arithmetic the approval performs: committed
+ * counts non-terminal campaigns with a cap, so what a person reads here is what
+ * the check will do rather than a friendlier version of it.
+ */
+function Budget({
+  detail,
+  canAct,
+  onChanged,
+}: {
+  detail: ProjectDetail;
+  canAct: boolean;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const ceiling = detail.budgetCeiling;
+  const available = ceiling === null ? null : ceiling - detail.committedBudget;
+
+  async function save(next: number | null) {
+    setBusy(true);
+    setError(null);
+    try {
+      await setProjectBudget(detail.id, next);
+      setEditing(false);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not set the budget.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const typed = value.trim();
+  const parsed = typed === '' ? Number.NaN : Number(typed);
+  const valid = Number.isFinite(parsed) && parsed >= 0;
+
+  return (
+    <div className="work-budget">
+      <div className="work-budget-figures">
+        <span className="work-budget-figure">
+          <span className="work-budget-label">Authorised</span>
+          <span className="mono">
+            {ceiling === null ? 'Nothing yet' : `${ceiling} ${detail.currency}`}
+          </span>
+        </span>
+        <span className="work-budget-figure">
+          <span className="work-budget-label">Committed</span>
+          <span className="mono">
+            {detail.committedBudget} {detail.currency}
+          </span>
+        </span>
+        <span className="work-budget-figure">
+          <span className="work-budget-label">Available</span>
+          <span className="mono">
+            {available === null ? 'Nothing yet' : `${available} ${detail.currency}`}
+          </span>
+        </span>
+      </div>
+
+      {ceiling === null && (
+        <p className="work-empty">
+          No campaign can be approved until you authorise a budget for this project.
+        </p>
+      )}
+
+      {canAct &&
+        (editing ? (
+          <div className="plan-note">
+            <label className="auth-label" htmlFor={`budget-${detail.id}`}>
+              Authorised ceiling for the whole project ({detail.currency})
+            </label>
+            <input
+              id={`budget-${detail.id}`}
+              className="auth-input mono"
+              type="number"
+              min="0"
+              step="0.01"
+              inputMode="decimal"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="0.00"
+            />
+            <div className="plan-actions">
+              <button className="btn btn-ghost" onClick={() => setEditing(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => save(parsed)}
+                disabled={busy || !valid}
+              >
+                Authorise
+              </button>
+            </div>
+            {/* Clearing is a separate act with its own button, because it is not
+                the same decision as lowering a number and should not be reachable
+                by emptying a field. It stops new campaigns and deliberately does
+                not touch one already authorised. */}
+            {ceiling !== null && (
+              <button className="btn btn-ghost" onClick={() => save(null)} disabled={busy}>
+                Clear the ceiling, blocking new campaigns
+              </button>
+            )}
+            {error ? <div className="auth-error">{error}</div> : null}
+          </div>
+        ) : (
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              setValue(ceiling === null ? '' : String(ceiling));
+              setEditing(true);
+            }}
+          >
+            {ceiling === null ? 'Authorise a budget' : 'Change the budget'}
+          </button>
+        ))}
     </div>
   );
 }

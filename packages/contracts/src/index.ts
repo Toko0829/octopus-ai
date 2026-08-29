@@ -63,6 +63,41 @@ export type StepOwner = z.infer<typeof StepOwner>;
 export const TaskRiskTier = z.enum(['read_only', 'reversible', 'external', 'high_risk']);
 export type TaskRiskTier = z.infer<typeof TaskRiskTier>;
 
+/* --------------------------------------------------------------- marketing */
+
+/**
+ * Where a campaign runs. Mirrors `public.marketing_channel`.
+ *
+ * It lives here rather than in `packages/marketing` because it now crosses a
+ * wire: the campaign card carries it and the action route reads it back.
+ * `packages/marketing` re-exports this one rather than declaring its own, which
+ * is the whole reason it was moved instead of copied. Its own header named this
+ * slice as the moment that would happen.
+ *
+ * There is deliberately no `fake` member. A channel is a place in the world; a
+ * provider is how we talk to one, and `channel_connections.provider` is where
+ * `fake` lives.
+ */
+export const MarketingChannel = z.enum(['meta', 'google', 'email', 'organic_social']);
+export type MarketingChannel = z.infer<typeof MarketingChannel>;
+
+/**
+ * Mirrors `public.campaign_state`. On the wire for display only: every
+ * transition is decided in Postgres by `private.guard_campaign_transition`, so
+ * nothing a client sends can move a campaign.
+ */
+export const CampaignState = z.enum([
+  'draft',
+  'ready',
+  'publishing',
+  'live',
+  'paused',
+  'completed',
+  'cancelled',
+  'failed',
+]);
+export type CampaignState = z.infer<typeof CampaignState>;
+
 export const PlanCitation = z.object({
   sourceId: z.string(),
   label: z.string(),
@@ -380,6 +415,41 @@ export const ArtifactEmbedPayload = z.object({
 export type ArtifactEmbedPayload = z.infer<typeof ArtifactEmbedPayload>;
 
 /**
+ * A campaign proposed for the owner's authorisation, and the first card whose
+ * approval commits money rather than work.
+ *
+ * **`budgetCap` is null when the card is posted, and that is the design.** The
+ * reasoning core proposes what to run and where, never how much to spend: a
+ * number it invented would be indistinguishable on the card from one somebody
+ * authorised, and this is the surface where that distinction is the entire
+ * point. The owner types the cap before approving, and the action route writes
+ * their number into this payload as it records the verdict, so the card the
+ * flywheel stores and the payload `materialise_campaign` reads both carry the
+ * figure the person actually agreed to.
+ *
+ * `projectId` is named in the payload rather than resolved from the card's room,
+ * which is why `materialise_campaign` re-checks tenancy: the action route
+ * verifies membership of the card's room, and that says nothing about the
+ * project this payload points at.
+ */
+export const CampaignEmbedPayload = z.object({
+  projectId: z.string().uuid(),
+  /** The plan step this campaign delivers. Its approval is what closes the step. */
+  taskId: z.string().uuid(),
+  name: z.string().min(1).max(200),
+  objective: z.string().max(500).optional(),
+  channel: MarketingChannel,
+  /** Null until the owner enters one. Never proposed by the model. */
+  budgetCap: z.number().finite().nonnegative().nullable().default(null),
+  /** Must match the project's currency; `materialise_campaign` refuses otherwise. */
+  currency: z.string().length(3),
+  /** Why this channel, in the card's own words, grounded in the citations below. */
+  summary: z.string().min(1).max(800),
+  citations: z.array(PlanCitation).default([]),
+});
+export type CampaignEmbedPayload = z.infer<typeof CampaignEmbedPayload>;
+
+/**
  * `answered` exists because the four original states describe a **verdict**, and
  * a question has none. Recording an answered question as `approved` would put an
  * untrue sentence in the audit trail and, worse, hand the flywheel a labelled
@@ -417,6 +487,17 @@ export type EmbedState = z.infer<typeof EmbedState>;
 export const EmbedActionBody = z.object({
   action: z.enum(['approve', 'request_changes']),
   note: z.string().trim().max(2000).optional(),
+  /**
+   * The spend the owner authorises, for a campaign card only. The route refuses
+   * it on any other component rather than ignoring it, because a number silently
+   * dropped on the way to an authorisation is the failure this field exists to
+   * make impossible.
+   *
+   * Required to approve a campaign: a campaign approved with no cap would mean
+   * "authorised, nothing authorised". Zero is legal and meaningful, since email
+   * and organic social genuinely spend nothing.
+   */
+  budgetCap: z.number().finite().nonnegative().optional(),
 });
 export type EmbedActionBody = z.infer<typeof EmbedActionBody>;
 
@@ -433,6 +514,12 @@ export const EmbedActionResponse = z.object({
    * being told the approval failed when it did not.
    */
   projectId: z.string().uuid().nullable(),
+  /**
+   * The campaign an approved campaign card created, on the same terms as
+   * `projectId` above: null on `request_changes`, and null when the commit
+   * failed after the verdict was recorded.
+   */
+  campaignId: z.string().uuid().nullable().default(null),
 });
 export type EmbedActionResponse = z.infer<typeof EmbedActionResponse>;
 
@@ -461,6 +548,7 @@ export const ActionEmbed = z.discriminatedUnion('component', [
   z.object({ ...EmbedBase, component: z.literal('question'), payload: QuestionEmbedPayload }),
   z.object({ ...EmbedBase, component: z.literal('artifact'), payload: ArtifactEmbedPayload }),
   z.object({ ...EmbedBase, component: z.literal('replan'), payload: ReplanEmbedPayload }),
+  z.object({ ...EmbedBase, component: z.literal('campaign'), payload: CampaignEmbedPayload }),
 ]);
 export type ActionEmbed = z.infer<typeof ActionEmbed>;
 
@@ -472,6 +560,7 @@ export type PlanActionEmbed = Extract<ActionEmbed, { component: 'plan' }>;
 export type QuestionActionEmbed = Extract<ActionEmbed, { component: 'question' }>;
 export type ArtifactActionEmbed = Extract<ActionEmbed, { component: 'artifact' }>;
 export type ReplanActionEmbed = Extract<ActionEmbed, { component: 'replan' }>;
+export type CampaignActionEmbed = Extract<ActionEmbed, { component: 'campaign' }>;
 
 /**
  * A chat message as returned by the API. `seq` is the monotonic ordering cursor
@@ -707,6 +796,24 @@ export const ProjectSummary = z.object({
 });
 export type ProjectSummary = z.infer<typeof ProjectSummary>;
 
+/**
+ * A campaign as the project panel needs it. The approved brief and the ad tree
+ * are not here: nothing publishes yet, so there is nothing under a campaign to
+ * show, and a field with no producer is the defect class this module has already
+ * paid for twice.
+ */
+export const CampaignSummary = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  channel: MarketingChannel,
+  state: CampaignState,
+  /** What the owner authorised. Null is possible only on rows this API did not write. */
+  budgetCap: z.number().nullable(),
+  currency: z.string(),
+  createdAt: z.string(),
+});
+export type CampaignSummary = z.infer<typeof CampaignSummary>;
+
 export const ProjectDetail = z.object({
   id: z.string().uuid(),
   goal: z.string(),
@@ -714,9 +821,38 @@ export const ProjectDetail = z.object({
   createdAt: z.string(),
   /** The room the project's plan card was posted in. Null only for legacy rows. */
   roomId: z.string().uuid().nullable(),
+  /**
+   * What the owner has authorised for the whole venture, and what is already
+   * committed against it.
+   *
+   * **Null means nothing is authorised, never unlimited.** That is the column's
+   * documented stance and the one `checkSpendCap` enforces; a panel that read it
+   * as "no limit set" would describe an open account.
+   *
+   * `committedBudget` sums the caps of every non-terminal campaign, so the
+   * headroom a person sees is the same arithmetic the approval performs rather
+   * than a friendlier version of it.
+   */
+  budgetCeiling: z.number().nullable(),
+  currency: z.string(),
+  committedBudget: z.number(),
   tasks: z.array(Task),
+  campaigns: z.array(CampaignSummary).default([]),
 });
 export type ProjectDetail = z.infer<typeof ProjectDetail>;
+
+/**
+ * Setting the ceiling is an authorisation, so it is owner-only and audited.
+ *
+ * `null` clears it, which blocks every future campaign approval and deliberately
+ * touches no campaign already authorised: withdrawing permission to commit more
+ * is not the same act as cancelling what is already committed, and conflating
+ * them here would stop spend nobody asked to stop.
+ */
+export const SetProjectBudgetBody = z.object({
+  budgetCeiling: z.number().finite().nonnegative().nullable(),
+});
+export type SetProjectBudgetBody = z.infer<typeof SetProjectBudgetBody>;
 
 const ProjectParams = z.object({ projectId: z.string().uuid() });
 
@@ -814,6 +950,22 @@ export const contract = c.router(
         404: ApiError,
       },
       summary: 'One project with its tasks and everything they produced',
+    },
+
+    setProjectBudget: {
+      method: 'PATCH',
+      path: '/projects/:projectId',
+      pathParams: ProjectParams,
+      body: SetProjectBudgetBody,
+      responses: {
+        200: ProjectDetail,
+        400: ApiError,
+        401: ApiError,
+        /** Only the owner authorises spend; a member is told so rather than shown nothing. */
+        403: ApiError,
+        404: ApiError,
+      },
+      summary: "Set or clear the project's authorised budget ceiling (owner only)",
     },
 
     getArtifactFileUrl: {

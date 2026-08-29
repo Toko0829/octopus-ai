@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { PostgrestError } from '@supabase/supabase-js';
 import {
   ArtifactEmbedPayload,
+  CampaignEmbedPayload,
   EmbedState,
   ListMessagesQuery,
   Message,
@@ -67,6 +68,7 @@ const EmbedRow = z.discriminatedUnion('component', [
   // somebody forgot to add, and nothing distinguished the two.
   z.object({ ...EmbedRowBase, component: z.literal('artifact'), payload: ArtifactEmbedPayload }),
   z.object({ ...EmbedRowBase, component: z.literal('replan'), payload: ReplanEmbedPayload }),
+  z.object({ ...EmbedRowBase, component: z.literal('campaign'), payload: CampaignEmbedPayload }),
 ]);
 
 /** Database row shape (snake_case) for the columns we select. */
@@ -124,6 +126,8 @@ function toEmbed(raw: unknown): Message['embed'] {
       return { ...common, component: 'artifact', payload: embed.payload };
     case 'replan':
       return { ...common, component: 'replan', payload: embed.payload };
+    case 'campaign':
+      return { ...common, component: 'campaign', payload: embed.payload };
     default: {
       const unreachable: never = embed;
       return unreachable;

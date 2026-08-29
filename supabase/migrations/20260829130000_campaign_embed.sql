@@ -1,0 +1,34 @@
+-- 20260829130000_campaign_embed.sql — a card for authorising a campaign.
+-- Owner doc: docs/30-modules/chat-discord.md
+-- Also: docs/30-modules/marketing-growth-engine.md
+--
+-- The four marketing tables landed with their guards and no writer at all
+-- (`20260829120000` through `123000`), which was deliberate: the recorded defect
+-- in this repository is the opposite order, with `tasks.risk_tier` unreachable
+-- for its whole life and `task_deps` enforcing an empty set for two weeks. This
+-- is the first writer, and it arrives as a card because of what approving it
+-- means.
+--
+-- **Why a card and not a tool call.** `create_campaign` is `high_risk` in
+-- `marketing-growth-engine.md`, so `routeTask`'s first rule parks the step at
+-- `needs_user` whatever the planner proposed, and the step then has nowhere to
+-- go: there is no surface on which a person can say yes. This component is that
+-- surface. It is the same authorisation boundary the plan card already draws,
+-- applied to the first act that commits money rather than work.
+--
+-- **No new state value.** A campaign card is a proposal with a verdict, so
+-- `pending`, `approved` and `rejected` mean exactly what they already mean. The
+-- question card needed `answered` because a question has no verdict; this one
+-- does, and it is the whole point of the card.
+--
+-- Split from the migration that adds the function purely so this value is never
+-- USED in the transaction that adds it, which PostgreSQL forbids. Same reason as
+-- `20260828130000`, `20260815210000` and `20260815120000` before it.
+
+alter type public.embed_component add value if not exists 'campaign';
+
+-- No policy or grant changes, for the reason `20260815120000` records:
+-- `action_embeds` is already client-readable through room membership and
+-- server-written with no client INSERT or UPDATE policy. Here that matters more
+-- than it did for any previous component: a client able to insert one of these
+-- could fabricate a campaign card against its own project and approve it.

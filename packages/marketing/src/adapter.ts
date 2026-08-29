@@ -23,18 +23,23 @@
  */
 
 import { z } from 'zod';
+import { MarketingChannel } from '@octopus/contracts';
 
 /**
  * Mirrors `public.marketing_channel`.
  *
- * Declared here rather than in `packages/contracts` because nothing crosses a
- * wire yet: no route accepts it and no card renders it. It moves to `contracts`
- * in the slice that first sends it somewhere (rule 9 is about shared boundaries,
- * and a type with one consumer has no boundary to share). A `fake` value is
- * absent on purpose: `fake` is a **provider**, and this is a channel.
+ * **It now lives in `@octopus/contracts` and is re-exported here**, which is the
+ * move this file's previous comment promised for "the slice that first sends it
+ * somewhere". That slice is the campaign card: the card payload carries a
+ * channel, the action route reads one back, and the project panel renders one,
+ * so the type finally has a boundary to share.
+ *
+ * Re-exported rather than left as a second declaration, because two enums that
+ * must agree are two enums that can disagree, and this one is checked against a
+ * Postgres enum on one side and a card payload on the other. A `fake` value is
+ * still absent on purpose: `fake` is a **provider**, and this is a channel.
  */
-export const MarketingChannel = z.enum(['meta', 'google', 'email', 'organic_social']);
-export type MarketingChannel = z.infer<typeof MarketingChannel>;
+export { MarketingChannel };
 
 /** A window of measured performance, as ISO-8601 instants. */
 export const MetricsPeriod = z.object({

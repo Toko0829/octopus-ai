@@ -58,6 +58,8 @@ All channel actions are typed tools with **risk tiers**; anything that publishes
 
 The `@octopus/core` split applied here: reasoning a reader can check without running anything goes in a package, and everything that talks to Postgres or to a platform stays in `apps/api`. **There is no Supabase client, no `fetch`, no filesystem access and no clock anywhere in `packages/marketing`.** That is a property to keep, not a coincidence of the package being new.
 
+`@octopus/contracts` became a dependency with the campaign card, and exactly one type moved: **`MarketingChannel`**, which the card payload carries, the action route reads back and the project panel renders, so it finally has a boundary to share. `adapter.ts` re-exports it rather than declaring a second copy, because two enums that must agree are two enums that can disagree, and this one is checked against a Postgres enum on one side and a card payload on the other. `CreateCampaignSpec` and the rest of the seam still face an adapter rather than a wire and stay here; moving them now would be the unused edge rule 20 asks us not to add.
+
 | File                  | What it decides                                                                  |
 | --------------------- | -------------------------------------------------------------------------------- |
 | `spend.ts`            | `checkSpendCap`: may this campaign be authorised for this amount                 |
@@ -116,19 +118,93 @@ Expert marketers plug in for: **creative direction & taste**, **high-end video/e
 
 Nine were specified from Phase 0 and this table says which of them exist, because a list that mixes live tables with intentions reads as though all nine are there. Column shapes live in [data-model.md](../10-architecture/data-model.md).
 
-| Entity                 | Status                   | Notes                                                                                                              |
-| ---------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `campaigns`            | ✅ live `20260829120000` | One channel, one authorised cap, one lifecycle. `budget_cap` NULL means nothing authorised, never unlimited        |
-| `channel_connections`  | ✅ live `20260829121000` | OAuth tokens, **room-scoped**. No client policy and no client grant: RLS filters rows, not columns                 |
-| `ad_entities`          | ✅ live `20260829122000` | The campaign → ad_set → ad tree. `rejected` is entity-level; `spec` is the approved brief the publisher reads      |
-| `campaign_outcomes`    | ✅ live `20260829123000` | Measured performance. Append-only including for `service_role`; a correction is a new row with `source = 'manual'` |
-| `content_items`        | ⏳ deferred (slice 6+)   | Needs a producer first. A schema with no writer is this repository's most-documented defect class                  |
-| `creative_assets`      | ⏳ deferred (slice 6+)   | Lands with the creative-provider ADR and the first byte-producer; until then creative arrives as a file artifact   |
-| `email_sequences`      | ⏳ deferred (slice 6+)   | —                                                                                                                  |
-| `landing_pages`        | ⏳ deferred (slice 6+)   | —                                                                                                                  |
-| `creative_performance` | ⏳ deferred (slice 6+)   | Depends on `creative_assets` existing to attach to                                                                 |
+| Entity                 | Status                                                                           | Notes                                                                                                              |
+| ---------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `campaigns`            | ✅ live `20260829120000`, **written by `materialise_campaign` `20260829140000`** | One channel, one authorised cap, one lifecycle. `budget_cap` NULL means nothing authorised, never unlimited        |
+| `channel_connections`  | ✅ live `20260829121000`                                                         | OAuth tokens, **room-scoped**. No client policy and no client grant: RLS filters rows, not columns                 |
+| `ad_entities`          | ✅ live `20260829122000`                                                         | The campaign → ad_set → ad tree. `rejected` is entity-level; `spec` is the approved brief the publisher reads      |
+| `campaign_outcomes`    | ✅ live `20260829123000`                                                         | Measured performance. Append-only including for `service_role`; a correction is a new row with `source = 'manual'` |
+| `content_items`        | ⏳ deferred (slice 6+)                                                           | Needs a producer first. A schema with no writer is this repository's most-documented defect class                  |
+| `creative_assets`      | ⏳ deferred (slice 6+)                                                           | Lands with the creative-provider ADR and the first byte-producer; until then creative arrives as a file artifact   |
+| `email_sequences`      | ⏳ deferred (slice 6+)                                                           | —                                                                                                                  |
+| `landing_pages`        | ⏳ deferred (slice 6+)                                                           | —                                                                                                                  |
+| `creative_performance` | ⏳ deferred (slice 6+)                                                           | Depends on `creative_assets` existing to attach to                                                                 |
 
-**No writer exists for the four live tables yet, and that is deliberate rather than an oversight.** The campaign card, `materialise_campaign`, the OAuth callback and the publish executor are the next slices. Guards land with their tables here because the recorded failure in this repository is the other order: `tasks.risk_tier` was unreachable for its entire life, and `task_deps` held no row for two weeks while enforcing an empty set.
+**`campaigns` has its writer now; the other three still do not, and that remains deliberate.** The OAuth callback (`channel_connections`), the publish executor (`ad_entities`) and the metrics puller (`campaign_outcomes`) are the next slices. Guards land with their tables here because the recorded failure in this repository is the other order: `tasks.risk_tier` was unreachable for its entire life, and `task_deps` held no row for two weeks while enforcing an empty set.
+
+## The campaign card
+
+The first surface in this product whose approval commits money, and the reason it
+exists at all is a dead end. `create_campaign` is `high_risk`, so `routeTask`'s
+first rule parks the step at `needs_user` whatever the planner proposed. Before
+this, that was where it stopped: `notifyWaiting` told the owner a step needed
+them, and there was **no surface on which they could say yes to a campaign**. The
+plan card is the authorisation boundary this system already uses, and this is the
+same boundary applied to spend.
+
+**Which steps get a card is decided by the router's own verdict.** `campaignCandidates`
+takes the tick's results where the outcome is `needs_user` **and** the rule that
+fired is `high_risk_needs_authorisation`. Every `TickResult` already carries the
+rule, so Node needs no vocabulary list of its own and cannot drift from the one in
+`risk.py` that raised the tier. Whether the step is actually a campaign, rather
+than an account connection or a publish, is the reasoning core's call: `/campaign`
+is expected to decline and does so for most steps it is asked about. A decline
+costs nothing, since the step is already announced as needing the owner; a wrong
+card asks somebody to authorise spend on a channel nobody chose.
+
+**The model never proposes a budget.** `ProposeCampaignProposal` has no budget
+field on either side of the wire, `draft_campaign` strips budget-shaped keys
+before validation, and `campaignEmbedPayload` sets `budgetCap: null`
+unconditionally with no parameter for it. The owner types the cap on the card, and
+the action route writes their number into the payload in the same statement that
+records the verdict, so the card the flywheel stores and the payload the writer
+reads both carry the figure a person actually entered. Argued in
+[ADR-0011](../40-adr/0011-spend-cap-checked-twice.md); the short version is that
+once both are `budget_cap` on a row, a number a model invented and a number a
+person authorised are indistinguishable, and this is the surface where that
+difference is the entire point.
+
+**The spend cap is enforced at two points**, and neither is redundant. The
+approval route refuses readably with the verdict's own sentence and leaves the
+card `pending`, so a smaller figure can be entered against the same card;
+`materialise_campaign` re-checks under a row lock, because two cards approved in
+the same instant both pass a check made in the API. The IO stays in `apps/api`
+(`readSpendInputs`) and the arithmetic stays in `packages/marketing`
+(`checkSpendCap`), which is the split this doc already required.
+
+**Approving closes the step.** The campaign is what the step was for, so the
+writer moves the task `needs_user -> approved` and the scheduler ticks
+immediately, which is what lets anything depending on it become ready. The
+transition is conditional and never raises: a step that moved while the card sat
+there still yields a campaign, and the skip is recorded in the event rather than
+being silent.
+
+**Nothing publishes.** The campaign lands at `ready`, which means approved by the
+owner and not yet sent, and stops there. No adapter is called, no
+`channel_connections` row is read, and `ad_entities` stays empty. The card says
+so in as many words, because a person who has just authorised a budget reasonably
+wonders whether money is now moving.
+
+## Setting the budget ceiling
+
+`projects.budget_ceiling` had existed since `20260813120000` with **no reader and
+no writer anywhere in TypeScript**, so `checkSpendCap` composed a number nothing
+could set and would have refused every campaign forever with
+`no_ceiling_authorised`. That is the defect class this repository has now paid for
+twice, and it is closed by `PATCH /api/projects/:projectId`: owner-only through
+`resolveProjectOwner`, written with the service client because clients hold no
+UPDATE grant on `projects`, and audited as `project.budget_set` with an explicit
+`actor_id` (the `auth.uid()` idiom the SQL writers use reads null under the
+service key, which would record a person's decision as the system's).
+
+Clearing it is legal and deliberately narrow: `null` blocks every future campaign
+approval and touches no campaign already authorised, because withdrawing
+permission to commit more is not the same act as stopping spend already
+committed. The project panel shows authorised, committed and available, computed
+with the same two filters the approval uses.
+
+The `budget_band` intake slot is **not** parsed into this number. It is free text
+describing a range, not an authorisation of an amount.
 
 ## Campaign lifecycle
 

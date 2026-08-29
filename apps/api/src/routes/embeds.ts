@@ -1,11 +1,14 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { EmbedActionBody } from '@octopus/contracts';
+import { CampaignEmbedPayload, EmbedActionBody } from '@octopus/contracts';
 import { summarise, tick } from '@octopus/core';
+import { checkSpendCap } from '@octopus/marketing';
 import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
 import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
 import { createSchedulerPorts } from '../lib/scheduler';
 import { notifyWaiting } from '../lib/waiting';
+import { produceCampaignCards } from '../lib/campaign-cards';
+import { readSpendInputs, spendCapInput } from '../lib/spend-reads';
 
 /**
  * Acting on an interactive embed: the approve / request-changes path for a plan
@@ -66,7 +69,7 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       }
 
       const { roomId, embedId } = params.data;
-      const { action, note } = parsed.data;
+      const { action, note, budgetCap } = parsed.data;
       const userId = (request.user as NonNullable<typeof request.user>).sub;
 
       // (1) Read as the caller, so RLS decides visibility rather than this code
@@ -95,8 +98,21 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       // a payload to a function never written for it. Any component added later is
       // refused until someone writes what acting on it means, which is the same
       // direction the `required_role` check below already fails in.
-      if (embed.component !== 'plan' && embed.component !== 'replan') {
+      if (
+        embed.component !== 'plan' &&
+        embed.component !== 'replan' &&
+        embed.component !== 'campaign'
+      ) {
         return fail(reply, 409, 'conflict', 'This card is not one you approve or reject.');
+      }
+
+      // `budgetCap` is meaningful on exactly one component, and a number sent
+      // with any other card is refused rather than ignored. Ignoring it would
+      // accept a request that says "authorise this much", act on it as though it
+      // said nothing about money, and answer 200: the caller would have every
+      // reason to believe a figure had been recorded.
+      if (budgetCap !== undefined && embed.component !== 'campaign') {
+        return fail(reply, 400, 'bad_request', 'Only a campaign card carries a budget.');
       }
 
       // (3) required_role. Only 'owner' exists today; an unknown value denies
@@ -127,10 +143,68 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       const nextState = action === 'approve' ? 'approved' : 'rejected';
       const admin = createServiceClient(opts.supabase);
 
+      // (6) Approving a campaign is authorising spend, so the cap is checked
+      // before the verdict is recorded rather than after.
+      //
+      // This is the readable half of a check that exists twice. Here it can
+      // refuse with the numbers in a sentence and leave the card PENDING, so the
+      // owner can enter a smaller figure and approve the same card. The
+      // authoritative half is inside `materialise_campaign`, under a row lock,
+      // because two cards approved in the same instant both pass this one: each
+      // reads the committed total before either writes. Neither is redundant.
+      // Dropping this one turns a lowered budget into an opaque failure after the
+      // decision was already recorded; dropping that one lets the sum of
+      // authorised caps exceed the ceiling in the table whose whole purpose is
+      // recording what was authorised.
+      let approvedPayload: Record<string, unknown> | null = null;
+      if (embed.component === 'campaign' && action === 'approve') {
+        if (budgetCap === undefined) {
+          return fail(reply, 400, 'bad_request', 'Enter a budget before approving this campaign.');
+        }
+
+        const payload = CampaignEmbedPayload.safeParse(embed.payload);
+        if (!payload.success) {
+          request.log.error({ embedId }, 'campaign card payload is unreadable');
+          return fail(reply, 409, 'conflict', 'This card cannot be read.');
+        }
+
+        let reads;
+        try {
+          reads = await readSpendInputs(admin, payload.data.projectId);
+        } catch (err) {
+          request.log.error({ err, embedId }, 'could not read the spend inputs');
+          return fail(reply, 500, 'internal_error', 'Could not check the budget.');
+        }
+
+        const verdict = checkSpendCap(spendCapInput(reads, budgetCap));
+        if (!verdict.allowed) {
+          // 409 and not 403: nothing about the caller is wrong, the number is.
+          // The card stays pending, which is what makes retrying with a smaller
+          // figure the obvious next move rather than a dead end.
+          request.log.info(
+            { embedId, rule: verdict.rule, projectId: payload.data.projectId },
+            'campaign approval refused by the spend cap',
+          );
+          return fail(reply, 409, 'conflict', verdict.reason);
+        }
+
+        // The number the owner typed becomes part of the card, written in the
+        // same statement that records the verdict below. What was approved has to
+        // be what gets built, and `materialise_campaign` reads the payload rather
+        // than taking arguments, so a cap passed alongside the card instead of
+        // into it would be a figure nobody could later prove was authorised.
+        approvedPayload = { ...payload.data, budgetCap };
+      }
+
       // (5) Conditional on still being pending, so a double submit updates once.
       const { data: updated, error: updateError } = await admin
         .from('action_embeds')
-        .update({ state: nextState, acted_by: userId, acted_at: new Date().toISOString() })
+        .update({
+          state: nextState,
+          acted_by: userId,
+          acted_at: new Date().toISOString(),
+          ...(approvedPayload ? { payload: approvedPayload } : {}),
+        })
         .eq('id', embedId)
         .eq('state', 'pending')
         .select('id, state')
@@ -152,7 +226,12 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
         actor_id: userId,
         verdict: action === 'approve' ? 'approved' : 'changes_requested',
         note: note ?? null,
-        subject: embed.payload,
+        // The payload as approved, which for a campaign includes the cap the
+        // owner just typed. Recording the pre-update read instead would hand the
+        // flywheel a labelled example of somebody approving a campaign with no
+        // budget, which is not what happened and is the one field on this card
+        // that a person, rather than a model, supplied.
+        subject: approvedPayload ?? embed.payload,
       });
       if (feedbackError) {
         request.log.error(
@@ -181,9 +260,18 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       // rather than variants: both read the payload from the card, both are
       // idempotent by their own provenance, and both are one transaction because
       // half an applied diff is a project in a state nobody reviewed.
-      const commit = embed.component === 'replan' ? 'apply_plan_diff' : 'materialise_plan';
+      // A campaign card commits through its own function, the third sibling of
+      // the same shape: one transaction, payload read from the card, idempotent
+      // by its own provenance, and unknown values raise.
+      const commit =
+        embed.component === 'replan'
+          ? 'apply_plan_diff'
+          : embed.component === 'campaign'
+            ? 'materialise_campaign'
+            : 'materialise_plan';
 
       let projectId: string | null = null;
+      let campaignId: string | null = null;
       if (action === 'approve') {
         const { data, error: materialiseError } = await admin.rpc(commit, {
           p_embed_id: embedId,
@@ -193,18 +281,35 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
             { err: materialiseError, embedId, roomId, commit },
             'card approved but not committed; the card stands and the change is missing',
           );
+        } else if (embed.component === 'campaign') {
+          // This function returns the campaign, not the project. The project is
+          // the one named in the payload, and it is reported so the client can
+          // refresh the panel the new campaign appears in.
+          campaignId = data as string;
+          const parsedPayload = CampaignEmbedPayload.safeParse(approvedPayload ?? embed.payload);
+          projectId = parsedPayload.success ? parsedPayload.data.projectId : null;
+          request.log.info({ embedId, roomId, campaignId, projectId }, 'campaign authorised');
         } else {
           projectId = data as string;
           request.log.info({ embedId, roomId, projectId, commit }, 'card committed');
+        }
 
-          // One scheduler tick, immediately. A project whose tasks sit PENDING
-          // until some future trigger fires is indistinguishable from a project
-          // that did not get created, and the person just approved it: the useful
-          // moment to show what happens next is now.
-          //
-          // Not awaited-into-the-response-shape and not fatal. The approval and
-          // the project both stand whatever the tick does, and the next tick will
-          // find the same tasks still PENDING and pick them up.
+        // One scheduler tick, immediately, whichever card this was. A project
+        // whose tasks sit PENDING until some future trigger fires is
+        // indistinguishable from a project that did not get created, and the
+        // person just approved it: the useful moment to show what happens next is
+        // now.
+        //
+        // It matters for a campaign too, and not only for a plan.
+        // `materialise_campaign` moves the authorising step to `approved`, which
+        // is exactly what makes anything depending on it ready, so skipping the
+        // tick here would leave the unblocked work sitting until the next
+        // 30-second pass for no reason.
+        //
+        // Not awaited-into-the-response-shape and not fatal. The approval and
+        // whatever it created both stand whatever the tick does, and the next
+        // tick will find the same tasks and pick them up.
+        if (projectId) {
           try {
             const ports = createSchedulerPorts(admin, {
               aiServiceUrl: opts.aiServiceUrl,
@@ -216,6 +321,13 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
             // The person is right here, having just approved. A step that needs
             // them should say so now rather than on the next tick.
             await notifyWaiting(admin, report, request.log);
+            // And a step that stopped for an authorisation gets the card that
+            // lets them give it, on the same pass.
+            await produceCampaignCards(admin, report, {
+              aiServiceUrl: opts.aiServiceUrl,
+              aiTimeoutMs: opts.aiTimeoutMs,
+              log: request.log,
+            });
           } catch (tickError) {
             request.log.error(
               { err: tickError, projectId },
@@ -229,9 +341,21 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       // audit trail (discord-chat-spec.md), and a state change nobody can see is
       // not one anyone can dispute.
       const approvedCopy =
-        embed.component === 'replan' ? 'Plan changes applied.' : 'Plan approved.';
+        embed.component === 'replan'
+          ? 'Plan changes applied.'
+          : embed.component === 'campaign'
+            ? // Says what did not happen as plainly as what did. A person who has
+              // just authorised a budget reasonably wonders whether money is now
+              // moving, and in this slice nothing publishes: the campaign is
+              // recorded as ready and stops there.
+              'Campaign approved and recorded. Nothing is published or spent yet.'
+            : 'Plan approved.';
+      const rejectedCopy =
+        embed.component === 'campaign'
+          ? 'Campaign not approved. The step still needs you.'
+          : 'Changes requested.';
       const summary =
-        action === 'approve' ? approvedCopy : `Changes requested.${note ? ` Note: ${note}` : ''}`;
+        action === 'approve' ? approvedCopy : `${rejectedCopy}${note ? ` Note: ${note}` : ''}`;
       const { error: noticeError } = await admin.from('messages').insert({
         room_id: roomId,
         author_id: null,
@@ -243,8 +367,11 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
         request.log.error({ err: noticeError, embedId }, 'could not post decision notice');
       }
 
-      request.log.info({ embedId, roomId, userId, action, projectId }, 'embed action recorded');
-      return reply.code(200).send({ id: updated.id, state: updated.state, projectId });
+      request.log.info(
+        { embedId, roomId, userId, action, projectId, campaignId },
+        'embed action recorded',
+      );
+      return reply.code(200).send({ id: updated.id, state: updated.state, projectId, campaignId });
     },
   );
 }
