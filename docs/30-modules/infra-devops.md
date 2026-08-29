@@ -72,6 +72,44 @@ would ship `node_modules` to the daemon for no reason. A root `.dockerignore`
 keeps the Node context from carrying `node_modules`, `.git` and the AI service's
 2.5 GB virtualenv.
 
+**Both Node images copy workspace manifests one line at a time, and forgetting a
+line is silent, so `apps/api/Dockerfile` asserts the list instead of trusting
+it.** Manifests are copied before the source so `pnpm install` re-runs when a
+dependency moves rather than when a file changes, which means every
+`workspace:*` the app declares needs its own `COPY`. The campaign-card slice
+added `@octopus/marketing` to `apps/api` and did not add the line. **The image
+built green and the container crashed on boot**, which is the ordering that makes
+this worth writing down rather than just fixing.
+
+The comment that used to sit above those COPY lines claimed a missing manifest
+"fails as an unresolvable `workspace:*`". It does not. `pnpm install
+--frozen-lockfile` completed normally, verified by building the image with the
+line removed on purpose: pnpm links a workspace dependency **by path**, a symlink
+to a directory that does not yet exist is still a legal symlink, and
+`COPY packages/ packages/` afterwards creates the directory. The link then
+resolves, tsx loads the real TypeScript, and the first symptom is:
+
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'zod'
+  imported from /app/packages/marketing/src/adapter.ts
+```
+
+which names a third-party module and a source file that are both innocent. The
+actual fault is that `packages/marketing/node_modules` was never installed, and
+nothing in that message points at it. **A comment asserting a safety property the
+build does not have is worse than no comment**, because it is the reason nobody
+checks.
+
+A `RUN node -e` step after the install now reads the API's own manifest, filters
+its `workspace:*` dependencies, and fails the build naming any whose
+`node_modules` entry did not arrive. It is four lines of the build rather than
+another check on every push ([no new CI](../../AGENTS.md) is a standing
+preference), it costs 0.3s, and it was verified in both directions: green listing
+all four packages, and red naming `@octopus/marketing` when the COPY line is
+taken away. `apps/web` needs no equivalent today because it declares only
+`@octopus/config` and `@octopus/contracts`, both copied; if it grows a third, the
+same guard belongs there.
+
 **Credentials come from `apps/api/.env`, read rather than copied**, so there is
 no second file holding a service key. The `ai` service is deliberately given that
 file and **not** `services/ai/.env`: the API file holds credentials, which is all
