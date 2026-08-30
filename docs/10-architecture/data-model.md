@@ -10,6 +10,55 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### Threads, and `scope` stops being decorative (`20260901120000` … `20260901123000`)
+
+**Zero new capability, for the second slice running.** No route, no writer, no
+client grant that permits a write. Nothing a person can do afterwards that they
+could not do before. What changed is what a _future_ thread-scoped member can
+see, and no such member can exist until the matcher slice.
+
+**`threads`** carries a denormalised `room_id` beside `channel_id`, on
+`action_embeds`' precedent, so tenancy policies are a membership call rather
+than a join. The denormalised copy is kept honest by a composite foreign key to
+`channels (id, room_id)`, which required adding `unique (id, room_id)` to
+`channels` as a target. `task_id` is a **plain unique**: one thread per task
+ever, because a reassignment creates a second engagement ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md))
+and must not fragment the trail of what happened on the task.
+
+**The foreign keys are NO ACTION, and the distinction is the design.** A thread
+holding messages cannot be deleted: `on delete set null` would re-home those
+messages into the null-thread room stream, which both destroys the container the
+audit trail is read through and _widens_ who can see them, since room-scoped
+members read that stream. A deletion must not be a disclosure. NO ACTION rather
+than RESTRICT because NO ACTION is checked at end of statement, so deleting a
+whole room still cascades cleanly — verified on the live database in a
+rolled-back transaction rather than argued from the manual.
+
+**`room_members.scope`** gains a check constraint, a nullable `thread_id`, and a
+check binding the two (`(scope = 'thread') = (thread_id is not null)`). It had
+been `text not null default 'room'` with **no constraint and not one reader**
+since `20260728120000` — the fifth member of the unreachable-column family, and
+the second of the kind that announces itself as a control, since it shipped
+beside `expires_at`, which is enforced everywhere. Shape and rationale in
+[ADR-0017](../40-adr/0017-thread-admission-is-a-property-of-the-membership.md).
+
+**`20260901123000` corrects `20260901122000` and is kept as a separate
+migration.** The room_members policy had reused the messages predicate verbatim,
+which on that table asks a different question, because there the rows _are_ the
+scopes: a thread-scoped member matched every membership row pointing at their own
+thread rather than only their own. Found by `thread_scope.sql` asserting 1 and
+measuring 2. The applied migration is left exactly as it ran, because editing it
+to hide the correction is how the recorded body stops matching the file.
+
+**One advisor lint family is added and it is the design.** The new foreign keys
+carry covering indexes, which report as `unused_index` until their readers land.
+`node_credentials` declined a speculative index on the grounds that it "would
+serve a sweep that does not exist"; that argument does not reach here, because a
+foreign key _is_ a query, run on every delete of the parent row, and for
+`messages_thread_in_same_room` the child table is the one that grows without
+bound. The alternative lint, `unindexed_foreign_keys`, names a cost that is real
+today.
+
 ### The marketplace gets its domain (`20260831120000` … `20260831123000`)
 
 **Zero new capability.** No route, no adapter, no registry, and no client grant
@@ -662,16 +711,16 @@ Audit         events (append-only, event-sourced)   notifications   delivery_log
 
 ## Chat schema
 
-| Table                                 | Key columns                                                                                                                                                                                      |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `rooms`                               | `id`, `project_id`, `kind` (guild/dm), `created_at`                                                                                                                                              |
-| `room_members`                        | `room_id`, `user_id`, `role`, `scope` (room/thread), `joined_at`, `expires_at` (time-boxed node access)                                                                                          |
-| `channels`                            | `id`, `room_id`, `name`, `kind` (text/topic), `position`                                                                                                                                         |
-| `threads`                             | `id`, `channel_id`, `title`, `task_id?`                                                                                                                                                          |
-| `messages`                            | `id`, `room_id`, `channel_id`, `thread_id?`, `author_id`, `author_kind` (user/agent/node/system), `body`, `idempotency_key` UNIQUE, `seq` (ordering cursor), `created_at`                        |
-| `reactions`, `pins`, `saved_messages` | —                                                                                                                                                                                                |
-| `action_embeds`                       | **live** (`20260812120000`) — `id`, `message_id` UNIQUE, `room_id`, `component` (plan/approval/pay/sign/assign), `payload` JSONB, `required_role`, `state`, `acted_by`, `acted_at`, `expires_at` |
-| `presence`                            | ephemeral (Realtime Presence), not authoritative in Postgres                                                                                                                                     |
+| Table                                 | Key columns                                                                                                                                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `rooms`                               | `id`, `project_id`, `kind` (guild/dm), `created_at`                                                                                                                                                    |
+| `room_members`                        | **live** — `room_id`, `user_id`, `role`, `scope` (`room`/`thread`, checked), `thread_id?` (`20260901122000`, bound to `scope` by check), `joined_at`, `expires_at` (time-boxed node access)            |
+| `channels`                            | `id`, `room_id`, `name`, `kind` (text/topic), `position`; `unique (id, room_id)` as a foreign-key target (`20260901120000`)                                                                            |
+| `threads`                             | **live** (`20260901120000`) — `id`, `room_id` (denormalised), `channel_id`, `task_id?` UNIQUE, `title`, `created_at`; `unique (id, room_id)`, composite FK to `channels (id, room_id)`. No writer      |
+| `messages`                            | `id`, `room_id`, `channel_id`, `thread_id?` (**live**, `20260901121000`), `author_id`, `author_kind` (user/agent/node/system), `body`, `idempotency_key` UNIQUE, `seq` (ordering cursor), `created_at` |
+| `reactions`, `pins`, `saved_messages` | —                                                                                                                                                                                                      |
+| `action_embeds`                       | **live** (`20260812120000`) — `id`, `message_id` UNIQUE, `room_id`, `component` (plan/approval/pay/sign/assign), `payload` JSONB, `required_role`, `state`, `acted_by`, `acted_at`, `expires_at`       |
+| `presence`                            | ephemeral (Realtime Presence), not authoritative in Postgres                                                                                                                                           |
 
 - **Write path:** Fastify inserts the message (with `idempotency_key`, `seq`); a trigger broadcasts it. The AI is `author_kind='agent'`.
 
@@ -707,7 +756,7 @@ Five things about that migration are load-bearing, and each is enforced in the d
 - **`events` has no client read policy at all.** It gains a `project_id` the sketch above does not list, because an event with no tenant column can be exposed to nobody or to everybody and nothing in between. Today it is nobody: the audit-trail explorer is an admin-ops console (Phase 3), and what a member sees meanwhile is the human-readable projection in chat, exactly as [discord-chat-spec.md](../20-design/discord-chat-spec.md) specifies. Append-only by grant, and **`TRUNCATE` is revoked alongside `UPDATE` and `DELETE`**, because `grant all` includes it, it is not row-level, and it ignores RLS entirely. Same defect `20260812120100` closed for `anon`, arriving by a different door.
 - **Every workflow table is client-readable and server-written.** No client `INSERT` or `UPDATE` anywhere. A client that could update `tasks` could mark its own task approved and unblock a payout, which is precisely the authorisation the design puts in tool code rather than in the caller.
 
-**Membership is inherited, not re-derived.** `private.is_project_member` resolves a project through the rooms pointing at it, reusing the one membership definition rather than adding a second to keep in step. **Known narrowing, landing with threads:** [security-compliance.md](security-compliance.md) requires a node to see only its engaged task thread, time-boxed, and room-level membership is coarser than that. No node is admitted to any room today, so nothing is exposed by it now.
+**Membership is inherited, not re-derived.** `private.is_project_member` resolves a project through the rooms pointing at it, reusing the one membership definition rather than adding a second to keep in step. **The narrowing that was recorded here twice is closed** (`20260901122000`): the helper now requires `scope = 'room'`, so a thread-scoped member is not a project member at all. `private.artifact_object_project` terminates in it and inherited that with no edit, which is the payoff for there being one definition. See [ADR-0017](../40-adr/0017-thread-admission-is-a-property-of-the-membership.md).
 
 **A policy helper in `public` is an API endpoint, and this was learned twice.** `20260813120000` created `task_deps_satisfied` in `public` as `SECURITY DEFINER` with `EXECUTE` granted to `authenticated`, which published the scheduler's READY predicate at `/rest/v1/rpc/task_deps_satisfied`. That is advisor lint 0028/0029, **the same lint `20260728160000_harden_security_definer.sql` exists to clear**, reintroduced by someone who had read that migration. It repeats easily because it looks like ordinary least privilege: define a helper, grant it to the roles that need it. In Supabase, `public` is the API schema, so the grant is also a publication. `20260813130000` moved it to `private` and dropped it to `SECURITY INVOKER`, since unlike `is_room_member` it is never evaluated inside a policy and so never needed to bypass RLS. The same migration pinned `search_path` on the four workflow functions that lacked it (lint 0011); the two guard functions enforcing the state machine are precisely the wrong pair to leave resolvable through a caller's search path.
 
@@ -725,17 +774,17 @@ Four tables are live (`20260831120000` … `20260831123000`) and five are
 deferred. The table says which is which, because a list mixing live tables with
 intentions reads as though all of them are there.
 
-| Table                  | Status                                    | Key columns / notes                                                                                                                                                                       |
-| ---------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `node_profiles`        | ✅ live `20260831120000`, **no writer**   | `user_id` **PK** (a node is a user), `kyc_status`, `availability`, `trust_score` (NULL = cold start, never 0), `service_jurisdictions text[]`, `rate` + `rate_period` (NULL = nothing quoted, never free) |
-| `node_skills`          | ✅ live `20260831121000`, **no writer**   | `(node_id, skill_tag)` PK, `verified`. Tag is shape-checked text, not an enum                                                                                                              |
-| `node_credentials`     | ✅ live `20260831122000`, **no writer**   | Renamed from the spec's `credentials`. `kind`, `jurisdiction`, `verified` (write-once true), `evidence_path`, `revoked_at`                                                                 |
-| `node_verifications`   | ✅ live `20260831123000`, **no writer**   | The check log. **No policy and no client grant at all**; append-only including for `service_role`                                                                                          |
-| `offers`               | ⏳ slice 4, with the matcher              | Its entire content is a lifecycle. A transition map for transitions nobody can make is the `ad_entities` mistake, corrected once already                                                    |
-| `engagements`          | ⏳ slice 5, with accept-and-fund          | **No state column** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)): engagement state is `tasks.state`. Carries `agreed_price`, `deadline_at`, `terms_hash`, `outcome` |
-| `proof_artifacts`      | ⏳ slice 6, with the proof loop           | `artifacts` already has `kind` and `storage_path`. A second answer to "where is the deliverable" is the `is_project_member` defect class; slice 6 decides table vs. columns                  |
-| `ratings`              | ⏳ slice 8                                 | Written after `paid`. Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                   |
-| `disputes`             | ⏳ slice 8, with the ops path             | A `disputed` task with no ops console is a state nobody can leave — the `escalated` defect reproduced deliberately                                                                          |
+| Table                | Status                                  | Key columns / notes                                                                                                                                                                                       |
+| -------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node_profiles`      | ✅ live `20260831120000`, **no writer** | `user_id` **PK** (a node is a user), `kyc_status`, `availability`, `trust_score` (NULL = cold start, never 0), `service_jurisdictions text[]`, `rate` + `rate_period` (NULL = nothing quoted, never free) |
+| `node_skills`        | ✅ live `20260831121000`, **no writer** | `(node_id, skill_tag)` PK, `verified`. Tag is shape-checked text, not an enum                                                                                                                             |
+| `node_credentials`   | ✅ live `20260831122000`, **no writer** | Renamed from the spec's `credentials`. `kind`, `jurisdiction`, `verified` (write-once true), `evidence_path`, `revoked_at`                                                                                |
+| `node_verifications` | ✅ live `20260831123000`, **no writer** | The check log. **No policy and no client grant at all**; append-only including for `service_role`                                                                                                         |
+| `offers`             | ⏳ slice 4, with the matcher            | Its entire content is a lifecycle. A transition map for transitions nobody can make is the `ad_entities` mistake, corrected once already                                                                  |
+| `engagements`        | ⏳ slice 5, with accept-and-fund        | **No state column** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)): engagement state is `tasks.state`. Carries `agreed_price`, `deadline_at`, `terms_hash`, `outcome`              |
+| `proof_artifacts`    | ⏳ slice 6, with the proof loop         | `artifacts` already has `kind` and `storage_path`. A second answer to "where is the deliverable" is the `is_project_member` defect class; slice 6 decides table vs. columns                               |
+| `ratings`            | ⏳ slice 8                              | Written after `paid`. Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                                 |
+| `disputes`           | ⏳ slice 8, with the ops path           | A `disputed` task with no ops console is a state nobody can leave — the `escalated` defect reproduced deliberately                                                                                        |
 
 **`credentials` is named `node_credentials` here, diverging from the module doc
 on purpose.** A table called `public.credentials` three tables from
@@ -823,7 +872,7 @@ Details worth knowing before touching this schema:
 ## RLS policy model
 
 - **Every table is RLS-on.** Access is derived from **membership**, not a bare `user_id = auth.uid()`:
-  - Chat: a row in `room_members` (respecting `scope` and `expires_at`) gates `messages`/`channels`/`threads`.
+  - Chat: a row in `room_members` (respecting `scope` and `expires_at`) gates `messages`/`channels`/`threads`. **`scope` is enforced since `20260901122000`**, having been an unread column with no check constraint for 44 migrations. Three helpers express it — `private.member_scope_covers(room, thread)`, `..._channel(room, channel)` and `..._message(message)` — each taking the row's own thread rather than deriving it. `member_scope_covers(room, null)` is the established reading for "room-scoped members only" and is how `feedback_events` is gated. `private.is_room_member` is deliberately unchanged and still backs `rooms_select_member`, so a thread-scoped member sees the room shell: a client that cannot read the room cannot render anything at all. `room_members`' own policy is the exception, because there the rows _are_ the scopes ([ADR-0017](../40-adr/0017-thread-admission-is-a-property-of-the-membership.md)).
   - Workflow/marketplace/payments: membership/ownership of the parent `project` (owner, assigned node for the task, ops).
 - **`service_role`** is used only by trusted server code (`matcher`, payments, agent system-writes) and **never reaches the client**.
 - Fastify forwards the user token or sets `request.jwt.claims` via `set_config()` so `auth.uid()`/`auth.jwt()` work inside policies.

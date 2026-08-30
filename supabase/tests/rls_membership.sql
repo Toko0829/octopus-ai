@@ -19,7 +19,7 @@
 -- `plan()` must be called before the first assertion; pgTAP aborts with "You
 -- tried to run a test without a plan" otherwise.
 --
--- Verified green against the live database: 22/22, including the case that
+-- Verified green against the live database: 26/26, including the case that
 -- matters most, an expired node seeing nothing at all.
 
 begin;

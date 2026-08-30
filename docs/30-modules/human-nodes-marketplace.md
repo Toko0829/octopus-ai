@@ -8,12 +8,14 @@
 
 ## Implementation status
 
-**Live: the domain and its guards, and nothing else.** `20260831120000` …
-`20260831123000` land `node_profiles`, `node_skills`, `node_credentials` and
-`node_verifications` with RLS, structural constraints, two triggers and a
-46-assertion pgTAP suite. **Zero new capability**: no route, no adapter, no
-registry, no client grant that permits a write. Nothing a person can do after
-those migrations that they could not do before them.
+**Live: the domain and its guards, plus threads, and nothing else.**
+`20260831120000` … `20260831123000` land `node_profiles`, `node_skills`,
+`node_credentials` and `node_verifications` with RLS, structural constraints, two
+triggers and a 46-assertion pgTAP suite. `20260901120000` … `20260901123000` land
+`threads`, `messages.thread_id`, and `room_members.scope` finally being enforced,
+with a second 46-assertion suite. **Zero new capability from either**: no route,
+no adapter, no registry, no client grant that permits a write. Nothing a person
+can do after those migrations that they could not do before them.
 
 That ordering is the marketing domain's, repeated on purpose. Guards land ahead
 of writers here because the recorded failure in this repository is the other
@@ -21,7 +23,7 @@ order: `tasks.risk_tier` was unreachable for its entire life, `task_deps` held
 no row for two weeks while enforcing an empty set, `artifacts.storage_path` had
 no bucket, `projects.budget_ceiling` had no writer, and `profiles.role` had a
 guard that was only ever a sentence in a comment (`20260831110000`, which exists
-*because* of this module: `human_node` is about to mean "eligible for paid work
+_because_ of this module: `human_node` is about to mean "eligible for paid work
 funded from somebody else's authorised budget").
 
 **Why now.** `escalated` is the last live dead end in the product.
@@ -34,23 +36,25 @@ as one."
 
 **Not built, and not claimed:** onboarding (there is no writer, so no node
 exists), the matcher, offers, engagements, escrow, the proof loop, payouts,
-disputes and ratings. **No node is admitted to any room**, and that is
-load-bearing rather than incidental — see "Thread access" below. No real KYC
+disputes and ratings. **No thread can be created either** — `threads` has no
+write policy and no client write grant, and creation lands with the matcher.
+**No node is admitted to any room**, and that is load-bearing rather than
+incidental — see "Thread access" below. No real KYC
 provider is wired: Persona and Stripe Identity are both paid, and slice 3 lands
 an in-repo fake verifier as the only registered provider.
 
 ### The slice sequence
 
-| # | Slice | What it closes | State arcs it restores |
-| --- | --------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------- |
-| 1 | **Domain + guards** (here) | the enums with no tables behind them | none, deliberately, and the suite pins that |
-| 2 | **Threads** | the narrowing below; a node would otherwise see the whole project DAG | none |
-| 3 | **Node onboarding writer** | `user_role.human_node` and `author_kind.node`, which have had no writer since `20260724000000` | none |
-| 4 | **Matcher + offers** | `MATCHING`, dead since `20260813120000`, and `ESCALATED`'s only exit | `matching → failed`, `offered → failed` |
-| 5 | **Accept, escrow, ledger** | acceptance. Accept and fund are inseparable because `claimed → escrow_funded` is the machine's only exit from `claimed` | `claimed → matching` |
-| 6 | **The engagement loop to `approved`** | `ESCROW_FUNDED`, and the waitpoint that never completes | `proof_submitted → in_progress`, `blocked → in_progress` |
-| 7 | **Payout** | `APPROVED` on a human task, which today can only reach `done` and leave somebody unpaid | none |
-| 8 | **Disputes + ratings** | `DISPUTED`, reachable from `in_review` with no ops writer | all four `→ disputed` arcs, together |
+| #   | Slice                                            | What it closes                                                                                                          | State arcs it restores                                   |
+| --- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| 1   | ✅ **Domain + guards** `20260831120000`…`123000` | the enums with no tables behind them                                                                                    | none, deliberately, and the suite pins that              |
+| 2   | ✅ **Threads** `20260901120000`…`123000`         | the narrowing below; a node would otherwise see the whole project DAG                                                   | none                                                     |
+| 3   | **Node onboarding writer**                       | `user_role.human_node` and `author_kind.node`, which have had no writer since `20260724000000`                          | none                                                     |
+| 4   | **Matcher + offers**                             | `MATCHING`, dead since `20260813120000`, and `ESCALATED`'s only exit                                                    | `matching → failed`, `offered → failed`                  |
+| 5   | **Accept, escrow, ledger**                       | acceptance. Accept and fund are inseparable because `claimed → escrow_funded` is the machine's only exit from `claimed` | `claimed → matching`                                     |
+| 6   | **The engagement loop to `approved`**            | `ESCROW_FUNDED`, and the waitpoint that never completes                                                                 | `proof_submitted → in_progress`, `blocked → in_progress` |
+| 7   | **Payout**                                       | `APPROVED` on a human task, which today can only reach `done` and leave somebody unpaid                                 | none                                                     |
+| 8   | **Disputes + ratings**                           | `DISPUTED`, reachable from `in_review` with no ops writer                                                               | all four `→ disputed` arcs, together                     |
 
 `20260815220000` silently dropped eight arcs from the original map while
 rewriting it for an unrelated reason. Each is restored by the slice that first
@@ -73,15 +77,42 @@ sign-up form is a dead end.
 
 ### Thread access
 
-A node cannot safely be admitted to anything today: there are no threads, so
-room membership would show them the entire project DAG.
-[security-compliance.md](../10-architecture/security-compliance.md) records that
-narrowing and now dates it to **slice 2**, before any writer exists that could
-admit anyone. `node_profiles` therefore has **no counterparty policy at all** —
-the task owner will eventually need to see their engaged node, but that policy
-joins through `engagements`, which does not exist, and a policy that cannot yet
-be written correctly should not be written approximately. The suite asserts the
-consequence: an owner sharing a room with a node sees zero node profiles.
+**Live as of slice 2** (`20260901120000` … `20260901123000`), and still with no
+writer that can admit anybody. A thread-scoped membership is a nullable
+`room_members.thread_id` bound to `scope` by a check constraint, rather than a
+second table ([ADR-0017](../40-adr/0017-thread-admission-is-a-property-of-the-membership.md)).
+
+What a thread-scoped member will see, asserted in `supabase/tests/thread_scope.sql`
+(46 assertions):
+
+- the **room shell** (`private.is_room_member` is deliberately unchanged, since a
+  client that cannot read the room cannot render anything at all);
+- their own thread, its channel, and only messages carrying their `thread_id` —
+  **never the null-thread room stream**, which is the owner's conversation with
+  the AI and the bulk of what a node must not read;
+- only the embeds on messages they can already see;
+- **only their own membership row**, not the roster and not another node admitted
+  to the same thread;
+- **no project, task, artifact, `feedback_events` or realtime.**
+
+Three obligations are carried forward rather than left implied:
+
+1. **The counterparty pair is still closed, in both directions now.**
+   `node_profiles` has no counterparty policy, and slice 2 additionally narrowed
+   `private.shares_room_with` to require `scope = 'room'` on both sides, closing
+   a leak neither KNOWN NARROWING comment had named: a thread-scoped node would
+   otherwise have read the profile basics of every member of the whole room. The
+   consequence is that an admitted node sees **nobody**, including the owner they
+   work for. The engagement slice must open that pair, or slice 5/6 ships a node
+   who cannot see who engaged them.
+2. **There is no realtime for a thread-scoped member.** Thread topics are not
+   built: a `'chat:thread:'` branch would have no broadcaster and no subscriber
+   today. Both `realtime.messages` policies were narrowed to room scope in place,
+   so an admitted node reads through the since-cursor `GET` instead. The slice
+   that first admits a node must land thread topics or explicitly accept polling.
+3. **`messages_insert_own` still pins `author_kind = 'user'`.** A node posting as
+   `author_kind = 'node'` has no client path and gains none. Whether nodes write
+   through the server or through their own grant is the writer slice's decision.
 
 ## Node onboarding & KYC
 
@@ -152,17 +183,17 @@ than a date, because a list that mixes live tables with intentions reads as
 though all nine are there. Column shapes live in
 [data-model.md](../10-architecture/data-model.md).
 
-| Entity                 | Status                                       | Notes                                                                                                                                                    |
-| ---------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node_profiles`        | ✅ live `20260831120000`, **no writer**      | Keyed on `user_id`: a node **is** a user, so every child predicate is a plain equality. `available` + not-`verified` is unrepresentable, by constraint     |
-| `node_skills`          | ✅ live `20260831121000`, **no writer**      | Claim and verified claim on one row, one boolean apart. Tag is shape-checked text; the curated taxonomy is a reviewed code registry landing in slice 3    |
-| `node_credentials`     | ✅ live `20260831122000`, **no writer**      | Renamed from `credentials` (below). `verified` is write-once true — a licence is **revoked**, with a date, never un-verified                              |
-| `node_verifications`   | ✅ live `20260831123000`, **no writer**      | Not in the original nine; forced by them. No policy, no client grant, append-only including for `service_role`                                            |
-| `offers`               | ⏳ slice 4                                    | Its entire content is a lifecycle. Landing a transition map for transitions nobody can make is the `ad_entities` mistake, already corrected once          |
-| `engagements`          | ⏳ slice 5                                    | **No state column** — [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)                                                                 |
-| `proof_artifacts`      | ⏳ slice 6                                    | `artifacts` already has `kind` and `storage_path`. Slice 6 decides new table vs. EXIF/geo columns; deciding earlier would be deciding without the writer  |
-| `ratings`              | ⏳ slice 8                                    | Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                       |
-| `disputes`             | ⏳ slice 8                                    | With the ops path. A `disputed` task and no ops console is a state nobody can leave                                                                       |
+| Entity               | Status                                  | Notes                                                                                                                                                    |
+| -------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node_profiles`      | ✅ live `20260831120000`, **no writer** | Keyed on `user_id`: a node **is** a user, so every child predicate is a plain equality. `available` + not-`verified` is unrepresentable, by constraint   |
+| `node_skills`        | ✅ live `20260831121000`, **no writer** | Claim and verified claim on one row, one boolean apart. Tag is shape-checked text; the curated taxonomy is a reviewed code registry landing in slice 3   |
+| `node_credentials`   | ✅ live `20260831122000`, **no writer** | Renamed from `credentials` (below). `verified` is write-once true — a licence is **revoked**, with a date, never un-verified                             |
+| `node_verifications` | ✅ live `20260831123000`, **no writer** | Not in the original nine; forced by them. No policy, no client grant, append-only including for `service_role`                                           |
+| `offers`             | ⏳ slice 4                              | Its entire content is a lifecycle. Landing a transition map for transitions nobody can make is the `ad_entities` mistake, already corrected once         |
+| `engagements`        | ⏳ slice 5                              | **No state column** — [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)                                                                |
+| `proof_artifacts`    | ⏳ slice 6                              | `artifacts` already has `kind` and `storage_path`. Slice 6 decides new table vs. EXIF/geo columns; deciding earlier would be deciding without the writer |
+| `ratings`            | ⏳ slice 8                              | Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                      |
+| `disputes`           | ⏳ slice 8                              | With the ops path. A `disputed` task and no ops console is a state nobody can leave                                                                      |
 
 **Two deliberate divergences from what this doc used to say, reconciled rather
 than left to drift (rule 1):**
@@ -193,7 +224,7 @@ than left to drift (rule 1):**
 - **`credential_kind`** `lawyer | accountant | notary`. **No `other`**: a hard
   filter that matches everything is the regulated-task control switched off.
 - **`verification_kind`** `document | liveness | face_match | face_search |
-  sanctions_pep | license_check`. The 1:1 and 1:N face checks are separate
+sanctions_pep | license_check`. The 1:1 and 1:N face checks are separate
   because only the second can name a third party.
 - **`verification_result`** `passed | failed | inconclusive | error`. The last
   two decide retryability oppositely: the provider could not tell (retrying the
