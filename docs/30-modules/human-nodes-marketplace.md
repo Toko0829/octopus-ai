@@ -6,6 +6,83 @@
 >
 > Update on any change to onboarding/KYC, matching, the offer flow, the engagement state model, or anti-fraud.
 
+## Implementation status
+
+**Live: the domain and its guards, and nothing else.** `20260831120000` …
+`20260831123000` land `node_profiles`, `node_skills`, `node_credentials` and
+`node_verifications` with RLS, structural constraints, two triggers and a
+46-assertion pgTAP suite. **Zero new capability**: no route, no adapter, no
+registry, no client grant that permits a write. Nothing a person can do after
+those migrations that they could not do before them.
+
+That ordering is the marketing domain's, repeated on purpose. Guards land ahead
+of writers here because the recorded failure in this repository is the other
+order: `tasks.risk_tier` was unreachable for its entire life, `task_deps` held
+no row for two weeks while enforcing an empty set, `artifacts.storage_path` had
+no bucket, `projects.budget_ceiling` had no writer, and `profiles.role` had a
+guard that was only ever a sentence in a comment (`20260831110000`, which exists
+*because* of this module: `human_node` is about to mean "eligible for paid work
+funded from somebody else's authorised budget").
+
+**Why now.** `escalated` is the last live dead end in the product.
+`packages/core/src/router.ts:93` sends every human-owned step there with the
+reason "Needs expert human judgement, so it goes to the marketplace", and
+**twelve tasks sit in that state on the live database**. `20260827120000`
+measured seventeen, gave the owner a way to take such a step on themselves, and
+said in as many words that it "is not the marketplace and must not be dressed up
+as one."
+
+**Not built, and not claimed:** onboarding (there is no writer, so no node
+exists), the matcher, offers, engagements, escrow, the proof loop, payouts,
+disputes and ratings. **No node is admitted to any room**, and that is
+load-bearing rather than incidental — see "Thread access" below. No real KYC
+provider is wired: Persona and Stripe Identity are both paid, and slice 3 lands
+an in-repo fake verifier as the only registered provider.
+
+### The slice sequence
+
+| # | Slice | What it closes | State arcs it restores |
+| --- | --------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------- |
+| 1 | **Domain + guards** (here) | the enums with no tables behind them | none, deliberately, and the suite pins that |
+| 2 | **Threads** | the narrowing below; a node would otherwise see the whole project DAG | none |
+| 3 | **Node onboarding writer** | `user_role.human_node` and `author_kind.node`, which have had no writer since `20260724000000` | none |
+| 4 | **Matcher + offers** | `MATCHING`, dead since `20260813120000`, and `ESCALATED`'s only exit | `matching → failed`, `offered → failed` |
+| 5 | **Accept, escrow, ledger** | acceptance. Accept and fund are inseparable because `claimed → escrow_funded` is the machine's only exit from `claimed` | `claimed → matching` |
+| 6 | **The engagement loop to `approved`** | `ESCROW_FUNDED`, and the waitpoint that never completes | `proof_submitted → in_progress`, `blocked → in_progress` |
+| 7 | **Payout** | `APPROVED` on a human task, which today can only reach `done` and leave somebody unpaid | none |
+| 8 | **Disputes + ratings** | `DISPUTED`, reachable from `in_review` with no ops writer | all four `→ disputed` arcs, together |
+
+`20260815220000` silently dropped eight arcs from the original map while
+rewriting it for an unrelated reason. Each is restored by the slice that first
+makes it reachable, never earlier — a `disputed` task with no ops console is the
+`escalated` defect reproduced on purpose. A ninth, `blocked → failed`, was
+dropped by the same rewrite and is recorded here because nobody had counted it.
+
+### Cold start, and the dead end this sequence must not create
+
+A person who completes KYC and is never offered anything is a dead end in this
+repository's exact sense. **It is not a slice-1 risk** — slice 1 creates no row,
+has no route and no client INSERT grant, so nobody can enter that state. It
+bites if **slice 3 ships without slice 4**.
+
+The mitigation is that slice 3 ships **ops-invited onboarding, not open
+self-registration**, which is also this doc's own cold-start answer ("thin skill
+markets fall back to vetted local professional partners"). An empty marketplace
+with three invited notaries is a decision; an empty marketplace with a public
+sign-up form is a dead end.
+
+### Thread access
+
+A node cannot safely be admitted to anything today: there are no threads, so
+room membership would show them the entire project DAG.
+[security-compliance.md](../10-architecture/security-compliance.md) records that
+narrowing and now dates it to **slice 2**, before any writer exists that could
+admit anyone. `node_profiles` therefore has **no counterparty policy at all** —
+the task owner will eventually need to see their engaged node, but that policy
+joins through `engagements`, which does not exist, and a policy that cannot yet
+be written correctly should not be written approximately. The suite asserts the
+consequence: an owner sharing a room with a node sees zero node profiles.
+
 ## Node onboarding & KYC
 
 - Identity verification via **Persona** (or Stripe Identity to stay in-stack): document + **passive liveness** + **Face Match 1:1** + **Face Search 1:N** across enrolled nodes to kill account-renting / duplicate-identity fraud (the defining gig-fraud vector).
@@ -30,6 +107,23 @@ Top-ranked nodes get a push/email/in-app **offer** (scope, `acceptance_criteria`
 
 `CLAIMED → ESCROW_FUNDED → IN_PROGRESS → PROOF_SUBMITTED → IN_REVIEW → APPROVED → PAID` (with `REJECTED → IN_PROGRESS` bounded re-do, and `DISPUTED` → ops).
 
+**These are `public.task_state` values, and `engagements` will carry no state
+column of its own** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)).
+Every state above already exists in the machine `20260813120000` declared,
+already has its arcs enforced by trigger **including against `service_role`**,
+and already writes an audit event on every transition. A parallel enum would be
+two machines over one truth, and it would drift silently, because "the
+engagement says `in_progress` and the task says `in_review`" is a confusing
+screen rather than an error. `engagements` carries facts about the **deal** —
+`agreed_price` at acceptance, `deadline_at`, `terms_hash`, `outcome` — while
+`tasks.state` carries the fact about the **work**.
+
+Two consequences follow and are stated now so slice 5 arrives to them: **one
+live engagement per task** (a partial unique index on `ended_at is null`, not a
+plain unique, because reassignment after a no-show creates a second engagement
+and `claimed → matching` exists to say so), and **multi-node splits deferred**
+until the first acceptance criteria naming more than one node.
+
 1. **Accept + escrow fund** — escrow confirmed funded (charge already captured from the user's authorized budget; transfer deferred). Node e-signs a per-task engagement + NDA. A signal moves the task to `IN_PROGRESS`.
 2. **Join group chat** — node added to the project's channel/thread with a distinct **Human Node** role/badge, **scoped to this task's thread** and **time-boxed** (`room_members.scope`, `expires_at`).
 3. **Do the work** — the AI co-pilots in-thread (prepared docs, RAG-grounded checklists, forms, addresses, talking points); the user answers questions; presence/typing show live activity. All coordination stays in-thread for auditability.
@@ -53,4 +147,55 @@ Cold-start supply: KYC + verified credential grants provisional eligibility. Thi
 
 ## Key entities
 
-`node_profiles` (kyc_status, trust_score, service_geo, rate, availability) · `node_skills` / `credentials` (verified) · `offers` (status, expiry) · `engagements` · `proof_artifacts` · `ratings` · `disputes`.
+Nine were specified from Phase 0. Four exist; the rest carry a trigger rather
+than a date, because a list that mixes live tables with intentions reads as
+though all nine are there. Column shapes live in
+[data-model.md](../10-architecture/data-model.md).
+
+| Entity                 | Status                                       | Notes                                                                                                                                                    |
+| ---------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node_profiles`        | ✅ live `20260831120000`, **no writer**      | Keyed on `user_id`: a node **is** a user, so every child predicate is a plain equality. `available` + not-`verified` is unrepresentable, by constraint     |
+| `node_skills`          | ✅ live `20260831121000`, **no writer**      | Claim and verified claim on one row, one boolean apart. Tag is shape-checked text; the curated taxonomy is a reviewed code registry landing in slice 3    |
+| `node_credentials`     | ✅ live `20260831122000`, **no writer**      | Renamed from `credentials` (below). `verified` is write-once true — a licence is **revoked**, with a date, never un-verified                              |
+| `node_verifications`   | ✅ live `20260831123000`, **no writer**      | Not in the original nine; forced by them. No policy, no client grant, append-only including for `service_role`                                            |
+| `offers`               | ⏳ slice 4                                    | Its entire content is a lifecycle. Landing a transition map for transitions nobody can make is the `ad_entities` mistake, already corrected once          |
+| `engagements`          | ⏳ slice 5                                    | **No state column** — [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)                                                                 |
+| `proof_artifacts`      | ⏳ slice 6                                    | `artifacts` already has `kind` and `storage_path`. Slice 6 decides new table vs. EXIF/geo columns; deciding earlier would be deciding without the writer  |
+| `ratings`              | ⏳ slice 8                                    | Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                       |
+| `disputes`             | ⏳ slice 8                                    | With the ops path. A `disputed` task and no ops console is a state nobody can leave                                                                       |
+
+**Two deliberate divergences from what this doc used to say, reconciled rather
+than left to drift (rule 1):**
+
+- **`credentials` is `node_credentials`.** A table called `public.credentials`
+  sitting three tables from `channel_connections` reads as auth credentials to
+  every future schema browser, and this repository's posture is that the next
+  reader should not have to check.
+- **`service_geo` (PostGIS) is `service_jurisdictions text[]`.** PostGIS is not
+  installed, and the matching rule this doc specifies — "service geo/jurisdiction
+  **includes** the task location", ranked by "jurisdiction **exactness**" — is a
+  containment test over a hierarchy plus a specificity ordering, not a geometry
+  query. Argued, with its trigger to revisit, in
+  [ADR-0015](../40-adr/0015-service-geo-is-a-jurisdiction-code.md).
+
+### Enum values, and the contested ones
+
+- **`kyc_status`** `unverified | pending | verified | rejected | suspended`.
+  `rejected` and `suspended` differ in what can undo them, so collapsing them
+  makes "can this person try again" unanswerable from the row. **No `expired`**:
+  a state you must run a clock to enter is wrong between sweeps, so credential
+  expiry is a date evaluated at match time.
+- **`node_availability`** `available | paused | offboarded`. **No `busy`**:
+  workload is derivable by counting live engagements, and this doc already
+  treats it as a ranking input rather than an eligibility gate. Defaults to
+  `paused`, because a permissive default is one every future writer must
+  remember to override.
+- **`credential_kind`** `lawyer | accountant | notary`. **No `other`**: a hard
+  filter that matches everything is the regulated-task control switched off.
+- **`verification_kind`** `document | liveness | face_match | face_search |
+  sanctions_pep | license_check`. The 1:1 and 1:N face checks are separate
+  because only the second can name a third party.
+- **`verification_result`** `passed | failed | inconclusive | error`. The last
+  two decide retryability oppositely: the provider could not tell (retrying the
+  same evidence is pointless) versus our call failed (retrying is exactly
+  right). **No `pending`** — that is `kyc_status`.

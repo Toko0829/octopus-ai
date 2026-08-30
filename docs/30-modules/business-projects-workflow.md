@@ -232,7 +232,26 @@ Two rules are expressed once rather than drawn on every state, because listing t
 
 The diagram above is the specification and the code is derived from it, including the arcs the diagram implies but does not draw: a critic that passes (`AI_SELF_CHECK → APPROVED`), a user who answers (`NEEDS_USER → APPROVED` when their answer **is** the step, `NEEDS_USER → ROUTING` when it changes what happens next), an offer that expires back into the cascade (`OFFERED → MATCHING`), and the two exits from `APPROVED` (`→ DONE` for AI work, `→ PAYOUT_PENDING` for work somebody is owed for). Where the two disagree, this doc is right and the code is the bug.
 
-The marketplace half (`MATCHING` through `PAID`) has no code behind it until the matcher lands. The states exist anyway: the machine is specified here in full, and adding them later would mean editing it twice and re-deriving arcs already written down.
+The marketplace half (`MATCHING` through `PAID`) has no code behind it until the matcher lands, **which is slice 4** of the sequence in [human-nodes-marketplace.md](human-nodes-marketplace.md). The states exist anyway: the machine is specified here in full, and adding them later would mean editing it twice and re-deriving arcs already written down. The marketplace **domain tables** landed ahead of it (`20260831120000` … `20260831123000`) with no writer at all, so the states remain unreachable and `escalated` remains a dead end until slice 4 — which is stated rather than implied, because twelve tasks are sitting in it.
+
+### The eight arcs `20260815220000` dropped, and when each comes back
+
+That migration rewrote `private.task_transition_allowed` from plpgsql to SQL to add one arc (`needs_user → approved`) and, in restating the map, **silently lost eight others** the original `20260813120000` had. Nothing asserted they had ever been there, which is why it went unnoticed for two weeks. Every one belongs to the marketplace half, so none was reachable and none has caused a defect — but each has to come back **with the slice that first makes it reachable**, never earlier, because an arc into a state nobody can leave is the `escalated` defect on purpose.
+
+| Arc | Restored in | Why not earlier |
+| ----------------------------- | ----------- | ---------------------------------------------------------------------------- |
+| `matching → failed` | slice 4 | no eligible node is a real outcome; without it the task strands mid-search |
+| `offered → failed` | slice 4 | the cascade exhausted the pool |
+| `claimed → matching` | slice 5 | the no-show / withdraw-before-funding path back into the cascade |
+| `proof_submitted → in_progress` | slice 6 | a proof withdrawn or superseded before review starts |
+| `escrow_funded → disputed` | slice 8 | a `disputed` task with no ops console is a state nobody can leave |
+| `in_progress → disputed` | slice 8 | as above |
+| `rejected → disputed` | slice 8 | as above |
+| `payout_pending → disputed` | slice 8 | as above |
+
+**A ninth nobody had counted: `blocked → failed`.** The universal `p_to in ('cancelled', 'blocked')` rule is evaluated before the `blocked` case, so `blocked → cancelled` survived by accident and `blocked → failed` did not. Recorded here rather than fixed, since nothing writes `blocked` yet either.
+
+`supabase/tests/marketplace_rls.sql` pins two of these as **still absent** (`matching → failed` refused, `escalated → matching` allowed), so slice 4's restoration reads as a dated decision rather than as drift.
 
 ## Scheduler
 
