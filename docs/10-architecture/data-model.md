@@ -74,6 +74,15 @@ than instead of it, keeping the house rule of one trigger for both.
 **PostGIS is not enabled** and service area is a hierarchical jurisdiction code
 ([ADR-0015](../40-adr/0015-service-geo-is-a-jurisdiction-code.md)).
 
+**Applied to the live database, and the Supabase advisors were run afterwards
+rather than only the tests** — `20260813120000` passed 33/33 and still
+introduced six lints. This slice adds exactly one, and it is the intended
+design: `rls_enabled_no_policy` (INFO) on `node_verifications`, which sits
+beside the same lint already standing for `channel_connections` and `events`
+for the same reason. RLS on with no policy and no client grant **is** the
+control; a policy would be the defect. No `SECURITY DEFINER` view, no function
+with a mutable `search_path`, and nothing new granted to `authenticated`.
+
 **Verified against the live database: `supabase/tests/marketplace_rls.sql`,
 46/46**, inside a transaction that rolled back. The slice has no writer, so that
 file is its only caller — which is what makes four tables landing ahead of their
