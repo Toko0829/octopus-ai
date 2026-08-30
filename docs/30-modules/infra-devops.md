@@ -232,6 +232,31 @@ The cap is small for the same reason the crawl's is: the sweep shares the
 ticker's claim with the DAG walk and holds it while each platform call is in
 flight.
 
+### Measuring shares publishing's polarity, not crawling's
+
+`METRICS_ENABLED` (default **on**) and `METRICS_MAX_PER_TICK` (default 3) control
+the metrics sweep the ticker runs between publishing and crawling. It is the third
+key in this family and it sits on the publish side of the split, which is worth
+stating because the three look alike and the reasoning divides two-to-one.
+
+Crawling is off by default to protect **somebody else's servers** from every
+developer's laptop. Publishing and measuring have no stranger to protect: this
+sweep reads only the accounts a workspace connected, about campaigns it approved,
+and the only registered provider makes no network call at all. It is inert until
+something is live.
+
+Off by default would also repeat the defect the publish flag was inverted to
+avoid. The project panel now shows a spend figure per campaign, and on an
+unconfigured deployment that block would sit permanently at "No numbers yet" while
+the campaign really was spending, which is a false surface rather than an absent
+one. So this is a **kill switch, not an enablement**: set it to `false` to stop a
+deployment measuring, and nothing else changes.
+
+The per-tick cap matches publishing's and is bounded the same way, since the sweep
+shares the ticker's claim with the DAG walk. Each campaign is separately capped at
+seven days per pass by `MAX_PERIODS_PER_PULL`, so a campaign that has been dark for
+a month drains in order over a few passes rather than holding the lease.
+
 ### Only one deployment crawls
 
 `CRAWL_ENABLED` (default **off**) and `CRAWL_MAX_PER_TICK` (default 2) control the

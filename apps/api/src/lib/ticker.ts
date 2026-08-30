@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createSchedulerPorts } from './scheduler';
 import { crawlSweep } from './crawl';
 import { publishSweep } from './publish';
+import { metricsSweep } from './metrics';
 import { notifyWaiting } from './waiting';
 import { produceCampaignCards } from './campaign-cards';
 import type { ExecutorDeps } from './executor';
@@ -52,6 +53,13 @@ export interface TickerOptions {
    * they approve is telling them something untrue (see `PUBLISH_ENABLED`).
    */
   publish?: { maxPerPass: number };
+  /**
+   * Record what live campaigns actually spent. Absent means this deployment does
+   * not measure, which is supported and is not the default: a product that shows
+   * somebody a campaign and never tells them what it did is the same untruth
+   * `publish` describes, one step later (see `METRICS_ENABLED`).
+   */
+  metrics?: { maxPerPass: number };
   log: {
     info: (obj: unknown, msg: string) => void;
     warn: (obj: unknown, msg: string) => void;
@@ -233,6 +241,24 @@ export function startTicker(opts: TickerOptions): () => void {
           });
         } catch (err) {
           opts.log.error({ err, worker }, 'publish sweep failed');
+        }
+      }
+
+      // Measuring goes after publishing and before the crawl, on the same claim
+      // about who is waiting. Nobody is watching a number arrive the way they
+      // watch a campaign go live, so it yields to publish; but it reads our own
+      // customers' spend, which outranks re-reading a stranger's page, and unlike
+      // the crawl it touches no remote host at all for the registered provider.
+      // Its own try/catch, for the reason every sweep on this pass has one.
+      if (opts.metrics) {
+        try {
+          await metricsSweep({
+            admin: opts.admin,
+            maxPerPass: opts.metrics.maxPerPass,
+            log: opts.log,
+          });
+        } catch (err) {
+          opts.log.error({ err, worker }, 'metrics sweep failed');
         }
       }
 

@@ -30,7 +30,7 @@
 
 begin;
 
-select extensions.plan(39);
+select extensions.plan(42);
 
 -- ---------------------------------------------------------------- fixtures
 
@@ -439,6 +439,43 @@ select extensions.is(
     pg_temp.mid('c1'))),
   null::text,
   'a manual correction for the same period is a NEW row, so both numbers survive'
+);
+
+-- --------------------------------------------------- the source guard
+
+-- `20260829160000`, landing with the metrics sweep on the ordering this domain
+-- already follows. `source` is part of the unique key rather than a label, so an
+-- unrecognised value collides with nothing and would silently append a second
+-- copy of a window on every pass.
+
+select extensions.ok(
+  exists (
+    select 1 from pg_constraint
+    where conname = 'campaign_outcomes_source_check'
+      and conrelid = 'public.campaign_outcomes'::regclass
+  ),
+  'campaign_outcomes constrains its source rather than documenting it in a comment'
+);
+
+select extensions.is(
+  pg_temp.merrcode_of(format(
+    'insert into public.campaign_outcomes '
+    '(campaign_id, project_id, period_start, period_end, spend, source) '
+    'values (%L, %L, now() - interval ''3 days'', now() - interval ''2 days'', 1.00, ''metrics'')',
+    pg_temp.mid('c1'), pg_temp.mid('project'))),
+  '23514',
+  'a source the writers do not use is refused: it would not collide with anything '
+  'and would double a measured period'
+);
+
+select extensions.is(
+  pg_temp.merrcode_of(format(
+    'insert into public.campaign_outcomes '
+    '(campaign_id, project_id, period_start, period_end, spend, source) '
+    'values (%L, %L, now() - interval ''4 days'', now() - interval ''3 days'', 1.00, ''manual'')',
+    pg_temp.mid('c1'), pg_temp.mid('project'))),
+  null::text,
+  'both documented values are accepted, including the one whose writer has not landed yet'
 );
 
 select * from extensions.finish();

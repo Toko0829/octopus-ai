@@ -38,14 +38,18 @@ We are **not** building the everything-product on day one. We ship one vertical 
 
 ## Feedback capture (where the data comes from)
 
-> **v0 is live (Phase 1).** `feedback_events` (`20260812130000`) records every approve / request-changes on a plan card: who decided, which verdict, the note explaining a rejection, and the judged payload captured at decision time. That last part is denormalised deliberately, since the embed's state changes after the verdict and a label has to describe what was actually judged. The table is **append-only by grant**, because a training signal that can be rewritten after the fact is not evidence. This is the first labelled data the system collects and the basis of the correction-rate metric below. Not yet built: node corrections (mechanism 2 proper), outcome ingestion, and any use of these labels in retrieval or eval.
+> **v0 is live (Phase 1).** `feedback_events` (`20260812130000`) records every approve / request-changes on a plan card: who decided, which verdict, the note explaining a rejection, and the judged payload captured at decision time. That last part is denormalised deliberately, since the embed's state changes after the verdict and a label has to describe what was actually judged. The table is **append-only by grant**, because a training signal that can be rewritten after the fact is not evidence. This is the first labelled data the system collects and the basis of the correction-rate metric below. Not yet built: node corrections (mechanism 2 proper), and any use of these labels in retrieval or eval.
+>
+> **Outcome _recording_ is live, and outcome _ingestion_ is not.** The metrics sweep writes `campaign_outcomes`, so mechanism 1 has its raw material for the first time: one append-only row per campaign per closed UTC day per source, carrying spend, impressions, clicks, conversions and revenue. Nothing yet turns those rows into retrievable knowledge, and nothing yet acts on them, so the flywheel has begun collecting and has not begun spinning. The two halves are named separately here because "outcomes are captured" and "retrieval prefers real outcomes" are very different claims and only the first is true today.
+>
+> Two properties of that table matter to this document specifically. It is **append-only including for `service_role`**, so a measurement cannot be rewritten after the fact, which is the same stance `feedback_events` states and this table actually enforces. And a correction is a **new row** with `source = 'manual'` rather than an edit, so the number we pulled and the number a person says is right both survive with their provenance attached, and anyone reading them can see that they differed.
 
-| Source             | Signal                                        | Captured in                                 |
-| ------------------ | --------------------------------------------- | ------------------------------------------- |
-| User in chat       | approve / reject / edit, thumbs, comments     | `feedback_events` **(live)**                |
-| Human node         | corrections, approvals, deliverable diffs     | `node_feedback`, `engagements`              |
-| Channels/analytics | impressions, clicks, conversions, ROAS, spend | `campaign_outcomes`, `creative_performance` |
-| Agent itself       | plan diffs, tool results, confidence          | event-sourced `events`                      |
+| Source             | Signal                                        | Captured in                                            |
+| ------------------ | --------------------------------------------- | ------------------------------------------------------ |
+| User in chat       | approve / reject / edit, thumbs, comments     | `feedback_events` **(live)**                           |
+| Human node         | corrections, approvals, deliverable diffs     | `node_feedback`, `engagements`                         |
+| Channels/analytics | impressions, clicks, conversions, ROAS, spend | `campaign_outcomes` **(live)**, `creative_performance` |
+| Agent itself       | plan diffs, tool results, confidence          | event-sourced `events`                                 |
 
 All capture is **event-sourced and immutable**; the flywheel datasets are **projections** of that log, so nothing is lost and everything is auditable.
 

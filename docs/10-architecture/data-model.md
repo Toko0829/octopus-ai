@@ -81,6 +81,44 @@ needs it in its own right, and without the grant every commit would have failed
 with `permission denied for function` at the spend check. The same pairing
 `20260813130000` had to correct after `20260813120000`.
 
+### `campaign_outcomes` gets its writer and its guard (`20260829160000`)
+
+The last of the four marketing tables with no writer has one: the metrics sweep in
+`apps/api/src/lib/metrics.ts`. Three things about the schema turned out to be
+load-bearing once something wrote to it, and all three were decided in
+`20260829123000` before any writer existed.
+
+**Append-only by grant, including for `service_role`, means the writer has exactly
+one tool.** `insert ... on conflict do nothing` is not a stylistic preference here:
+`on conflict do update` would fail on privilege rather than resolve anything, so
+the unique key is the whole idempotency mechanism and there is no fallback behind
+it.
+
+**The unique key only dedupes windows that match exactly**, which turns "what
+counts as a period" into a correctness property rather than a formatting one. The
+sweep answers it with one pure producer (`duePeriods`), whole closed UTC days, and
+never today, because a partial day could never be revised into a whole one and the
+next pass would append an overlapping row instead of replacing it. A doubled spend
+is the number the optimizer reads when deciding whether to pause a campaign.
+
+**`source` was plain `text` with its two values in a comment**, which is the shape
+`ad_entities` shipped in and `20260829150000` closed. It is a check constraint now,
+landing in the same change as the first writer on the same ordering. It matters
+more than a provenance nit because `source` is part of the unique key: a row
+written as `metrics` or `pull-metrics` would collide with nothing, so a typo would
+look like a label mistake and behave like a duplicated payment record. `manual` is
+included although nothing writes it yet, since it is half of what the key means, and
+leaving it out would enforce today's writers rather than the design.
+
+**Applied and verified against the live database: `supabase/tests/marketing_rls.sql`,
+42/42**, with three new assertions (the constraint exists, an unrecognised source
+raises `23514`, both documented values insert). Advisors after the migration:
+the same seven pre-existing lints and no new one.
+
+`campaign_outcomes` also gains its first reader in the same slice, in
+`buildProjectDetail`, which is deliberate: shipping a writer with nobody reading it
+would extend this file's most-repeated defect class rather than close it.
+
 ### Artifacts can be files now (`20260829124000`)
 
 `artifacts.storage_path` has existed since `20260813160000` and travelled the whole way: the column, `Artifact.storagePath` in `packages/contracts`, the read in `apps/api/src/routes/projects.ts`, and an arm in the project panel that said "This one is a file rather than text." **Nothing could ever put anything there.** There was no bucket, no policy on `storage.objects`, no route that could hand a file back, and no writer, so that UI arm was reachable only by a row nobody could create.
@@ -584,7 +622,7 @@ of this file. `content_items`, `creative_assets`, `email_sequences`,
 | `campaigns`           | `id`, `project_id`, `task_id?`, `name`, `objective`, `channel` (meta/google/email/organic_social), `state` (draft→ready→publishing→live→paused→completed, plus cancelled/failed), `budget_cap` (**NULL = nothing authorised**), `currency`, `pause_reason`, `source_embed_id` UNIQUE, `created_by` |
 | `channel_connections` | `id`, `room_id`, `connected_by`, `provider` (registry-validated), `channel`, `external_account_id`, `granted_scopes[]`, `access_token`, `refresh_token`, `token_expires_at`, `status` (active/expired/revoked), UNIQUE `(room_id, provider, external_account_id)`                                  |
 | `ad_entities`         | `id`, `campaign_id`, `project_id`, `parent_id?`, `kind` (campaign/ad_set/ad), `state` (…/rejected/archived), `external_id?`, `channel_connection_id?`, `spec` JSONB, `idempotency_key` UNIQUE                                                                                                      |
-| `campaign_outcomes`   | `id`, `campaign_id`, `project_id`, `period_start`, `period_end`, `spend`, `impressions`, `clicks`, `conversions`, `revenue`, `metrics` JSONB, `source` (pull_metrics/manual), UNIQUE `(campaign_id, period_start, period_end, source)`                                                             |
+| `campaign_outcomes`   | `id`, `campaign_id`, `project_id`, `period_start`, `period_end`, `spend`, `impressions`, `clicks`, `conversions`, `revenue`, `metrics` JSONB, `source` (`pull_metrics`/`manual`, CHECKed since `20260829160000`), UNIQUE `(campaign_id, period_start, period_end, source)`                         |
 
 - **Grants differ across the four and the differences are the design.** `campaigns`,
   `ad_entities` and `campaign_outcomes` are `select` for `authenticated` and `all`

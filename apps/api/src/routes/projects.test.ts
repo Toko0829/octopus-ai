@@ -10,7 +10,46 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { decideFileUrl, signedUrlExpiresAt, SIGNED_URL_TTL_SECONDS } from './projects';
+import {
+  decideFileUrl,
+  signedUrlExpiresAt,
+  PROJECT_COLUMNS,
+  ProjectRow,
+  SIGNED_URL_TTL_SECONDS,
+} from './projects';
+
+/**
+ * The select and the schema have to agree, and nothing else checks that.
+ *
+ * A PostgREST select is a string, so a column the schema requires and the query
+ * omits is invisible to the type checker and fails at runtime instead. It failed
+ * exactly that way: `6fcd0d6` added `budget_ceiling` and `currency` to
+ * `ProjectRow`, updated the detail read and missed both reads in `listProjects`,
+ * and every room holding a project answered 500 on the panel's first call from
+ * that commit onward. `z.coerce.number()` turned the absent column into `NaN`,
+ * which reads as a type error about a value nobody sent.
+ */
+describe('the projects select and ProjectRow', () => {
+  it('selects every column the schema requires', () => {
+    const selected = new Set(PROJECT_COLUMNS.split(',').map((c) => c.trim()));
+
+    for (const column of Object.keys(ProjectRow.shape)) {
+      expect(selected.has(column), `ProjectRow requires "${column}" and no read selects it`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('selects nothing the schema does not describe', () => {
+    // The other direction, so a column dropped from the schema stops being read.
+    // Cheap to keep true and it makes the constant the whole definition.
+    for (const column of PROJECT_COLUMNS.split(',').map((c) => c.trim())) {
+      expect(column in ProjectRow.shape, `"${column}" is selected and ProjectRow ignores it`).toBe(
+        true,
+      );
+    }
+  });
+});
 
 describe('decideFileUrl', () => {
   it('signs an artifact that has a file', () => {

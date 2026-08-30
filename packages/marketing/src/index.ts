@@ -24,6 +24,11 @@
  * through, and what to do about what the platform answered: all three are
  * checkable without a database, a platform account, or a running ticker.
  *
+ * **The metrics decisions** (`metrics.ts`), the seam's second caller. Which days
+ * a campaign owes is the whole idempotency story for an append-only table, so it
+ * is a pure function with the clock passed in rather than a query with a `now()`
+ * in it.
+ *
  * **The adapter seam** (`adapter.ts`), written before any executor so that
  * slice-3 code is written against an interface rather than against whichever
  * provider happened to arrive first.
@@ -108,6 +113,7 @@ export {
 
 export {
   checkScopes,
+  METRICS_REQUIRED_SCOPES,
   PUBLISH_REQUIRED_SCOPES,
   type ScopeCheckInput,
   type ScopeRule,
@@ -123,3 +129,14 @@ export {
   type PublishConnectionCandidate,
   type PublishDecision,
 } from './publish';
+
+export {
+  acceptMetricsRows,
+  decideMetricsOutcome,
+  duePeriods,
+  METRICS_SOURCE,
+  type DuePeriodsInput,
+  type MetricsDecision,
+  type MetricsRowsRule,
+  type MetricsRowsVerdict,
+} from './metrics';

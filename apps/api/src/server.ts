@@ -138,6 +138,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     // approved with a budget typed on it), so this flag is the deployment-shaped
     // off switch rather than the authorisation. It is on unless set to `false`.
     publish: env.PUBLISH_ENABLED ? { maxPerPass: env.PUBLISH_MAX_PER_TICK } : undefined,
+    // Recording what those campaigns spent. Reads only, appends only, and inert
+    // until something is live, so the same kill-switch shape as publishing.
+    metrics: env.METRICS_ENABLED ? { maxPerPass: env.METRICS_MAX_PER_TICK } : undefined,
     log: app.log,
   });
   app.addHook('onClose', async () => stopTicker());

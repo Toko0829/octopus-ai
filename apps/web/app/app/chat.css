@@ -1656,6 +1656,71 @@
   color: var(--text-muted);
 }
 
+/* Campaigns, between the budget and the steps: what was authorised, and what it
+   actually spent. Same card treatment as the budget block above, because they
+   are read against each other. */
+.work-campaigns {
+  margin: 10px 0 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-hover);
+}
+.work-campaigns-head {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.work-campaign-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.work-campaign {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.work-campaign-name {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.work-campaign-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 0;
+}
+/* The channel is a labelled chip rather than a colour: which channel is the fact
+   being reported, and a hue carrying it alone would be meaning by colour (rule
+   15). */
+.work-chip {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 1px 6px;
+}
+.work-campaign-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 6px 0 0;
+  font-size: var(--text-sm);
+}
+.work-campaign-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.work-campaign-measured {
+  margin: 4px 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
 .work-tasks {
   list-style: none;
   margin: 12px 0 0;
