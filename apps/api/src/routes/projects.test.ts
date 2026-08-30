@@ -11,6 +11,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  CAMPAIGN_COLUMNS,
+  CampaignRow,
   decideFileUrl,
   signedUrlExpiresAt,
   PROJECT_COLUMNS,
@@ -47,6 +49,33 @@ describe('the projects select and ProjectRow', () => {
       expect(column in ProjectRow.shape, `"${column}" is selected and ProjectRow ignores it`).toBe(
         true,
       );
+    }
+  });
+});
+
+/**
+ * The same agreement for `campaigns`, which earned its constant the moment the
+ * schema grew a second coerced numeric: `cpa_ceiling` absent from a select would
+ * surface as a NaN complaint about a value nobody sent, exactly the `6fcd0d6`
+ * shape, on the read the optimizer's input travels through.
+ */
+describe('the campaigns select and CampaignRow', () => {
+  it('selects every column the schema requires', () => {
+    const selected = new Set(CAMPAIGN_COLUMNS.split(',').map((c) => c.trim()));
+
+    for (const column of Object.keys(CampaignRow.shape)) {
+      expect(selected.has(column), `CampaignRow requires "${column}" and no read selects it`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('selects nothing the schema does not describe', () => {
+    for (const column of CAMPAIGN_COLUMNS.split(',').map((c) => c.trim())) {
+      expect(
+        column in CampaignRow.shape,
+        `"${column}" is selected and CampaignRow ignores it`,
+      ).toBe(true);
     }
   });
 });

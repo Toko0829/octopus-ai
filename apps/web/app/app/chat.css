@@ -1720,6 +1720,21 @@
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
+/* Why spend stopped, and what resuming will not fix. Secondary rather than
+   muted: a paused campaign's reason is information, not furniture. */
+.work-campaign-reason {
+  margin: 6px 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  max-width: 52ch;
+}
+.work-campaign-actions {
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
 
 .work-tasks {
   list-style: none;

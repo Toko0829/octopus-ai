@@ -14,6 +14,8 @@ import {
   getProjects,
   requestReplan,
   resolveStep,
+  resumeCampaign,
+  setCampaignCpaCeiling,
   setProjectBudget,
 } from '../../lib/api-client';
 
@@ -264,7 +266,13 @@ export function ProjectPanel({ roomId, canAct, onClose }: Props) {
                         canAct={canAct}
                         onChanged={() => setRefresh((n) => n + 1)}
                       />
-                      <Campaigns campaigns={detail.campaigns} currency={detail.currency} />
+                      <Campaigns
+                        campaigns={detail.campaigns}
+                        currency={detail.currency}
+                        projectId={detail.id}
+                        canAct={canAct}
+                        onChanged={() => setRefresh((n) => n + 1)}
+                      />
                       <TaskList
                         tasks={detail.tasks}
                         projectId={detail.id}
@@ -447,8 +455,32 @@ function Budget({
  *
  * Money is `mono` for its tabular numerics (rule 14), because these figures are
  * read against the budget block directly above them.
+ *
+ * **The ceiling is the one figure here a person can write**, and writing it is
+ * the authorisation for the automatic pause (ADR-0014): the model never
+ * proposes it and the campaign card has no field for it, so this control is the
+ * column's only writer. Null renders as "None set", which abstains rather than
+ * blocks; that is the documented inversion of the budget's null and the copy
+ * says what it means instead of assuming the reader knows.
+ *
+ * A campaign paused for a ceiling breach explains itself and, for the owner,
+ * carries the resume button beside a warning that resume does not clear the
+ * breach: a still-breached ceiling re-pauses it on the next check, and the
+ * honest place to say so is before the click rather than after the surprise.
  */
-function Campaigns({ campaigns, currency }: { campaigns: CampaignSummary[]; currency: string }) {
+function Campaigns({
+  campaigns,
+  currency,
+  projectId,
+  canAct,
+  onChanged,
+}: {
+  campaigns: CampaignSummary[];
+  currency: string;
+  projectId: string;
+  canAct: boolean;
+  onChanged: () => void;
+}) {
   if (campaigns.length === 0) return null;
 
   return (
@@ -497,16 +529,182 @@ function Campaigns({ campaigns, currency }: { campaigns: CampaignSummary[]; curr
                     {c.conversionsToDate}
                   </span>
                 )}
+                <span className="work-campaign-figure">
+                  <span className="work-budget-label">Ceiling</span>
+                  {c.cpaCeiling === null
+                    ? 'None set'
+                    : `${c.cpaCeiling} ${c.currency || currency} per conversion`}
+                </span>
               </p>
               {c.lastMeasuredAt !== null && (
                 <p className="work-campaign-measured">
                   Measured through {formatMeasuredThrough(c.lastMeasuredAt)}
                 </p>
               )}
+              {c.state === 'paused' && c.pauseReason === 'cpa_breach' && (
+                <p className="work-campaign-reason">
+                  Paused because it crossed the cost per conversion ceiling set for it. The spend
+                  and the ceiling it was judged against are in the room message.
+                </p>
+              )}
+              {canAct && (
+                <CampaignCeiling
+                  projectId={projectId}
+                  campaign={c}
+                  currency={currency}
+                  onChanged={onChanged}
+                />
+              )}
+              {canAct && c.state === 'paused' && (
+                <ResumeCampaign projectId={projectId} campaignId={c.id} onChanged={onChanged} />
+              )}
             </li>
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * The ceiling's only writer, on the budget control's exact shape: seed from the
+ * current value, a separate explicit clear button, save then refetch the whole
+ * project. Positive-only where the budget allows zero, because a ceiling of 0
+ * would pause on the first cent and is refused by the contract and the table.
+ */
+function CampaignCeiling({
+  projectId,
+  campaign,
+  currency,
+  onChanged,
+}: {
+  projectId: string;
+  campaign: CampaignSummary;
+  currency: string;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const ceiling = campaign.cpaCeiling;
+
+  async function save(next: number | null) {
+    setBusy(true);
+    setError(null);
+    try {
+      await setCampaignCpaCeiling(projectId, campaign.id, next);
+      setEditing(false);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not set the ceiling.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const typed = value.trim();
+  const parsed = typed === '' ? Number.NaN : Number(typed);
+  const valid = Number.isFinite(parsed) && parsed > 0;
+
+  if (!editing) {
+    return (
+      <div className="work-campaign-actions">
+        <button
+          className="btn btn-ghost"
+          onClick={() => {
+            setValue(ceiling === null ? '' : String(ceiling));
+            setEditing(true);
+          }}
+        >
+          {ceiling === null ? 'Set a cost per conversion ceiling' : 'Change the ceiling'}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="plan-note">
+      <label className="auth-label" htmlFor={`ceiling-${campaign.id}`}>
+        Most a conversion may cost before Octopus pauses this campaign (
+        {campaign.currency || currency})
+      </label>
+      <input
+        id={`ceiling-${campaign.id}`}
+        className="auth-input mono"
+        type="number"
+        min="0.01"
+        step="0.01"
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="0.00"
+      />
+      <div className="plan-actions">
+        <button className="btn btn-ghost" onClick={() => setEditing(false)} disabled={busy}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" onClick={() => save(parsed)} disabled={busy || !valid}>
+          Set the ceiling
+        </button>
+      </div>
+      {/* Clearing is its own act, on the budget control's reasoning: it must not
+          be reachable by emptying the field. Here it withdraws the instruction
+          to judge, and the copy says what that abstention means. */}
+      {ceiling !== null && (
+        <button className="btn btn-ghost" onClick={() => save(null)} disabled={busy}>
+          Clear the ceiling, Octopus stops judging this campaign
+        </button>
+      )}
+      {error ? <div className="auth-error">{error}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * The other half of the automatic pause: a stopped campaign with no way back
+ * would be a dead-end surface, and this product has shipped that shape three
+ * times before noticing. The warning sits before the click because resuming
+ * does not clear the breach; a still-breached ceiling re-pauses on the next
+ * check, and learning that from the button would read as the product fighting
+ * the person.
+ */
+function ResumeCampaign({
+  projectId,
+  campaignId,
+  onChanged,
+}: {
+  projectId: string;
+  campaignId: string;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function resume() {
+    setBusy(true);
+    setError(null);
+    try {
+      await resumeCampaign(projectId, campaignId);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not resume the campaign.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="work-campaign-actions">
+      <button className="btn btn-ghost" onClick={resume} disabled={busy}>
+        Resume the campaign
+      </button>
+      <p className="work-campaign-reason">
+        If the ceiling is still crossed, Octopus will pause it again on the next check. Raise or
+        clear the ceiling first if you want it to keep running.
+      </p>
+      {error ? <div className="auth-error">{error}</div> : null}
     </div>
   );
 }

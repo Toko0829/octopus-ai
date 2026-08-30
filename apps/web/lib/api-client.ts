@@ -180,6 +180,38 @@ export function setProjectBudget(projectId: string, budgetCeiling: number | null
   });
 }
 
+/**
+ * Set or clear a campaign's cost-per-conversion ceiling.
+ *
+ * Setting it authorises the automatic pause (ADR-0014). `null` clears it, which
+ * stops the optimizer judging this campaign and touches nothing else.
+ */
+export function setCampaignCpaCeiling(
+  projectId: string,
+  campaignId: string,
+  cpaCeiling: number | null,
+) {
+  return bff<ProjectDetail>(`/projects/${projectId}/campaigns/${campaignId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ cpaCeiling }),
+  });
+}
+
+/**
+ * Resume a paused campaign.
+ *
+ * If the measured rollup still breaches the ceiling, the next sweep pauses it
+ * again: resuming does not clear the breach, raising or clearing the ceiling
+ * does. The server refuses with a sentence naming what is in the way (409) or
+ * asks for a retry shortly (503).
+ */
+export function resumeCampaign(projectId: string, campaignId: string) {
+  return bff<ProjectDetail>(`/projects/${projectId}/campaigns/${campaignId}/resume`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
 /* ------------------------------------------------- channel connections */
 
 /**

@@ -138,6 +138,33 @@ const EnvSchema = z.object({
   METRICS_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
 
   /**
+   * Whether this deployment enforces the CPA ceilings owners have typed.
+   *
+   * **On by default, and of the three sweep flags this one has the strongest
+   * claim to that polarity.** The sweep is doubly inert until a person opts in:
+   * it selects only live campaigns, and only those whose owner typed a ceiling
+   * on the panel, and nothing else writes that column. Setting a ceiling is the
+   * authorisation to pause (ADR-0014), so off by default would make a figure
+   * somebody typed an unenforced promise, which on a money surface is a false
+   * statement rather than a missing feature. A kill switch, exactly like its
+   * two siblings: set it to `false` and campaigns are still measured, still
+   * shown, and never paused from here.
+   */
+  OPTIMIZE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
+  /**
+   * How many ceiling breaches one pass may act on.
+   *
+   * Three, matching its siblings, and it bounds pauses ATTEMPTED rather than
+   * campaigns judged: judging is a cheap indexed read plus a pure function, so
+   * a workspace of healthy campaigns costs nothing against this, and a queue of
+   * caught-up campaigns cannot starve the one that is breaching.
+   */
+  OPTIMIZE_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
+
+  /**
    * Signing key for the OAuth `state` parameter.
    *
    * **Optional in this schema and required at the point of use**, which is a

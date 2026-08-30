@@ -617,12 +617,12 @@ of this file. `content_items`, `creative_assets`, `email_sequences`,
 `landing_pages` and `creative_performance` remain design-only, tracked in
 [marketing-growth-engine.md](../30-modules/marketing-growth-engine.md).
 
-| Table                 | Key columns                                                                                                                                                                                                                                                                                        |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `campaigns`           | `id`, `project_id`, `task_id?`, `name`, `objective`, `channel` (meta/google/email/organic_social), `state` (draft→ready→publishing→live→paused→completed, plus cancelled/failed), `budget_cap` (**NULL = nothing authorised**), `currency`, `pause_reason`, `source_embed_id` UNIQUE, `created_by` |
-| `channel_connections` | `id`, `room_id`, `connected_by`, `provider` (registry-validated), `channel`, `external_account_id`, `granted_scopes[]`, `access_token`, `refresh_token`, `token_expires_at`, `status` (active/expired/revoked), UNIQUE `(room_id, provider, external_account_id)`                                  |
-| `ad_entities`         | `id`, `campaign_id`, `project_id`, `parent_id?`, `kind` (campaign/ad_set/ad), `state` (…/rejected/archived), `external_id?`, `channel_connection_id?`, `spec` JSONB, `idempotency_key` UNIQUE                                                                                                      |
-| `campaign_outcomes`   | `id`, `campaign_id`, `project_id`, `period_start`, `period_end`, `spend`, `impressions`, `clicks`, `conversions`, `revenue`, `metrics` JSONB, `source` (`pull_metrics`/`manual`, CHECKed since `20260829160000`), UNIQUE `(campaign_id, period_start, period_end, source)`                         |
+| Table                 | Key columns                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `campaigns`           | `id`, `project_id`, `task_id?`, `name`, `objective`, `channel` (meta/google/email/organic_social), `state` (draft→ready→publishing→live→paused→completed, plus cancelled/failed), `budget_cap` (**NULL = nothing authorised**), `cpa_ceiling` (**NULL = optimizer abstains**, > 0 CHECKed, `20260830120000`), `currency`, `pause_reason` (CHECKed to its four values since `20260830120000`), `source_embed_id` UNIQUE, `created_by` |
+| `channel_connections` | `id`, `room_id`, `connected_by`, `provider` (registry-validated), `channel`, `external_account_id`, `granted_scopes[]`, `access_token`, `refresh_token`, `token_expires_at`, `status` (active/expired/revoked), UNIQUE `(room_id, provider, external_account_id)`                                                                                                                                                                    |
+| `ad_entities`         | `id`, `campaign_id`, `project_id`, `parent_id?`, `kind` (campaign/ad_set/ad), `state` (…/rejected/archived), `external_id?`, `channel_connection_id?`, `spec` JSONB, `idempotency_key` UNIQUE                                                                                                                                                                                                                                        |
+| `campaign_outcomes`   | `id`, `campaign_id`, `project_id`, `period_start`, `period_end`, `spend`, `impressions`, `clicks`, `conversions`, `revenue`, `metrics` JSONB, `source` (`pull_metrics`/`manual`, CHECKed since `20260829160000`), UNIQUE `(campaign_id, period_start, period_end, source)`                                                                                                                                                           |
 
 - **Grants differ across the four and the differences are the design.** `campaigns`,
   `ad_entities` and `campaign_outcomes` are `select` for `authenticated` and `all`
@@ -636,7 +636,19 @@ of this file. `content_items`, `creative_assets`, `email_sequences`,
   `artifacts` carries one beside `task_id`.
 - **The spend cap is enforced in tool code, not by a constraint.** `budget_cap` and
   `projects.budget_ceiling` compose in `checkSpendCap` (`packages/marketing`),
-  which is where rule 7 puts it.
+  which is where rule 7 puts it. The same stance holds for `cpa_ceiling`: the
+  check constraints refuse malformed values (0, negative), and the judgement
+  itself is `decideCpaBreach` in tool code.
+- **`cpa_ceiling`'s NULL inverts the budget columns', and both comments say so.**
+  An unset spend authorisation blocks (`NULL = nothing authorised`); an unset
+  judgement threshold abstains (`NULL = the optimizer does not judge this
+campaign`). Setting it authorises the automatic pause
+  ([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)). New event
+  verbs with this slice: `campaign.cpa_ceiling_set` (explicit `actor_id`, the
+  authorisation), `campaign.auto_paused` (`actor_kind = 'system'`, carrying the
+  breach arithmetic), and `campaign.resumed` (explicit `actor_id`), beside the
+  trigger-written `campaign.transitioned` whose `paused → live` count is what
+  the pause idempotency key's epoch is derived from.
 
 ## RAG schema
 

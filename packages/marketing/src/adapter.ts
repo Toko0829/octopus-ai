@@ -233,6 +233,15 @@ export interface AdChannelAdapter {
    */
   pause(ref: AdapterEntityRef, idempotencyKey: string): Promise<AdapterResult<AdapterEntityRef>>;
 
+  /**
+   * Start the spend again. Takes a key for the same reason `pause` does, and the
+   * pair is why both keys carry an epoch (`optimize.ts`): a platform that
+   * records results by key must answer a *second* pause, after a resume, by
+   * actually pausing rather than by replaying the first pause's recorded
+   * success. Distinct epochs make each stop and each start its own side effect.
+   */
+  resume(ref: AdapterEntityRef, idempotencyKey: string): Promise<AdapterResult<AdapterEntityRef>>;
+
   /** Read-only, so no key: reading twice is reading twice. */
   pullMetrics(ref: AdapterEntityRef, period: MetricsPeriod): Promise<AdapterResult<MetricsRow[]>>;
 }

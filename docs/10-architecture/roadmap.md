@@ -63,7 +63,7 @@
 - `human-nodes-marketplace`: expert-marketer onboarding + KYC, skill/trust graph (creative, ads, SEO, video, outreach), ranked matching, offers with expiry/cascade.
 - `payments-billing`: escrow-equivalent holds, Connect Express payouts, double-entry ledger, spend caps in tool code; managed-ad-spend accounting.
 - Node join-per-task threads (RLS least-privilege), proof/approval, payout → resume → **campaigns launch** within spend caps.
-- **Auto-optimize loop v1:** pull live metrics, pause/scale within guardrails; write outcomes to the flywheel.
+- 🟡 **Auto-optimize loop v1:** pull live metrics, pause/scale within guardrails; write outcomes to the flywheel. **The pause half is live** ([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)): metrics are pulled, a CPA ceiling breach pauses the campaign, the decision is logged with its arithmetic, and the owner can resume from the panel. Scale/reallocate are not built.
 
 **Exit gate:** the full 10-step core loop runs end-to-end — plan → approve → (human node) → launch → measure → optimize — for a real creator with a real (test-mode) budget and a paid node.
 

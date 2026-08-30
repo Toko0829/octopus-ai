@@ -28,18 +28,18 @@ The engine coordinates the whole funnel, not one channel:
 
 All channel actions are typed tools with **risk tiers**; anything that publishes or spends is `high-risk` → requires authorization + spend caps enforced in tool code (never prompts). Providers sit behind adapters in [integrations.md](integrations.md).
 
-| Tool                                              | Risk       | Notes                                                                                                                                                                            |
-| ------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `research_audience` / `research_keywords`         | read-only  | grounding + planning                                                                                                                                                             |
-| `generate_creative` (image/video/audio)           | reversible | creative-gen providers; stored as artifacts                                                                                                                                      |
-| `draft_copy` / `draft_email_sequence`             | reversible | copy assets                                                                                                                                                                      |
-| `build_landing`                                   | reversible | conversion pages/drafts                                                                                                                                                          |
-| `connect_channel`                                 | high-risk  | OAuth to the user's ad/social/email accounts — **explicit user authorization only**                                                                                              |
-| `create_campaign` / `create_ad_set` / `create_ad` | high-risk  | ad-platform APIs; gated by approval + spend cap                                                                                                                                  |
-| `publish_content`                                 | high-risk  | posts as/for the user — approval required                                                                                                                                        |
-| `set_budget` / `adjust_budget`                    | high-risk  | never exceeds pre-authorized budget                                                                                                                                              |
-| `pull_metrics`                                    | read-only  | **live**, as the ticker's metrics sweep rather than as a planner-visible tool: nobody authorises a read, and the days it owes are decided from the table rather than from a step |
-| `optimize_campaign`                               | `external` | pause/scale/reallocate within already-authorised caps + brand-safety                                                                                                             |
+| Tool                                              | Risk       | Notes                                                                                                                                                                               |
+| ------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `research_audience` / `research_keywords`         | read-only  | grounding + planning                                                                                                                                                                |
+| `generate_creative` (image/video/audio)           | reversible | creative-gen providers; stored as artifacts                                                                                                                                         |
+| `draft_copy` / `draft_email_sequence`             | reversible | copy assets                                                                                                                                                                         |
+| `build_landing`                                   | reversible | conversion pages/drafts                                                                                                                                                             |
+| `connect_channel`                                 | high-risk  | OAuth to the user's ad/social/email accounts — **explicit user authorization only**                                                                                                 |
+| `create_campaign` / `create_ad_set` / `create_ad` | high-risk  | ad-platform APIs; gated by approval + spend cap                                                                                                                                     |
+| `publish_content`                                 | high-risk  | posts as/for the user — approval required                                                                                                                                           |
+| `set_budget` / `adjust_budget`                    | high-risk  | never exceeds pre-authorized budget                                                                                                                                                 |
+| `pull_metrics`                                    | read-only  | **live**, as the ticker's metrics sweep rather than as a planner-visible tool: nobody authorises a read, and the days it owes are decided from the table rather than from a step    |
+| `optimize_campaign`                               | `external` | **live, pause only**, as the ticker's optimize sweep rather than as a planner-visible tool: the authorisation is the owner-typed CPA ceiling (ADR-0014). Scale/reallocate not built |
 
 **`optimize_campaign` maps to `external`, and the tier it used to carry was not a tier at all.** This table said "reversible-within-guardrails", which is not a member of `public.task_risk_tier` and never was: the canonical enum is `read_only | reversible | external | high_risk` (`packages/contracts/src/index.ts`). It sat here unchallenged because a value in a markdown table is checked by nothing.
 
@@ -60,19 +60,20 @@ The `@octopus/core` split applied here: reasoning a reader can check without run
 
 `@octopus/contracts` became a dependency with the campaign card, and exactly one type moved: **`MarketingChannel`**, which the card payload carries, the action route reads back and the project panel renders, so it finally has a boundary to share. `adapter.ts` re-exports it rather than declaring a second copy, because two enums that must agree are two enums that can disagree, and this one is checked against a Postgres enum on one side and a card payload on the other. `CreateCampaignSpec` and the rest of the seam still face an adapter rather than a wire and stay here; moving them now would be the unused edge rule 20 asks us not to add.
 
-| File                    | What it decides                                                                                                                |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `spend.ts`              | `checkSpendCap`: may this campaign be authorised for this amount                                                               |
-| `publish.ts`            | The publish key, which account publishes, and what to do about the answer                                                      |
-| `metrics.ts`            | Which days a campaign owes, whether the adapter answered them, and what to do                                                  |
-| `adapter.ts`            | `AdChannelAdapter`, the seam every platform sits behind, and its Zod I/O shapes                                                |
-| `fake-adapter.ts`       | A complete deterministic implementation of that seam, with no platform behind it                                               |
-| `adapter-registry.ts`   | Which providers exist, checked in rather than stored                                                                           |
-| `auth.ts`               | `ChannelAuthProvider`, the seam an account connection sits behind                                                              |
-| `fake-auth-provider.ts` | A deterministic implementation of it, whose consent screen is our own page                                                     |
-| `fake-consent-code.ts`  | The code format, dependency-free because the consent screen runs in a browser                                                  |
-| `auth-registry.ts`      | Which providers may be connected, plus `carriesRealCredentials`                                                                |
-| `scopes.ts`             | `checkScopes`: may this connection do the thing about to be attempted, and the two scope lists (publish writes, metrics reads) |
+| File                    | What it decides                                                                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spend.ts`              | `checkSpendCap`: may this campaign be authorised for this amount                                                                                  |
+| `publish.ts`            | The publish key, which account publishes, and what to do about the answer                                                                         |
+| `metrics.ts`            | Which days a campaign owes, whether the adapter answered them, and what to do                                                                     |
+| `optimize.ts`           | `decideCpaBreach`, the epoch-carrying pause and resume keys, and the pause failure map (ADR-0014)                                                 |
+| `adapter.ts`            | `AdChannelAdapter`, the seam every platform sits behind, and its Zod I/O shapes                                                                   |
+| `fake-adapter.ts`       | A complete deterministic implementation of that seam, with no platform behind it                                                                  |
+| `adapter-registry.ts`   | Which providers exist, checked in rather than stored                                                                                              |
+| `auth.ts`               | `ChannelAuthProvider`, the seam an account connection sits behind                                                                                 |
+| `fake-auth-provider.ts` | A deterministic implementation of it, whose consent screen is our own page                                                                        |
+| `fake-consent-code.ts`  | The code format, dependency-free because the consent screen runs in a browser                                                                     |
+| `auth-registry.ts`      | Which providers may be connected, plus `carriesRealCredentials`                                                                                   |
+| `scopes.ts`             | `checkScopes`: may this connection do the thing about to be attempted, and the three scope lists (publish writes, metrics reads, optimize writes) |
 
 ### The spend cap
 
@@ -107,7 +108,7 @@ Only `fake` is registered today. It is a **provider**, not a channel, which is w
 
 ## Guardrails (marketing-specific)
 
-- **Spend caps** per campaign/project in tool code (`checkSpendCap` in `packages/marketing`, composing `projects.budget_ceiling` with the caps already committed to sibling campaigns); auto-pause on CPA/ROAS ceiling breach.
+- **Spend caps** per campaign/project in tool code (`checkSpendCap` in `packages/marketing`, composing `projects.budget_ceiling` with the caps already committed to sibling campaigns); **auto-pause on CPA ceiling breach is live** (`decideCpaBreach` + the optimize sweep, ADR-0014). A ROAS floor is named-not-built: it needs revenue attribution, which lands with the first real provider.
 - **Brand-safety + ad-policy** pre-checks before publish/spend (platform policies, FTC disclosure, prohibited claims); ad-policy rejection → revise, never silently keep spending.
 - **Authorization** for connecting accounts, publishing, and spending — explicit and per-scope.
 - **Kill switch** pauses live spend + publishing at the next safe checkpoint.
@@ -115,7 +116,90 @@ Only `fake` is registered today. It is a **provider**, not a channel, which is w
 
 ## Auto-optimize loop (flywheel mechanism 3)
 
-`pull_metrics → evaluate vs targets → optimize_campaign (pause losers / scale winners / reallocate / iterate creative) → log outcome`. Bounded by spend caps and brand-safety; framed as measurable experiments (A/B, budget bandits). Every decision + result is written to the flywheel ([learning-flywheel.md](../10-architecture/learning-flywheel.md)).
+**v1 is live, and it does exactly one thing: pause a campaign that breaches the
+CPA ceiling its owner typed.** The loop the spec sentence promised
+(`pull_metrics → evaluate vs targets → optimize_campaign → log outcome`) now has
+its first working arc; scale-winners, reallocate, creative iteration and the
+bandit framing remain named-not-built below.
+
+**The authorisation is the ceiling itself** ([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)).
+`campaigns.cpa_ceiling` is written only by the owner-only panel route
+(`PATCH /api/projects/:projectId/campaigns/:campaignId`, audited as
+`campaign.cpa_ceiling_set` with an explicit `actor_id`), never proposed by the
+model, and **NULL abstains rather than blocks**, which deliberately inverts the
+budget columns: an unset spend authorisation refuses spend, an unset judgement
+threshold refuses to judge. A ceiling of 0 is refused at the contract and the
+table, because it would pause on the first recorded cent whatever the
+conversions say, which is a kill switch wearing the shape of a threshold.
+
+**The breach rule is one inequality with no division**, in
+`packages/marketing/src/optimize.ts` as pure code: breach iff
+`spend > ceiling × (conversions + 1)`, judged over the `pull_metrics` rollup of
+whole closed days. Read it as "even granting one more conversion right now, the
+money already spent exceeds what the owner said a conversion may cost."
+Abstentions are named and two of them are the no-invented-zero rule: zero
+measured periods is not zero spend, and a null `conversionsToDate` (spend
+reported, conversions never) must not be judged as zero conversions. The named
+consequence: a provider that never reports conversions can never breach a CPA
+ceiling, which is correct because CPA is unjudgeable without conversions and
+`budget_cap` remains the guard on raw spend.
+
+**The optimize sweep** (`apps/api/src/lib/optimize.ts`) rides the ticker pass
+directly after the metrics sweep, so a breach is acted on in the pass that
+revealed it. It selects `live` campaigns with a non-null ceiling, **with no
+project-status gate**, deliberately: stopping money is kill-switch-family work,
+and the stopping arc must have no states it cannot reach, so a live campaign in
+a paused project is still paused on a breached rollup. `OPTIMIZE_ENABLED`
+defaults on (a kill switch, the strongest claim of the three sweep flags: the
+sweep is doubly inert until somebody types a ceiling, and off-by-default would
+make a typed ceiling an unenforced promise); `OPTIMIZE_MAX_PER_TICK` bounds
+pauses attempted, not campaigns judged, so caught-up campaigns cannot starve a
+breaching one.
+
+**The platform is called before the database is written, inverting ADR-0013,
+and the inversion is argued rather than drifted into.** Publish records intent
+first because the platform invents an id an unrecorded crash would lose; a
+pause creates nothing and its decision re-derives from durable rows, so a crash
+anywhere re-derives the same breach, presents the same key, and converges,
+while our-rows-first would open the one unacceptable window: a database saying
+`paused` about a campaign the platform is still spending on. Order after the
+call: entity `live → paused` (conditional), campaign `live → paused` with
+`pause_reason = 'cpa_breach'` (the trigger audits it), then the
+`campaign.auto_paused` decision event carrying the arithmetic (spend,
+conversions, ceiling, allowance), then the room message stating the same
+numbers and how to run it again.
+
+**The idempotency keys carry an epoch**: `pause:<campaignId>:cpa:<epoch>`,
+where the epoch counts prior `paused → live` transitions in `events`
+(`resume:<campaignId>:<epoch>` mirrors it over `live → paused`). Derived from
+the campaign id alone, a post-resume second breach would replay the first
+pause's key, and a record-replay platform would answer with the recorded
+success while the money kept moving. The epoch cannot change mid-sequence
+because resume only acts on campaigns that are `paused` here, and a mid-pause
+row still reads `live`.
+
+**The failure map never closes a campaign, and the machine agrees:**
+`live → failed` is not a legal arc (pinned in
+`supabase/tests/campaign_optimize.sql`). `auth_expired` marks the connection
+expired and **is announced**, inverting the metrics sweep's quiet posture,
+because "your spend cannot be stopped" is a more urgent sentence than "your
+numbers stopped". `rate_limited` and `provider_error` retry unbounded at tick
+cadence and say nothing in the room; `not_found` is said once and moves
+nothing, because inventing a confirmation from an absence is how a record
+diverges from a platform; `invalid_spec`/`policy_rejected` are contract
+violations on a call that sends no spec and are logged at error. Pausing needs
+`OPTIMIZE_REQUIRED_SCOPES` (`ads:write`): a read-only connection's campaigns
+can be measured and not auto-paused, and a breach on one is announced instead
+of acted on.
+
+**Resume is the owner's, from the panel, and it does not clear the breach.**
+`POST .../campaigns/:campaignId/resume` (owner-only, audited as
+`campaign.resumed` with the actor, `pause_reason` cleared in the same UPDATE so
+the settled reason lives in the events history). If the rollup still breaches,
+the next sweep pauses again under a new epoch, and the button's copy says so
+before the click. v1 deliberately resumes **any** paused campaign, including a
+future `kill_switch` pause: the kill switch has no writer yet, and the slice
+that writes one owns deciding whether owner resume is refused there.
 
 ## Human nodes in marketing
 
@@ -139,7 +223,7 @@ Nine were specified from Phase 0 and this table says which of them exist, becaus
 
 **All four have writers now.** `campaign_outcomes` was the last, and the metrics sweep below is what closes the gap: `marketing-growth-engine.md` had named the metrics puller as the next slice since the domain landed, and `README.md` carried it under "not built, and not claimed" for as long. Guards land with their tables here because the recorded failure in this repository is the other order: `tasks.risk_tier` was unreachable for its entire life, and `task_deps` held no row for two weeks while enforcing an empty set.
 
-**What is still not built, so the list stays honest:** the auto-optimize loop itself. Recording what a campaign spent is not the same as acting on it, and acting needs a CPA ceiling that has no writer anywhere, which is the same "a guard whose input nothing supplies" shape `projects.budget_ceiling` was in until the campaign card. Nothing in this slice pauses, scales or reallocates anything.
+**What is still not built, so the list stays honest:** the rest of the optimize verbs. The CPA ceiling has its writer now and the pause arc is live (`20260830120000`, the section above), which closes the "guard whose input nothing supplies" gap this paragraph used to name. What remains: **scale-winners** (a budget change within an authorised cap has a seam method, `setBudget`, and no caller; beyond the cap it is `set_budget` and stays `high_risk`), **reallocate**, **creative iteration** (blocked on creative existing at all, slice 6), the **ROAS floor** (blocked on revenue attribution, which means a real provider), the **bandit/experiment framing**, and the **kill switch**, whose pause is the same state with a different reason and a different authorisation question.
 
 `ad_entities` is the case where that ordering paid out and then asked for something back. Its hierarchy guard needed no adjustment when the writer arrived, which is the outcome guards-before-writers exists to produce. Its **lifecycle** guard did not exist at all, because in `20260829122000` there was no writer whose transitions could be wrong, so `20260829150000` lands it in the same change as the first writer rather than after it. The same migration makes `external_id` write-once, which had been a column comment since the day the table was created.
 
@@ -500,7 +584,7 @@ Two arcs are worth reading rather than skimming:
 - **`publishing` is not `live`.** Claiming a campaign is live before the platform confirmed it would put an untrue sentence in the audit trail. Between the request and the confirmation the honest answer is "we asked", and that is a state.
 - **`live → cancelled` does not exist.** A spending campaign is paused first. Stopping the money and closing the record stay two acts with two events, so nobody can close a campaign and discover afterwards that it was still spending.
 
-`pause_reason` (`kill_switch` | `cpa_breach` | `user` | `optimizer`) carries **why** spend stopped. The reason is data; the state is the same one however it was reached.
+`pause_reason` (`kill_switch` | `cpa_breach` | `user` | `optimizer`) carries **why** spend stopped. The reason is data; the state is the same one however it was reached. It is **check-constrained since `20260830120000`**, landing with its first writer (the optimize sweep writes `cpa_breach`; resume clears it to NULL in the same UPDATE as the transition): the free-text "while the set is still being learned" period the column shipped with is over, and the panel now branches on the value, so a typo would render as a paused campaign with no explanation.
 
 ## Relationship to the north star
 

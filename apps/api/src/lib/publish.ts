@@ -11,6 +11,7 @@ import {
   type PublishDecision,
 } from '@octopus/marketing';
 import { markConnectionExpired, readPublishableConnections } from './connections';
+import { postSystemMessage } from './system-message';
 import { roomForProject } from './room-for-project';
 
 /**
@@ -474,7 +475,8 @@ async function finish(
     });
 
     await postSystemMessage(
-      deps,
+      deps.admin,
+      deps.log,
       roomId,
       `campaign-published:${campaign.id}`,
       `Your campaign "${campaign.name}" is live. ` +
@@ -524,7 +526,8 @@ async function finish(
     );
 
     await postSystemMessage(
-      deps,
+      deps.admin,
+      deps.log,
       roomId,
       `campaign-publish-outcome:${campaign.id}`,
       decision.action === 'reject'
@@ -608,32 +611,14 @@ async function announceBlocked(
   reason: string,
 ): Promise<void> {
   await postSystemMessage(
-    deps,
+    deps.admin,
+    deps.log,
     roomId,
     `campaign-publish-blocked:${campaign.id}:${rule}`,
     `Your campaign "${campaign.name}" is approved and waiting to publish. ${reason} ` +
       'Connected accounts are listed beside this conversation. Nothing has been spent.',
   );
   deps.log.info({ campaignId: campaign.id, rule }, 'campaign is approved but cannot publish yet');
-}
-
-async function postSystemMessage(
-  deps: PublishSweepDeps,
-  roomId: string,
-  key: string,
-  body: string,
-): Promise<void> {
-  const { error } = await deps.admin.from('messages').insert({
-    room_id: roomId,
-    author_id: null,
-    author_kind: 'system',
-    body,
-    idempotency_key: key,
-  });
-  // A collision is the mechanism working: this pass had nothing new to say.
-  if (error && error.code !== '23505') {
-    deps.log.error({ err: error, key }, 'could not post a publish message');
-  }
 }
 
 /**

@@ -7,14 +7,29 @@ import type {
   ProjectSummary,
   Task,
 } from '@octopus/contracts';
-import { CampaignState, MarketingChannel, SetProjectBudgetBody } from '@octopus/contracts';
+import {
+  CampaignState,
+  MarketingChannel,
+  SetCampaignCpaCeilingBody,
+  SetProjectBudgetBody,
+} from '@octopus/contracts';
 import type { CampaignSummary } from '@octopus/contracts';
 import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
 import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
 import { citationTitles, summariseProjects } from '../lib/project-progress';
 import { resolveProjectOwner } from '../lib/project-owner';
 import { rollupOutcomes, type OutcomeReadRow } from '../lib/metrics';
-import { METRICS_SOURCE } from '@octopus/marketing';
+import { markConnectionExpired, readPublishableConnections } from '../lib/connections';
+import { roomForProject } from '../lib/room-for-project';
+import {
+  adapterFor,
+  checkScopes,
+  chooseConnection,
+  decidePauseOutcome,
+  METRICS_SOURCE,
+  OPTIMIZE_REQUIRED_SCOPES,
+  resumeIdempotencyKey,
+} from '@octopus/marketing';
 
 /**
  * Reading what an approved plan became: the project, its tasks, and what those
@@ -85,9 +100,25 @@ export const CampaignRow = z.object({
   channel: MarketingChannel,
   state: CampaignState,
   budget_cap: z.coerce.number().nullable(),
+  // Same numeric(12,2)-arrives-as-a-string coercion as budget_cap, and the same
+  // stakes: this is the figure the optimizer judges spend against.
+  cpa_ceiling: z.coerce.number().nullable(),
+  pause_reason: z.enum(['kill_switch', 'cpa_breach', 'user', 'optimizer']).nullable(),
   currency: z.string(),
   created_at: z.string(),
 });
+
+/**
+ * Every column a read of `campaigns` must select, in one place.
+ *
+ * `PROJECT_COLUMNS`'s reasoning applied to the table that gained columns this
+ * slice: `CampaignRow` coerces two numerics, so a select that omits one fails at
+ * runtime as a NaN complaint about a value nobody sent, which is exactly how
+ * `6fcd0d6` broke `listProjects`. The select was an inline string until the
+ * schema grew, which is the moment the constant earns its place.
+ */
+export const CAMPAIGN_COLUMNS =
+  'id, name, channel, state, budget_cap, cpa_ceiling, pause_reason, currency, created_at';
 
 /** Terminal campaigns hold none of the ceiling. Mirrors `private.campaign_state_is_terminal`. */
 const TERMINAL_CAMPAIGN_STATES = new Set(['completed', 'cancelled', 'failed']);
@@ -380,6 +411,313 @@ export async function projectRoutes(
     },
   );
 
+  const CampaignActionParams = z.object({
+    projectId: z.string().uuid(),
+    campaignId: z.string().uuid(),
+  });
+
+  /**
+   * Set or clear the ceiling the optimizer judges this campaign against.
+   *
+   * **Setting it is the authorisation for the automatic pause** (ADR-0014), so
+   * this is owner-only and audited on the budget route's exact pattern, and the
+   * model never proposes the figure: nothing else writes this column, the card
+   * has no field for it, and the sweep only ever reads it.
+   *
+   * The campaign read carries `.eq('project_id', ...)` as well as the id, which
+   * is the cross-project guard: without it a valid campaign id under a project
+   * the caller owns nothing of would pass the ownership check made on the
+   * project named in the path.
+   *
+   * Legal in any campaign state, deliberately: the sweep only judges `live`
+   * campaigns, so a ceiling on a terminal one is inert by construction, and
+   * refusing it here would add a rule with nothing behind it. Raising or
+   * clearing the ceiling on a `paused` campaign is the documented first half of
+   * resuming one.
+   */
+  app.patch(
+    '/api/projects/:projectId/campaigns/:campaignId',
+    { preHandler: requireAuth },
+    async (request, reply): Promise<ProjectDetail | FastifyReply> => {
+      const params = CampaignActionParams.safeParse(request.params);
+      if (!params.success) {
+        return fail(reply, 400, 'bad_request', 'projectId and campaignId must be UUIDs.');
+      }
+      const body = SetCampaignCpaCeilingBody.safeParse(request.body);
+      if (!body.success) {
+        return fail(
+          reply,
+          400,
+          'bad_request',
+          'cpaCeiling must be a number above 0, or null to clear it.',
+        );
+      }
+
+      const { projectId, campaignId } = params.data;
+      const userId = (request.user as NonNullable<typeof request.user>).sub;
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+
+      try {
+        const { ownerId } = await resolveProjectOwner(db, projectId);
+        if (!ownerId) return fail(reply, 404, 'not_found', 'Project not found.');
+        if (ownerId !== userId) {
+          return fail(reply, 403, 'forbidden', 'Only the workspace owner can set a ceiling.');
+        }
+
+        const admin = createServiceClient(opts.supabase);
+        const { data: before, error: beforeErr } = await admin
+          .from('campaigns')
+          .select('cpa_ceiling, currency')
+          .eq('id', campaignId)
+          .eq('project_id', projectId)
+          .maybeSingle<{ cpa_ceiling: number | string | null; currency: string }>();
+        if (beforeErr) throw beforeErr;
+        if (!before) return fail(reply, 404, 'not_found', 'Campaign not found.');
+
+        const { error: updateErr } = await admin
+          .from('campaigns')
+          .update({ cpa_ceiling: body.data.cpaCeiling })
+          .eq('id', campaignId);
+        if (updateErr) throw updateErr;
+
+        // Audited with an explicit actor, exactly as the budget is: this is the
+        // authorisation the sweep acts on, and `auth.uid()` reads null under the
+        // service key.
+        const { error: eventErr } = await admin.from('events').insert({
+          project_id: projectId,
+          actor_id: userId,
+          actor_kind: 'user',
+          verb: 'campaign.cpa_ceiling_set',
+          subject_type: 'campaign',
+          subject_id: campaignId,
+          payload: {
+            from: before.cpa_ceiling === null ? null : Number(before.cpa_ceiling),
+            to: body.data.cpaCeiling,
+            currency: before.currency,
+          },
+        });
+        if (eventErr) {
+          request.log.error(
+            { err: eventErr, campaignId },
+            'ceiling set but not audited; the ceiling stands and the event is missing',
+          );
+        }
+
+        const detail = await buildProjectDetail(db, projectId);
+        if (!detail) return fail(reply, 404, 'not_found', 'Project not found.');
+        request.log.info(
+          { projectId, campaignId, userId, cpaCeiling: body.data.cpaCeiling },
+          'campaign cpa ceiling set',
+        );
+        return detail;
+      } catch (err) {
+        request.log.error({ err, projectId, campaignId, userId }, 'setCampaignCpaCeiling failed');
+        return fail(reply, 500, 'internal_error', 'Could not set the ceiling.');
+      }
+    },
+  );
+
+  /**
+   * Start a paused campaign's spend again.
+   *
+   * The other half of what the auto-pause slice owes: a pause with no resume
+   * surface would be a product-irreversible act at `external` tier and the
+   * dead-end shape this repository has recorded three times, at the worst
+   * possible surface, which is somebody's money stopped with no button.
+   *
+   * **Resume does not clear the breach.** The ceiling is the authorisation, so
+   * if the measured rollup still breaches it, the next sweep pauses the
+   * campaign again under a new epoch, correctly; the panel says so beside the
+   * button. Clearing `pause_reason` in the same UPDATE as the transition keeps
+   * "why it was paused" in the events history, which is where a settled reason
+   * belongs.
+   *
+   * **The platform is called before the rows move**, on the sweep's own
+   * argument: a resume creates nothing and re-derives cleanly, since the epoch
+   * counts `live -> paused` transitions and the campaign stays `paused` here
+   * until the write lands, so a retry presents the same key. The one
+   * deliberately permissive edge: this route resumes ANY paused campaign,
+   * including a future `kill_switch` pause. The kill switch has no writer yet,
+   * and the slice that writes one owns deciding whether an owner's resume is
+   * refused there.
+   */
+  app.post(
+    '/api/projects/:projectId/campaigns/:campaignId/resume',
+    { preHandler: requireAuth },
+    async (request, reply): Promise<ProjectDetail | FastifyReply> => {
+      const params = CampaignActionParams.safeParse(request.params);
+      if (!params.success) {
+        return fail(reply, 400, 'bad_request', 'projectId and campaignId must be UUIDs.');
+      }
+
+      const { projectId, campaignId } = params.data;
+      const userId = (request.user as NonNullable<typeof request.user>).sub;
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+
+      try {
+        const { ownerId } = await resolveProjectOwner(db, projectId);
+        if (!ownerId) return fail(reply, 404, 'not_found', 'Project not found.');
+        if (ownerId !== userId) {
+          return fail(reply, 403, 'forbidden', 'Only the workspace owner can resume a campaign.');
+        }
+
+        const admin = createServiceClient(opts.supabase);
+        const { data: campaign, error: campaignErr } = await admin
+          .from('campaigns')
+          .select('id, state, channel, pause_reason')
+          .eq('id', campaignId)
+          .eq('project_id', projectId)
+          .maybeSingle<{
+            id: string;
+            state: string;
+            channel: string;
+            pause_reason: string | null;
+          }>();
+        if (campaignErr) throw campaignErr;
+        if (!campaign) return fail(reply, 404, 'not_found', 'Campaign not found.');
+        if (campaign.state !== 'paused') {
+          return fail(reply, 409, 'not_paused', 'Only a paused campaign can be resumed.');
+        }
+
+        const { data: root, error: rootErr } = await admin
+          .from('ad_entities')
+          .select('id, external_id')
+          .eq('campaign_id', campaignId)
+          .eq('kind', 'campaign')
+          .not('external_id', 'is', null)
+          .limit(1)
+          .maybeSingle<{ id: string; external_id: string }>();
+        if (rootErr) throw rootErr;
+        if (!root) {
+          return fail(
+            reply,
+            409,
+            'never_published',
+            'This campaign was never published, so there is nothing to resume.',
+          );
+        }
+
+        const roomId = await roomForProject(admin, projectId);
+        if (!roomId) {
+          return fail(reply, 409, 'no_room', 'This project has no room to read an account from.');
+        }
+
+        const choice = chooseConnection(
+          await readPublishableConnections(admin, roomId, campaign.channel),
+        );
+        if (!choice.chosen) return fail(reply, 409, choice.rule, choice.reason);
+        const connection = choice.connection;
+
+        const scopes = checkScopes({
+          grantedScopes: connection.grantedScopes,
+          requiredScopes: [...OPTIMIZE_REQUIRED_SCOPES],
+          status: connection.status,
+        });
+        if (!scopes.allowed) return fail(reply, 409, scopes.rule, scopes.reason);
+
+        // The count of prior `live -> paused` transitions. Stable through this
+        // request, because the campaign is `paused` here until our write lands.
+        const { count, error: countErr } = await admin
+          .from('events')
+          .select('id', { count: 'exact', head: true })
+          .eq('verb', 'campaign.transitioned')
+          .eq('subject_type', 'campaign')
+          .eq('subject_id', campaignId)
+          .eq('payload->>from', 'live')
+          .eq('payload->>to', 'paused');
+        if (countErr) throw countErr;
+
+        const adapter = adapterFor(connection.provider);
+        const decision = decidePauseOutcome(
+          await adapter.resume(
+            { externalId: root.external_id },
+            resumeIdempotencyKey(campaignId, count ?? 0),
+          ),
+        );
+
+        if (decision.action === 'await_reconnect') {
+          await markConnectionExpired(admin, connection.id, new Date());
+          return fail(
+            reply,
+            409,
+            'auth_expired',
+            'The connection expired. Reconnect the account, then resume the campaign again.',
+          );
+        }
+        if (decision.action === 'gone') {
+          return fail(
+            reply,
+            409,
+            'not_found_on_platform',
+            `The platform no longer recognises this campaign. It said: ${decision.message}`,
+          );
+        }
+        if (decision.action === 'retry') {
+          // Synchronous HTTP rather than a sweep, so "later pass" becomes "try
+          // again shortly" and the person keeps the retry button.
+          if (decision.contractViolation) {
+            request.log.error(
+              { campaignId, kind: decision.kind, message: decision.message },
+              'the adapter refused a resume with an error kind a resume cannot produce',
+            );
+          }
+          return fail(
+            reply,
+            503,
+            decision.kind,
+            'The platform did not accept the request yet. Trying again shortly usually resolves this.',
+          );
+        }
+
+        const { error: entityErr } = await admin
+          .from('ad_entities')
+          .update({ state: 'live' })
+          .eq('id', root.id)
+          .eq('state', 'paused');
+        if (entityErr) throw entityErr;
+
+        const { error: moveErr } = await admin
+          .from('campaigns')
+          .update({ state: 'live', pause_reason: null })
+          .eq('id', campaignId)
+          .eq('state', 'paused');
+        if (moveErr) throw moveErr;
+
+        // Audited with the actor, because unlike the sweep's pause this IS a
+        // person's act: they pressed the button, and the trigger-written
+        // transition event cannot carry who.
+        const { error: eventErr } = await admin.from('events').insert({
+          project_id: projectId,
+          actor_id: userId,
+          actor_kind: 'user',
+          verb: 'campaign.resumed',
+          subject_type: 'campaign',
+          subject_id: campaignId,
+          payload: {
+            cleared_pause_reason: campaign.pause_reason,
+            provider: connection.provider,
+            external_id: root.external_id,
+            already_existed: decision.alreadyExisted,
+          },
+        });
+        if (eventErr) {
+          request.log.error(
+            { err: eventErr, campaignId },
+            'campaign resumed but not audited; it is live and the event is missing',
+          );
+        }
+
+        const detail = await buildProjectDetail(db, projectId);
+        if (!detail) return fail(reply, 404, 'not_found', 'Project not found.');
+        request.log.info({ projectId, campaignId, userId }, 'campaign resumed');
+        return detail;
+      } catch (err) {
+        request.log.error({ err, projectId, campaignId, userId }, 'resumeCampaign failed');
+        return fail(reply, 500, 'internal_error', 'Could not resume the campaign.');
+      }
+    },
+  );
+
   /**
    * One project, as both the detail route and the budget route return it.
    *
@@ -475,7 +813,7 @@ export async function projectRoutes(
 
       const { data: campaignRows, error: campaignErr } = await db
         .from('campaigns')
-        .select('id, name, channel, state, budget_cap, currency, created_at')
+        .select(CAMPAIGN_COLUMNS)
         .eq('project_id', projectId)
         .order('created_at', { ascending: false });
       if (campaignErr) throw campaignErr;
@@ -515,6 +853,8 @@ export async function projectRoutes(
           clicksToDate: measured?.clicksToDate ?? null,
           conversionsToDate: measured?.conversionsToDate ?? null,
           lastMeasuredAt: measured?.lastMeasuredAt ?? null,
+          cpaCeiling: c.cpa_ceiling,
+          pauseReason: c.pause_reason,
         };
       });
 
