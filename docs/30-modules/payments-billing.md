@@ -54,3 +54,29 @@ Holding escrow + routing payouts is likely **money-services activity**. **Before
 ## Key entities
 
 `escrow_holds` · `ledger_entries` (double-entry) · `payouts` / `transfers` · `subscriptions` · `invoices` · `platform_fees` · `disputes`.
+
+**None of them exist yet, and the schedule is now fixed rather than open.**
+`escrow_holds` and double-entry `ledger_entries` land in **slice 5 of the
+marketplace sequence** ([human-nodes-marketplace.md](human-nodes-marketplace.md)),
+because that is the first slice that can reach `CLAIMED` — and `claimed →
+escrow_funded` is the state machine's only exit from `claimed`, so shipping
+acceptance without funding would reproduce the seventeen-permanently-stuck-steps
+defect (`20260827120000`) deliberately. Accept and fund are inseparable because
+the machine says so.
+
+**They land modelling the hold and moving no money.** The hold is recorded
+against the already-authorised `projects.budget_ceiling` — the same number
+[ADR-0011](../40-adr/0011-spend-cap-checked-twice.md) already guards with a
+readable check in the route and a second one in SQL under a row lock — and the
+only registered payment provider is a deterministic in-repo fake, following
+`packages/marketing`'s adapter registry. **Nothing is charged and nothing is
+transferred.** The counsel gate below is unmoved by any of it: modelling an
+obligation is not money movement, and the migration will say so in its header
+rather than leaving a reader to infer it.
+
+**Multi-node splits are deferred with a trigger.** This doc says one charge can
+fund several transfers. Under
+[ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md) that needs
+several live engagements on one task, which the `engagements` partial unique
+index forbids. **Trigger:** the first plan step whose acceptance criteria name
+more than one node. At that point the index is what changes.

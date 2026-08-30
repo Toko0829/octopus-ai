@@ -10,6 +10,81 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### The marketplace gets its domain (`20260831120000` … `20260831123000`)
+
+**Zero new capability.** No route, no adapter, no registry, and no client grant
+that permits a write. There is nothing a person can do after these four
+migrations that they could not do before them. That is deliberate and it is the
+marketing domain's ordering repeated: `20260829120000`…`123000` landed four
+tables with their guards and no writers, and `20260829150000`'s header states
+the resulting doctrine — "a guard that lands after its writer is a guard that
+spent the interval not guarding."
+
+**What it is for.** `escalated` is the last live dead end in the product.
+`router.ts:93` sends every human-owned step there with the reason "it goes to
+the marketplace", and the marketplace does not exist; **twelve tasks sit in that
+state on the live database right now.** `20260827120000` measured seventeen and
+gave the owner a way to unstick their own project, saying explicitly that it
+"is not the marketplace and must not be dressed up as one". This is.
+
+**Three of the module's nine entities land, plus one it does not name.** The
+deferrals and their triggers are in §Marketplace schema above. The fourth table,
+`node_verifications`, is **forced by the design rather than specified**: once a
+node can read their own profile, the face-search result — which names a third
+party the node may be a duplicate of, alongside provider scores used to decide
+against them — cannot live on that profile, because RLS filters rows and not
+columns. It is the `channel_connections` shape for a different reason: that
+table has no client reader because it holds secrets, this one because it holds
+somebody else's identity and an adverse inference about its own subject. No
+policy, no grant to `authenticated` or `anon`, and append-only including for
+`service_role`.
+
+**`node_profiles.user_id` is the primary key**, following `profiles`. A node is
+a user, so every child table's tenant predicate is a plain `node_id =
+auth.uid()` equality — `ad_entities.project_id`'s "the tenant predicate on a hot
+path should not be a subquery" reached by a better road, with no denormalised
+copy to drift.
+
+**Two NULL stances, both inherited.** NULL `rate` means nothing quoted and
+therefore ineligible, never free (`campaigns.budget_cap` inverted). NULL
+`trust_score` means cold start, never zero, because zero would mean measured and
+worthless — the same no-invented-zero rule the metrics slice applied to a day
+with no spend.
+
+**The line on which guards land now.** A guard lands in this slice **if and only
+if it is decidable from the row in front of it**. Structural invariants —
+shape, well-formedness, "this boolean cannot be true without that evidence",
+"this column is written once" — need no writer's cooperation to be right, and
+the only cost of landing them early is that they are true. Lifecycle maps land
+with the writer whose transitions could be wrong. That line fits both
+precedents exactly: `ad_entities` landed its hierarchy guard immediately and its
+transition guard with the publisher (`20260829150000`). Applying it here gives a
+clean result: **there is no marketplace lifecycle guard to write at all**,
+because the lifecycle is `private.task_transition_allowed` and has been binding
+`service_role` since `20260813120000` ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)).
+
+The one exception is the **KYC audit trigger**, which lands without its map.
+That is not a lifecycle: it stamps `kyc_status_changed_at` and writes one
+`node.kyc_status_changed` event. It lands now so slice 3's writer cannot produce
+an unaudited KYC change even on its first commit, because AML wants the trail
+from the first row rather than from the first correct row. The `kyc_status`
+transition map joins the same function in that slice, beside the insert rather
+than instead of it, keeping the house rule of one trigger for both.
+
+**PostGIS is not enabled** and service area is a hierarchical jurisdiction code
+([ADR-0015](../40-adr/0015-service-geo-is-a-jurisdiction-code.md)).
+
+**Verified against the live database: `supabase/tests/marketplace_rls.sql`,
+46/46**, inside a transaction that rolled back. The slice has no writer, so that
+file is its only caller — which is what makes four tables landing ahead of their
+writers defensible rather than dead: every constraint and both triggers are
+exercised. Two of the assertions are about the **task machine staying
+unchanged**: `matching → failed` is still refused and `escalated → matching` is
+still allowed. Slice 1 restores no arc, and pinning the absence is what will
+make slice 4's restoration read as a dated decision rather than as drift —
+`20260815220000` silently dropped eight arcs with nothing asserting they had
+ever been there.
+
 ### A comment promised a guard and no migration ever wrote it (`20260831110000`)
 
 `20260724000000_init.sql:21`, in the file that creates `profiles`, says role
@@ -637,15 +712,32 @@ Five things about that migration are load-bearing, and each is enforced in the d
 
 ## Marketplace schema
 
-| Table                 | Key columns                                                                                            |
-| --------------------- | ------------------------------------------------------------------------------------------------------ |
-| `node_profiles`       | `user_id`, `kyc_status`, `trust_score`, `service_geo` (PostGIS), `rate`, `availability`, `languages[]` |
-| `node_skills`         | `node_id`, `skill_tag`, `verified`                                                                     |
-| `credentials`         | `node_id`, `type` (lawyer/accountant/notary), `verified`, `evidence_path`, `expires_at`                |
-| `offers`              | `id`, `task_id`, `node_id`, `scope`, `escrow_price`, `deadline`, `status`, `expires_at`                |
-| `engagements`         | `id`, `task_id`, `node_id`, `state` (CLAIMED→…→PAID), `nda_signed_at`                                  |
-| `proof_artifacts`     | `id`, `engagement_id`, `storage_path`, `exif` JSONB, `verified`                                        |
-| `ratings`, `disputes` | two-sided ratings; dispute state + audit link                                                          |
+Four tables are live (`20260831120000` … `20260831123000`) and five are
+deferred. The table says which is which, because a list mixing live tables with
+intentions reads as though all of them are there.
+
+| Table                  | Status                                    | Key columns / notes                                                                                                                                                                       |
+| ---------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `node_profiles`        | ✅ live `20260831120000`, **no writer**   | `user_id` **PK** (a node is a user), `kyc_status`, `availability`, `trust_score` (NULL = cold start, never 0), `service_jurisdictions text[]`, `rate` + `rate_period` (NULL = nothing quoted, never free) |
+| `node_skills`          | ✅ live `20260831121000`, **no writer**   | `(node_id, skill_tag)` PK, `verified`. Tag is shape-checked text, not an enum                                                                                                              |
+| `node_credentials`     | ✅ live `20260831122000`, **no writer**   | Renamed from the spec's `credentials`. `kind`, `jurisdiction`, `verified` (write-once true), `evidence_path`, `revoked_at`                                                                 |
+| `node_verifications`   | ✅ live `20260831123000`, **no writer**   | The check log. **No policy and no client grant at all**; append-only including for `service_role`                                                                                          |
+| `offers`               | ⏳ slice 4, with the matcher              | Its entire content is a lifecycle. A transition map for transitions nobody can make is the `ad_entities` mistake, corrected once already                                                    |
+| `engagements`          | ⏳ slice 5, with accept-and-fund          | **No state column** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)): engagement state is `tasks.state`. Carries `agreed_price`, `deadline_at`, `terms_hash`, `outcome` |
+| `proof_artifacts`      | ⏳ slice 6, with the proof loop           | `artifacts` already has `kind` and `storage_path`. A second answer to "where is the deliverable" is the `is_project_member` defect class; slice 6 decides table vs. columns                  |
+| `ratings`              | ⏳ slice 8                                 | Written after `paid`. Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                   |
+| `disputes`             | ⏳ slice 8, with the ops path             | A `disputed` task with no ops console is a state nobody can leave — the `escalated` defect reproduced deliberately                                                                          |
+
+**`credentials` is named `node_credentials` here, diverging from the module doc
+on purpose.** A table called `public.credentials` three tables from
+`channel_connections` reads as auth credentials to every future schema browser.
+Reconciled rather than left to drift: `human-nodes-marketplace.md` is edited in
+the same change.
+
+**`service_geo` (PostGIS) is `service_jurisdictions text[]`**, argued in
+[ADR-0015](../40-adr/0015-service-geo-is-a-jurisdiction-code.md). PostGIS is not
+installed and the matching rule is a containment test over a hierarchy plus a
+specificity ordering, not a geometry query.
 
 ## Payments schema
 
@@ -750,4 +842,5 @@ Details worth knowing before touching this schema:
 
 - Migrations live in `packages/db/migrations/**` (authored) and are applied via the Supabase CLI (`supabase/migrations/**`).
 - One concern per migration; RLS policy + pgTAP test land **with** the table.
+- **A check constraint that calls a function is not re-validated when the function changes.** Postgres validates a constraint when it is added and never again, so editing the body of something like `private.is_jurisdiction_code` (`20260831120000`) leaves every existing row passing a rule it no longer satisfies, silently. Any migration that changes such a function must `alter table … validate constraint` (or drop and re-add the constraint) for every table that calls it, in the same change.
 - Any change here requires updating this doc (owner in `.docmeta.yml`) and, if it changes tenant isolation, [security-compliance.md](security-compliance.md).

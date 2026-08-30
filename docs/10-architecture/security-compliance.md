@@ -56,7 +56,17 @@
 
 - **The workflow DAG** is covered by `supabase/tests/rls_workflow.sql` (33 assertions, verified green). Same four actors against `projects` / `tasks` / `task_deps` / `task_runs`, plus the two triggers. Its RLS half runs as a client and its **trigger half runs as `postgres` deliberately**, which is the opposite rule for the opposite reason: RLS must be tested as a client because `postgres` bypasses it, and the state-machine and acyclicity guards must be tested as `postgres` because they are meant to bind trusted server code too. If those ever start passing merely because the caller was privileged, the guard has been lost.
 
-  **Known narrowing:** project visibility is inherited from room membership, which is coarser than the thread-scoped, time-boxed access this document requires of a node. It lands with threads. No node is admitted to any room today.
+  **Known narrowing, now with a dated slice.** Project visibility is inherited from room membership, which is coarser than the thread-scoped, time-boxed access this document requires of a node. **It closes in slice 2 of the marketplace sequence**, and the sequence is deliberately ordered so the narrowing is never actually taken: threads land before any writer exists that could admit anybody. The marketplace domain (`20260831120000`) has no writer, `node_profiles` has no counterparty policy at all, and **no node is admitted to any room today** — asserted rather than asserted-in-prose, since `marketplace_rls.sql` pins that an owner sharing a room with a node still sees nothing of that node's profile.
+
+  Slice 2's thread topics must **extend** `realtime_room_members_can_receive` (`20260728200000`) rather than replace it, or an expired node keeps a live socket to the room while correctly losing the rows.
+
+- **The marketplace domain** is covered by `supabase/tests/marketplace_rls.sql` (46 assertions, verified green against the live database). The slice has no writer, so this file is its only caller — which is what makes four tables landing ahead of their writers defensible rather than dead: every constraint and both triggers are exercised here.
+
+  Two assertions are unlike anything else in the suite set. **The subject of a verification record is refused their own row** (`42501`, not zero rows): `node_verifications` names a third party the node may duplicate and carries adverse-inference scores about the node, and RLS filters rows rather than columns, so there is no policy that could return the row safely. And **`service_role` is refused `UPDATE`, `DELETE` and `TRUNCATE`** on the same table, `TRUNCATE` included because `grant all` includes it and it ignores RLS entirely.
+
+  A third is about an absence being deliberate: **an owner sharing a room with a node sees zero node profiles.** The counterparty policy would have to join through `engagements`, which does not exist, and a policy that cannot yet be written correctly should not be written approximately.
+
+  Two more assert that the **task state machine is unchanged**: `matching → failed` is still refused and `escalated → matching` is still allowed. Slice 1 restores no arc, and pinning the absence is what makes slice 4's restoration read as a dated decision rather than as drift — `20260815220000` silently dropped eight arcs with nothing asserting they had ever been there.
 
 - **The marketing domain** is covered by `supabase/tests/marketing_rls.sql` (39 assertions, verified green). Same four actors against `campaigns` / `ad_entities` / `campaign_outcomes`, the campaign state machine and the ad-tree guard as `postgres`, and `TRUNCATE` on all four tables. Two assertions are unlike anything else in the suite set: `channel_connections` must answer **`permission denied` rather than zero rows**, since the grant absence is the control and the two failure shapes are indistinguishable through PostgREST; and `campaign_outcomes` must refuse `UPDATE` **to `service_role`**, because a training signal that trusted code can rewrite is not evidence.
 
@@ -106,6 +116,14 @@ Legal restriction · physical presence · high-risk/irreversible action · low A
 - **Sanctions / PEP screening** of both users and nodes.
 - **Anti-fraud at match time:** Face Search dedup, geo/IP consistency, collusion/fake-proof detection.
 - Verified professional licenses (lawyer/accountant/notary) are checked before a node is eligible for regulated tasks.
+
+**What the schema stores, as of `20260831123000`.** `node_verifications` holds **provider verdicts, scores and references only — never the document, the image, a date of birth or an identifier**, which is how the "sensitive KYC data is handled by the licensed party, not stored by us" line above is kept rather than merely stated. `kind` separates `face_match` (1:1, against the document) from `face_search` (1:N, across enrolled nodes) because **only the second can name a third party**, and a table constraint enforces that `matched_node_id` is set on nothing else and never on the subject themselves.
+
+The table has **no policy and no grant to any client role**, so a read returns `permission denied` rather than zero rows, and that is asserted **for the subject of the record**, not only for an outsider. A node's legitimate view of their own status is `node_profiles.kyc_status`. It is append-only including for `service_role`: a verification is the evidence behind a decision that can stop somebody earning, and a record trusted code can rewrite is not evidence. A re-check is a new row, which is also the anti-fraud history worth having.
+
+**No real provider is registered.** Persona and Stripe Identity are both paid and neither is wired; slice 3 lands an in-repo fake verifier as the only registered provider, following `packages/marketing`'s fake adapter and carrying the same `carriesRealCredentials`-style flag extended to PII, so the first person to add a real provider hits a failing write rather than a paragraph they did not read.
+
+**GDPR erasure vs. AML retention, recorded rather than assumed.** `node_verifications.node_id` cascades on user delete. That is defensible **only** while we store references and verdicts and the provider is the record-keeper. **Trigger to revisit:** the first jurisdiction that requires *us* to retain, at which point the foreign key becomes `on delete restrict` and erasure becomes a redaction rather than a delete.
 
 ## Payments / money-transmission exposure
 
