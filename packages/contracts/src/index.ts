@@ -843,6 +843,23 @@ export const CampaignSummary = z.object({
   conversionsToDate: z.number().int().nullable(),
   /** `max(period_end)` measured. The panel phrases it as "measured through". */
   lastMeasuredAt: z.string().nullable(),
+  /**
+   * The owner's cost-per-conversion ceiling, and an input rather than a derived
+   * ratio, which is why it may sit beside the ban above: nothing here computes a
+   * CPA, this is the figure a person typed for the optimizer to judge against.
+   *
+   * **Null means "no ceiling set; the optimizer does not judge this campaign",
+   * which INVERTS `budgetCap`'s null.** An unset spend authorisation blocks; an
+   * unset judgement threshold abstains. Setting it authorises the automatic
+   * pause (ADR-0014).
+   */
+  cpaCeiling: z.number().nullable(),
+  /**
+   * Why spend stopped, when `state` is `paused`. The panel branches on
+   * `cpa_breach` to explain the pause and offer resume, so this is the enum the
+   * check constraint enforces rather than free text.
+   */
+  pauseReason: z.enum(['kill_switch', 'cpa_breach', 'user', 'optimizer']).nullable(),
 });
 export type CampaignSummary = z.infer<typeof CampaignSummary>;
 
@@ -885,6 +902,23 @@ export const SetProjectBudgetBody = z.object({
   budgetCeiling: z.number().finite().nonnegative().nullable(),
 });
 export type SetProjectBudgetBody = z.infer<typeof SetProjectBudgetBody>;
+
+/**
+ * Setting a campaign's CPA ceiling is the authorisation for the automatic pause
+ * (ADR-0014), so it is owner-only and audited, on the budget body's pattern.
+ *
+ * **Positive where the budget is non-negative, and the difference is the
+ * point.** A budget of 0 is a coherent authorisation ("spend nothing"); a
+ * ceiling of 0 would pause on the first recorded cent whatever the conversions
+ * say, which is a kill switch wearing the shape of a threshold. The check
+ * constraint refuses it too, so the two cannot drift. `null` clears the
+ * ceiling, which stops the optimizer judging this campaign and touches nothing
+ * else: withdrawing the instruction to judge is not an instruction to resume.
+ */
+export const SetCampaignCpaCeilingBody = z.object({
+  cpaCeiling: z.number().finite().positive().nullable(),
+});
+export type SetCampaignCpaCeilingBody = z.infer<typeof SetCampaignCpaCeilingBody>;
 
 /* ----------------------------------------------- channel connections */
 
@@ -1065,6 +1099,52 @@ export const contract = c.router(
         404: ApiError,
       },
       summary: "Set or clear the project's authorised budget ceiling (owner only)",
+    },
+
+    setCampaignCpaCeiling: {
+      method: 'PATCH',
+      path: '/projects/:projectId/campaigns/:campaignId',
+      pathParams: z.object({
+        projectId: z.string().uuid(),
+        campaignId: z.string().uuid(),
+      }),
+      body: SetCampaignCpaCeilingBody,
+      responses: {
+        200: ProjectDetail,
+        400: ApiError,
+        401: ApiError,
+        /** Setting a ceiling authorises the pause, so it is owner-only like the budget. */
+        403: ApiError,
+        404: ApiError,
+      },
+      summary: "Set or clear a campaign's cost-per-conversion ceiling (owner only, ADR-0014)",
+    },
+
+    resumeCampaign: {
+      method: 'POST',
+      path: '/projects/:projectId/campaigns/:campaignId/resume',
+      pathParams: z.object({
+        projectId: z.string().uuid(),
+        campaignId: z.string().uuid(),
+      }),
+      // The path names the whole act. ts-rest requires a body on a mutation, so
+      // this one is declared empty rather than invented.
+      body: z.object({}).optional(),
+      responses: {
+        200: ProjectDetail,
+        401: ApiError,
+        403: ApiError,
+        404: ApiError,
+        /**
+         * Not paused, never published, or the platform refused in a way only the
+         * owner can fix (reconnect, or the campaign is gone there). The body's
+         * message says which.
+         */
+        409: ApiError,
+        /** The platform did not accept the call yet; trying again shortly is the fix. */
+        503: ApiError,
+      },
+      summary: 'Resume a paused campaign (owner only; a still-breached ceiling re-pauses it)',
     },
 
     getArtifactFileUrl: {

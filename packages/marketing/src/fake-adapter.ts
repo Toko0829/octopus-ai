@@ -129,6 +129,12 @@ export function createFakeAdapter(): AdChannelAdapter {
       return { ok: true as const, value: ref, alreadyExisted };
     },
 
+    async resume(ref: AdapterEntityRef, idempotencyKey: string) {
+      const alreadyExisted = seen.has(idempotencyKey);
+      seen.add(idempotencyKey);
+      return { ok: true as const, value: ref, alreadyExisted };
+    },
+
     async pullMetrics(ref: AdapterEntityRef, period: MetricsPeriod) {
       const seed = seedFrom(`${ref.externalId}|${period.start}|${period.end}`);
       const impressions = 1000 + (seed % 9000);

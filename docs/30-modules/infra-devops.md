@@ -232,6 +232,21 @@ The cap is small for the same reason the crawl's is: the sweep shares the
 ticker's claim with the DAG walk and holds it while each platform call is in
 flight.
 
+### Optimizing is the strongest on-by-default of the family
+
+`OPTIMIZE_ENABLED` (default **on**) and `OPTIMIZE_MAX_PER_TICK` (default 3)
+control the optimize sweep the ticker runs directly after the metrics sweep
+([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)). It is the
+fourth key in the family and sits furthest onto the publish side of the split:
+the sweep is **doubly inert** until somebody opts in, selecting only live
+campaigns whose owner typed a CPA ceiling on the panel, and nothing else writes
+that column. Off by default would make a figure a person typed an unenforced
+promise, which on a money surface is a false statement rather than a missing
+feature. A kill switch exactly like its siblings: `false` stops a deployment
+pausing, and campaigns are still measured and shown. The cap bounds pauses
+**attempted** rather than campaigns judged, since judging is a cheap read plus a
+pure function.
+
 ### Measuring shares publishing's polarity, not crawling's
 
 `METRICS_ENABLED` (default **on**) and `METRICS_MAX_PER_TICK` (default 3) control

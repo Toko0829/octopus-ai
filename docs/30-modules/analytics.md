@@ -22,7 +22,7 @@ Wedge funnel: `goal → plan approved → campaign live → first result → ret
 
 - **Growth outcomes:** impressions → clicks → conversions → ROAS/CPA, attributed per campaign/asset (the wedge's north star).
 - **Flywheel health:** outcome-labeled data volume, **human-correction rate over time (target: down)**, retrieval-of-real-outcomes coverage, outcome lift (customer N vs customer 1). See [learning-flywheel.md](../10-architecture/learning-flywheel.md).
-- **Spend governance:** managed ad spend vs caps, auto-pause events, budget-reallocation efficacy.
+- **Spend governance:** managed ad spend vs caps, auto-pause events (**produced now**: `campaign.auto_paused` in `events`, with spend/conversions/ceiling/allowance in the payload, per [ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)), budget-reallocation efficacy.
 
 ## Unit economics & marketplace metrics
 

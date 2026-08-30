@@ -29,6 +29,11 @@
  * is a pure function with the clock passed in rather than a query with a `now()`
  * in it.
  *
+ * **The optimize decisions** (`optimize.ts`), the seam's third caller and the
+ * first code that acts on money with no click behind the act. Whether a ceiling
+ * is breached, the epoch-carrying pause and resume keys, and the failure map
+ * that never closes a campaign: all judged on rows, no clock anywhere.
+ *
  * **The adapter seam** (`adapter.ts`), written before any executor so that
  * slice-3 code is written against an interface rather than against whichever
  * provider happened to arrive first.
@@ -114,6 +119,7 @@ export {
 export {
   checkScopes,
   METRICS_REQUIRED_SCOPES,
+  OPTIMIZE_REQUIRED_SCOPES,
   PUBLISH_REQUIRED_SCOPES,
   type ScopeCheckInput,
   type ScopeRule,
@@ -140,3 +146,14 @@ export {
   type MetricsRowsRule,
   type MetricsRowsVerdict,
 } from './metrics';
+
+export {
+  decideCpaBreach,
+  decidePauseOutcome,
+  pauseIdempotencyKey,
+  resumeIdempotencyKey,
+  type CpaBreachInput,
+  type CpaBreachRule,
+  type CpaVerdict,
+  type PauseDecision,
+} from './optimize';

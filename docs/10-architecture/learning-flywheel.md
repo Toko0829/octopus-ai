@@ -30,6 +30,8 @@ We are **not** building the everything-product on day one. We ship one vertical 
 - Optimization decisions + their results are themselves logged as outcome data (mechanism 1) — the loop feeds itself.
 - Bandit/experiment framing (A/B, budget reallocation) makes the optimization measurable and safe.
 
+> **The first arc is live: pause losers on a CPA ceiling breach** ([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)). The optimize sweep judges the measured whole days against the owner-typed `campaigns.cpa_ceiling` and pauses a breaching campaign, and **the decision is logged as data**: `campaign.auto_paused` carries the full arithmetic (spend, conversions, ceiling, allowance) beside the trigger-written transition, so this mechanism's first decisions are auditable and, later, learnable. Scale, reallocate, creative iteration and the bandit framing are still not built, and the decision _results_ (did pausing help) have no reader yet: the loop has begun deciding and has not begun learning from its decisions.
+
 ### 4. Fine-tune a proprietary model (later, deferred)
 
 - Once the labeled dataset (mechanisms 1–2) is large and clean enough, **fine-tune a dedicated model** (or train adapters/reward models) on real outcomes + expert corrections.

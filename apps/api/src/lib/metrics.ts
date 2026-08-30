@@ -12,6 +12,7 @@ import {
   type MetricsPeriod,
 } from '@octopus/marketing';
 import { markConnectionExpired, readPublishableConnections } from './connections';
+import { postSystemMessage } from './system-message';
 import { roomForProject } from './room-for-project';
 
 /**
@@ -478,32 +479,14 @@ async function announceBlocked(
   reason: string,
 ): Promise<void> {
   await postSystemMessage(
-    deps,
+    deps.admin,
+    deps.log,
     roomId,
     `campaign-metrics-blocked:${campaign.id}:${rule}`,
     `Performance is not being recorded for your campaign "${campaign.name}". ${reason} ` +
       'Anything already measured is still on the project panel.',
   );
   deps.log.info({ campaignId: campaign.id, rule }, 'a campaign cannot be measured right now');
-}
-
-async function postSystemMessage(
-  deps: MetricsSweepDeps,
-  roomId: string,
-  key: string,
-  body: string,
-): Promise<void> {
-  const { error } = await deps.admin.from('messages').insert({
-    room_id: roomId,
-    author_id: null,
-    author_kind: 'system',
-    body,
-    idempotency_key: key,
-  });
-  // A collision is the mechanism working: this pass had nothing new to say.
-  if (error && error.code !== '23505') {
-    deps.log.error({ err: error, key }, 'could not post a metrics message');
-  }
 }
 
 /**

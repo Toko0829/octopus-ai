@@ -44,6 +44,23 @@ export const PUBLISH_REQUIRED_SCOPES: readonly string[] = Object.freeze(['ads:wr
  */
 export const METRICS_REQUIRED_SCOPES: readonly string[] = Object.freeze(['ads:read']);
 
+/**
+ * What pausing or resuming a campaign needs a connection to have been granted.
+ *
+ * The write scope, because both calls mutate delivery: a pause stops money and a
+ * resume restarts it, and neither is a read however protective the intent. Its
+ * own constant rather than a reuse of `PUBLISH_REQUIRED_SCOPES` for the reason
+ * the metrics constant is: the three acts can grow apart, and a shared constant
+ * would make widening one silently widen the others.
+ *
+ * The named consequence of requiring the write scope: a connection granted only
+ * `ads:read` can be measured and cannot be auto-paused, so a breach on it is
+ * announced to the room instead of acted on. That is the correct half-measure,
+ * because the alternative is a product that promised to enforce a ceiling it
+ * had no permission to enforce and said nothing.
+ */
+export const OPTIMIZE_REQUIRED_SCOPES: readonly string[] = Object.freeze(['ads:write']);
+
 export type ScopeRule = 'connection_not_active' | 'missing_scopes';
 
 export type ScopeVerdict =

@@ -242,6 +242,31 @@ polarity rather than `CRAWL_ENABLED`'s: there is no stranger to protect, and off
 by default would leave the project panel's spend block saying "No numbers yet"
 about a campaign that really was spending.
 
+### The ticker optimizes, directly after measuring
+
+The same pass now acts on what was just measured. `optimizeSweep` judges `live`
+campaigns whose owner typed a CPA ceiling against their `pull_metrics` rollup
+(`decideCpaBreach`: breach iff `spend > ceiling × (conversions + 1)`, abstaining
+on anything unmeasured) and pauses a breaching campaign at the platform and then
+here, which is the first act on money in the system with no click immediately
+behind it. The authorisation is the ceiling itself
+([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)).
+
+**Its ordering argument inverts the publish sweep's**: the platform is called
+**before** the rows are written, because a pause creates nothing to lose and the
+decision re-derives from durable rows, while our-rows-first would open the one
+unacceptable window, a database saying `paused` about a campaign the platform is
+still spending on. The idempotency key carries an **epoch** (the count of prior
+`paused → live` transitions in `events`), so a crash replays under the same key
+while a second breach after an owner's resume is a genuinely new act. No failure
+here ever moves a campaign; `live → failed` is not a legal arc.
+
+It sits between metrics and the crawl: it reads days the metrics sweep may have
+written this pass, and stopping money outranks re-reading a stranger's page.
+`OPTIMIZE_ENABLED` defaults **on** and is the strongest claim of the three
+kill-switch flags, because the sweep is doubly inert until an owner types a
+ceiling, and off by default would make a typed ceiling an unenforced promise.
+
 ### The ticker crawls as well as walking the graph
 
 The same pass that walks the task DAG ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)) now also re-reads the external source registry, under the claim it already holds. Off by default (`CRAWL_ENABLED`), because the registry names real public pages and a dozen developers fetching them on boot is traffic aimed at somebody else's servers for no benefit.

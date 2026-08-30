@@ -5,6 +5,7 @@ import { createSchedulerPorts } from './scheduler';
 import { crawlSweep } from './crawl';
 import { publishSweep } from './publish';
 import { metricsSweep } from './metrics';
+import { optimizeSweep } from './optimize';
 import { notifyWaiting } from './waiting';
 import { produceCampaignCards } from './campaign-cards';
 import type { ExecutorDeps } from './executor';
@@ -60,6 +61,13 @@ export interface TickerOptions {
    * `publish` describes, one step later (see `METRICS_ENABLED`).
    */
   metrics?: { maxPerPass: number };
+  /**
+   * Pause live campaigns that breach the CPA ceiling their owner typed. Absent
+   * means this deployment does not enforce ceilings, which is supported and is
+   * not the default: a ceiling somebody typed and nothing enforces is a promise
+   * the product is quietly not keeping (see `OPTIMIZE_ENABLED`, ADR-0014).
+   */
+  optimize?: { maxPerPass: number };
   log: {
     info: (obj: unknown, msg: string) => void;
     warn: (obj: unknown, msg: string) => void;
@@ -259,6 +267,24 @@ export function startTicker(opts: TickerOptions): () => void {
           });
         } catch (err) {
           opts.log.error({ err, worker }, 'metrics sweep failed');
+        }
+      }
+
+      // Enforcing ceilings goes directly after measuring, and the adjacency is
+      // the point: it judges the whole days the metrics sweep may have just
+      // written, so running it here means a breach is acted on in the same pass
+      // that revealed it rather than one interval later. It stops money, which
+      // outranks re-reading a stranger's page, so it stays ahead of the crawl.
+      // Its own try/catch, for the reason every sweep on this pass has one.
+      if (opts.optimize) {
+        try {
+          await optimizeSweep({
+            admin: opts.admin,
+            maxPerPass: opts.optimize.maxPerPass,
+            log: opts.log,
+          });
+        } catch (err) {
+          opts.log.error({ err, worker }, 'optimize sweep failed');
         }
       }
 
