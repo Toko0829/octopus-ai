@@ -91,11 +91,50 @@ Three details the list route depends on:
 - **A project the caller cannot see returns 404, not 403**, the same idiom rooms
   use. The API does not confirm the existence of a project it will not show you.
 
+**Every read of `projects` selects one constant, and that is a repair rather than
+a tidy-up.** `ProjectRow` parses all three reads on this route. `6fcd0d6` added
+`budget_ceiling` and `currency` to it, updated the detail read, and missed both
+reads in `listProjects`, so this endpoint returned **500 for every room holding a
+project** from that commit until somebody opened the panel and found it dead.
+
+Two things about how it hid are worth keeping, because neither is specific to
+these columns. A PostgREST select is **a string**, so a column the schema requires
+and the query omits cannot be seen by a type checker. And `z.coerce.number()`
+turns the absent value into `NaN`, so the failure reads as a type complaint about
+a value nobody sent rather than as a missing column. `PROJECT_COLUMNS` is now the
+single definition, and `projects.test.ts` pins it against `ProjectRow.shape` in
+both directions, which is the check that would have caught it.
+
 Counting lives in `apps/api/src/lib/project-progress.ts`, pure and tested, because
 a miscount does not throw, does not fail a type check, and renders as a perfectly
 plausible progress figure. A step counts as done at `approved` rather than `done`,
 matching `private.task_deps_satisfied`, so the number a person reads and the
 number the scheduler acts on cannot disagree about what finished means.
+
+### `CampaignSummary` carries what a campaign spent
+
+`buildProjectDetail` gained one read: `campaign_outcomes` for the project,
+filtered to `source = 'pull_metrics'`, summed per campaign by a pure
+`rollupOutcomes` and merged into each `CampaignSummary`. It runs **as the caller**
+like everything else on that route, so `campaign_outcomes_select_member` decides
+what is visible and the handler adds no membership logic of its own.
+
+Two properties are load-bearing and both are about null.
+
+**Null means "not measured yet" and is never rendered as zero.** A zero on a spend
+figure claims a day was measured and found to have none, which is a different
+sentence from "this has not been read yet", and it is the wrong one to show
+somebody wondering whether their money is moving.
+
+**The rollup sums `pull_metrics` only.** A `manual` correction is a second row for
+the same window rather than a replacement, so including both sources would count a
+corrected day twice. The slice that writes the first manual row owns the
+supersedence rule, which is the guards-land-with-their-writer ordering applied to a
+read rule.
+
+No derived ratios and no `revenueToDate`. Counts are counted, and revenue
+attribution means something different on every channel, so it lands with the first
+real provider rather than being averaged into existence now.
 
 ### `GET /api/projects/:projectId/artifacts/:artifactId/file-url`
 
@@ -166,6 +205,42 @@ its failure map live in
 below deliberately: crawling is off by default to protect somebody else's
 servers, and publishing has no stranger to protect, since nothing happens until a
 workspace connects an account and an owner approves a budget.
+
+### The ticker measures, between publishing and crawling
+
+The same pass records what live campaigns actually spent. `metricsSweep` reads
+campaigns at `live` or `paused` whose project is still active, works out which
+closed UTC days each one owes, and appends a row per day to `campaign_outcomes`,
+which was the last of the four marketing tables with no writer.
+
+**It runs after the publish sweep and before the crawl**, which is the same
+who-is-waiting claim one notch further down. Somebody who approved a campaign is
+watching for it to go live, so publishing keeps its place at the front; nobody
+watches a number arrive. But these are our own customers' spend figures and the
+registered provider makes no network call at all, where the crawl fetches from a
+remote host that may be slow or hanging. Its own try/catch, for the reason every
+sweep on this pass has one.
+
+**The idempotency argument is different from publishing's and is worth stating
+separately.** There is no intent row here, because a read makes nothing to
+recover. What makes a re-pull safe is that `campaign_outcomes` is unique on
+`(campaign_id, period_start, period_end, source)` and `duePeriods` is the only
+thing that ever constructs a window, so a second pull of the same day collides in
+Postgres instead of doubling the spend the optimizer reads. The table is
+**append-only by grant including for `service_role`**, so `insert ... on conflict
+do nothing` is not merely the house idiom, it is the only idiom available: there
+is no UPDATE to fall back on.
+
+Days are pulled oldest first and a campaign stops at its first failure, because
+the cursor is `max(period_end)` and writing a later day while an earlier one
+failed would move the cursor past it permanently. The failure map, the scope
+split and the recorded limitations live in
+[marketing-growth-engine.md](../30-modules/marketing-growth-engine.md).
+
+`METRICS_ENABLED` gates it and defaults to **on**, sharing `PUBLISH_ENABLED`'s
+polarity rather than `CRAWL_ENABLED`'s: there is no stranger to protect, and off
+by default would leave the project panel's spend block saying "No numbers yet"
+about a campaign that really was spending.
 
 ### The ticker crawls as well as walking the graph
 

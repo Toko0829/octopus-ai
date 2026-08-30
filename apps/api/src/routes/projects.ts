@@ -13,6 +13,8 @@ import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
 import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
 import { citationTitles, summariseProjects } from '../lib/project-progress';
 import { resolveProjectOwner } from '../lib/project-owner';
+import { rollupOutcomes, type OutcomeReadRow } from '../lib/metrics';
+import { METRICS_SOURCE } from '@octopus/marketing';
 
 /**
  * Reading what an approved plan became: the project, its tasks, and what those
@@ -45,7 +47,7 @@ const ArtifactParams = z.object({
   artifactId: z.string().uuid(),
 });
 
-const ProjectRow = z.object({
+export const ProjectRow = z.object({
   id: z.string(),
   goal: z.string(),
   status: z.enum(['draft', 'planning', 'active', 'paused', 'completed', 'cancelled']),
@@ -58,7 +60,26 @@ const ProjectRow = z.object({
   currency: z.string(),
 });
 
-const CampaignRow = z.object({
+/**
+ * Every column a read of `projects` must select, in one place.
+ *
+ * One constant rather than three inline strings, because `ProjectRow` parses all
+ * three reads and a select that omits a field the schema requires fails at
+ * **runtime**, not at compile time: `z.coerce.number()` turns an absent
+ * `budget_ceiling` into `NaN`, which `.nullable()` then refuses.
+ *
+ * That is not hypothetical. `6fcd0d6` added `budget_ceiling` and `currency` to
+ * the schema, updated the detail read, and missed both reads in `listProjects`.
+ * `GET /api/rooms/:roomId/projects` returned 500 for every room holding a
+ * project from that commit until somebody opened the panel and found it dead.
+ * Nothing caught it: the type checker cannot see inside a PostgREST select
+ * string, and the route suite only covered a pure helper. `projects.test.ts` now
+ * pins the constant against the schema, which is the check that would have.
+ */
+export const PROJECT_COLUMNS =
+  'id, goal, status, created_at, source_embed_id, budget_ceiling, currency';
+
+export const CampaignRow = z.object({
   id: z.string(),
   name: z.string(),
   channel: MarketingChannel,
@@ -189,18 +210,12 @@ export async function projectRoutes(
         // silently when it is wrong, and silently returning fewer projects than
         // exist is precisely the defect being removed.
         const byCard = embedIds.length
-          ? await db
-              .from('projects')
-              .select('id, goal, status, created_at, source_embed_id')
-              .in('source_embed_id', embedIds)
+          ? await db.from('projects').select(PROJECT_COLUMNS).in('source_embed_id', embedIds)
           : { data: [], error: null };
         if (byCard.error) throw byCard.error;
 
         const byRoom = room.project_id
-          ? await db
-              .from('projects')
-              .select('id, goal, status, created_at, source_embed_id')
-              .eq('id', room.project_id)
+          ? await db.from('projects').select(PROJECT_COLUMNS).eq('id', room.project_id)
           : { data: [], error: null };
         if (byRoom.error) throw byRoom.error;
 
@@ -382,7 +397,7 @@ export async function projectRoutes(
     {
       const { data: projectRow, error: projectErr } = await db
         .from('projects')
-        .select('id, goal, status, created_at, source_embed_id, budget_ceiling, currency')
+        .select(PROJECT_COLUMNS)
         .eq('id', projectId)
         .maybeSingle();
       if (projectErr) throw projectErr;
@@ -465,8 +480,28 @@ export async function projectRoutes(
         .order('created_at', { ascending: false });
       if (campaignErr) throw campaignErr;
 
+      // What those campaigns actually did. Read AS THE CALLER like everything
+      // else on this route, so `campaign_outcomes_select_member` decides what is
+      // visible and this handler adds no membership logic of its own.
+      //
+      // Scoped to `pull_metrics`: a `manual` correction is a second row for the
+      // same window rather than a replacement, so summing both sources would
+      // count a corrected day twice. The slice that writes the first manual row
+      // owns that rule.
+      const { data: outcomeRows, error: outcomeErr } = await db
+        .from('campaign_outcomes')
+        .select('campaign_id, spend, impressions, clicks, conversions, period_end')
+        .eq('project_id', projectId)
+        .eq('source', METRICS_SOURCE);
+      if (outcomeErr) throw outcomeErr;
+
+      const rollups = rollupOutcomes((outcomeRows ?? []) as OutcomeReadRow[]);
+
       const campaigns: CampaignSummary[] = (campaignRows ?? []).map((row) => {
         const c = CampaignRow.parse(row);
+        // Absent from the map means nothing has been measured, which is null on
+        // every figure rather than zero on any of them.
+        const measured = rollups.get(c.id);
         return {
           id: c.id,
           name: c.name,
@@ -475,6 +510,11 @@ export async function projectRoutes(
           budgetCap: c.budget_cap,
           currency: c.currency,
           createdAt: c.created_at,
+          spendToDate: measured?.spendToDate ?? null,
+          impressionsToDate: measured?.impressionsToDate ?? null,
+          clicksToDate: measured?.clicksToDate ?? null,
+          conversionsToDate: measured?.conversionsToDate ?? null,
+          lastMeasuredAt: measured?.lastMeasuredAt ?? null,
         };
       });
 

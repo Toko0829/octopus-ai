@@ -817,6 +817,32 @@ export const CampaignSummary = z.object({
   budgetCap: z.number().nullable(),
   currency: z.string(),
   createdAt: z.string(),
+  /**
+   * What the campaign actually did, summed from `campaign_outcomes`.
+   *
+   * **Null means nothing has been measured yet, and it is never rendered as
+   * zero.** A zero is a claim that a day was measured and found to have none,
+   * and confusing that with "we have not read this yet" on a spend figure is the
+   * kind of wrong-answer-shaped-like-a-right-one this domain keeps producing. The
+   * panel says "No numbers yet" for null.
+   *
+   * **Summed over `source = 'pull_metrics'` only.** A `manual` correction is a
+   * second row for the same window rather than a replacement, so including both
+   * sources would count a corrected day twice. The slice that writes the first
+   * manual row owns the supersedence rule, which is the same guards-land-with-
+   * their-writer ordering the marketing tables already follow.
+   *
+   * No derived ratios (CPA, CTR, ROAS) and no `revenueToDate`. Counts are
+   * counted, and revenue attribution means something different on every channel,
+   * so it lands with the first real provider rather than being averaged into
+   * existence now.
+   */
+  spendToDate: z.number().nullable(),
+  impressionsToDate: z.number().int().nullable(),
+  clicksToDate: z.number().int().nullable(),
+  conversionsToDate: z.number().int().nullable(),
+  /** `max(period_end)` measured. The panel phrases it as "measured through". */
+  lastMeasuredAt: z.string().nullable(),
 });
 export type CampaignSummary = z.infer<typeof CampaignSummary>;
 

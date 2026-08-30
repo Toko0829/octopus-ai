@@ -28,6 +28,22 @@
  */
 export const PUBLISH_REQUIRED_SCOPES: readonly string[] = Object.freeze(['ads:write']);
 
+/**
+ * What reading a campaign's performance needs a connection to have been granted.
+ *
+ * Read rather than write, and that separation is the reason this is its own
+ * constant rather than a reuse of the one above. A person can untick a scope on a
+ * consent screen, so a connection granted `ads:read` and refused `ads:write` is a
+ * legitimate state: it cannot publish and it can still be measured. Requiring the
+ * publish scope here would stop the numbers arriving for a campaign that is
+ * already live and already spending, which is the worst moment to go quiet.
+ *
+ * Both constants are checked against `defaultScopesFor(FAKE_PROVIDER)` in the
+ * tests, because a requirement the only consent screen in the product cannot
+ * grant would be a permanent block that no user action could clear.
+ */
+export const METRICS_REQUIRED_SCOPES: readonly string[] = Object.freeze(['ads:read']);
+
 export type ScopeRule = 'connection_not_active' | 'missing_scopes';
 
 export type ScopeVerdict =

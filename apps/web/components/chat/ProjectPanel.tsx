@@ -1,7 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { ProjectDetail, ProjectSummary, Task, TaskState } from '@octopus/contracts';
+import type {
+  CampaignSummary,
+  ProjectDetail,
+  ProjectSummary,
+  Task,
+  TaskState,
+} from '@octopus/contracts';
 import {
   getArtifactFileUrl,
   getProject,
@@ -92,6 +98,40 @@ const OWNER_COPY: Record<Task['ownerType'], string> = {
   ai: 'Octopus',
   human: 'An expert',
   user: 'You',
+};
+
+/**
+ * How a campaign's state reads to the person paying for it.
+ *
+ * All eight, including the ones only a later slice can reach, on `STATE_COPY`'s
+ * reasoning: the machine is specified in full in Postgres, and a view that shows
+ * a raw enum value the day something first reaches `completed` is a view nobody
+ * updated.
+ *
+ * **`publishing` deliberately does not say "live".** The campaign machine keeps
+ * the two apart because claiming a platform confirmed something it has not is an
+ * untrue sentence in the audit trail, and it would be the same untrue sentence
+ * here, on the surface where somebody decides whether their money is moving.
+ */
+const CAMPAIGN_STATE_COPY: Record<
+  CampaignSummary['state'],
+  { label: string; tone: 'done' | 'active' | 'waiting' | 'stopped' }
+> = {
+  draft: { label: 'Not authorised yet', tone: 'waiting' },
+  ready: { label: 'Approved, publishing shortly', tone: 'active' },
+  publishing: { label: 'Being sent to the platform', tone: 'active' },
+  live: { label: 'Live', tone: 'done' },
+  paused: { label: 'Paused', tone: 'waiting' },
+  completed: { label: 'Finished', tone: 'done' },
+  cancelled: { label: 'Cancelled', tone: 'stopped' },
+  failed: { label: 'Could not be published', tone: 'stopped' },
+};
+
+const CHANNEL_COPY: Record<CampaignSummary['channel'], string> = {
+  meta: 'Meta',
+  google: 'Google',
+  email: 'Email',
+  organic_social: 'Organic social',
 };
 
 function describeState(state: TaskState) {
@@ -224,6 +264,7 @@ export function ProjectPanel({ roomId, canAct, onClose }: Props) {
                         canAct={canAct}
                         onChanged={() => setRefresh((n) => n + 1)}
                       />
+                      <Campaigns campaigns={detail.campaigns} currency={detail.currency} />
                       <TaskList
                         tasks={detail.tasks}
                         projectId={detail.id}
@@ -377,6 +418,116 @@ function Budget({
         ))}
     </div>
   );
+}
+
+/**
+ * What each campaign is doing, and what it has actually spent.
+ *
+ * **This is the first surface for `campaign_outcomes`.** The metrics sweep is its
+ * first writer, and shipping the writer without a reader would extend the defect
+ * class this repository keeps recording: a column with nobody reading it, or a
+ * number recorded where only a developer with SQL can see it. `detail.campaigns`
+ * was itself an instance of that until now, fetched by the API on every open and
+ * rendered nowhere.
+ *
+ * The panel's own rules apply unchanged.
+ *
+ * **A state is named in words**, with the dot as decoration rather than as the
+ * carrier (rule 15).
+ *
+ * **Nothing renders that the engine did not produce.** No cost per acquisition,
+ * no click-through rate, no projected finish: those are derived numbers, and this
+ * is the surface whose whole claim is that the figures are the ones that were
+ * measured. Counts are counted.
+ *
+ * **Null is "No numbers yet", never zero.** A zero on a spend figure claims a day
+ * was measured and found to have none, which is a different sentence from "this
+ * has not been read yet" and the wrong one to show somebody wondering whether
+ * their money is moving.
+ *
+ * Money is `mono` for its tabular numerics (rule 14), because these figures are
+ * read against the budget block directly above them.
+ */
+function Campaigns({ campaigns, currency }: { campaigns: CampaignSummary[]; currency: string }) {
+  if (campaigns.length === 0) return null;
+
+  return (
+    <div className="work-campaigns">
+      <p className="work-campaigns-head">
+        {campaigns.length === 1 ? '1 campaign' : `${campaigns.length} campaigns`}
+      </p>
+      <ul className="work-campaign-list">
+        {campaigns.map((c) => {
+          const state = CAMPAIGN_STATE_COPY[c.state] ?? {
+            label: c.state.replace(/_/g, ' '),
+            tone: 'active' as const,
+          };
+          return (
+            <li key={c.id} className="work-campaign">
+              <p className="work-campaign-name">{c.name}</p>
+              <p className="work-campaign-meta">
+                <span className="work-chip">{CHANNEL_COPY[c.channel] ?? c.channel}</span>
+                <span className={`work-state ${state.tone}`}>
+                  <span className="work-dot" aria-hidden />
+                  {state.label}
+                </span>
+              </p>
+              <p className="work-campaign-figures mono">
+                <span className="work-campaign-figure">
+                  <span className="work-budget-label">Authorised</span>
+                  {c.budgetCap === null
+                    ? 'Nothing yet'
+                    : `${c.budgetCap} ${c.currency || currency}`}
+                </span>
+                <span className="work-campaign-figure">
+                  <span className="work-budget-label">Spent</span>
+                  {c.spendToDate === null
+                    ? 'No numbers yet'
+                    : `${c.spendToDate} ${c.currency || currency}`}
+                </span>
+                {c.clicksToDate !== null && (
+                  <span className="work-campaign-figure">
+                    <span className="work-budget-label">Clicks</span>
+                    {c.clicksToDate}
+                  </span>
+                )}
+                {c.conversionsToDate !== null && (
+                  <span className="work-campaign-figure">
+                    <span className="work-budget-label">Conversions</span>
+                    {c.conversionsToDate}
+                  </span>
+                )}
+              </p>
+              {c.lastMeasuredAt !== null && (
+                <p className="work-campaign-measured">
+                  Measured through {formatMeasuredThrough(c.lastMeasuredAt)}
+                </p>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The last whole day a campaign has numbers for.
+ *
+ * `period_end` is the exclusive end of a closed UTC day, so the day it describes
+ * is the one before it. Rendering the boundary itself would tell somebody their
+ * campaign was measured through tomorrow.
+ */
+function formatMeasuredThrough(periodEnd: string): string {
+  const end = new Date(periodEnd);
+  if (Number.isNaN(end.getTime())) return periodEnd;
+  const lastDay = new Date(end.getTime() - 86_400_000);
+  return lastDay.toLocaleDateString(undefined, {
+    timeZone: 'UTC',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
 }
 
 function TaskList({

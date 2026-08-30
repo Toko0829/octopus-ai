@@ -107,6 +107,37 @@ const EnvSchema = z.object({
   PUBLISH_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
 
   /**
+   * Whether this deployment records what live campaigns spent.
+   *
+   * **On by default, sharing `PUBLISH_ENABLED`'s polarity rather than
+   * `CRAWL_ENABLED`'s**, and for the same reason each of those was chosen. There
+   * is no stranger to protect: this sweep reads only the accounts a workspace
+   * connected, about campaigns it approved, and the only registered provider
+   * makes no network call at all. It is inert until something is live.
+   *
+   * Off by default would repeat the defect the publish flag was inverted to
+   * avoid. The project panel now shows a spend figure per campaign, and on an
+   * unconfigured deployment that block would sit permanently at "No numbers yet"
+   * while the campaign really was spending, which is a false surface rather than
+   * an absent one. So this is a kill switch: set it to `false` to stop a
+   * deployment measuring, and nothing else changes.
+   */
+  METRICS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
+  /**
+   * How many campaigns one pass may measure.
+   *
+   * Three, matching the publish bound, and bounded the same way: a pass shares
+   * its lease with the DAG walk and holds it while each platform call is in
+   * flight. Steady state is one day owed per live campaign per day, so this only
+   * decides how fast a backlog drains, and each campaign is separately capped at
+   * seven days per pass by `MAX_PERIODS_PER_PULL`.
+   */
+  METRICS_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
+
+  /**
    * Signing key for the OAuth `state` parameter.
    *
    * **Optional in this schema and required at the point of use**, which is a
