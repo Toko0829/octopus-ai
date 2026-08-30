@@ -42,13 +42,15 @@
   >
   > Reading is open to any member, which is what the table's own comment promised. **Connecting and disconnecting are owner-only**, because `connect_channel` is `high_risk` in exactly the way `create_campaign` is: it hands a system access to somebody's real account.
 
-- **Dynamic group-chat RLS** is tested with **pgTAP** in `supabase/tests/rls_membership.sql` (22 assertions, verified green against the live database). Covers a room shared by an owner, an unexpired node, an **expired** node and an outsider, across `rooms`, `messages`, `action_embeds` and `feedback_events`.
+- **Dynamic group-chat RLS** is tested with **pgTAP** in `supabase/tests/rls_membership.sql` (26 assertions, verified green against the live database). Covers a room shared by an owner, an unexpired node, an **expired** node and an outsider, across `rooms`, `messages`, `action_embeds` and `feedback_events`.
 
   The load-bearing case is that an **expired node sees nothing at all**: not the room, not the messages, not the plan card. Time-boxed access is what the entire marketplace model rests on, and until this file existed the only evidence it worked was that nothing had visibly leaked.
 
   The suite also asserts **privileges, not only policies**, because RLS filters rows a grant already permits and the two fail very differently. `TRUNCATE` is checked explicitly since it bypasses RLS entirely.
 
   Tests run as `authenticated` with `request.jwt.claims` set, exactly as PostgREST would. Running them as `postgres` would prove nothing: that role bypasses RLS, which is precisely how a policy bug survives review. Everything is inside a transaction that `ROLLBACK`s, so it is safe against a live database.
+
+  Four of the assertions cover a different property and were added with `20260831110000`: **a role is never self-service.** `20260724000000:21` promised a trigger preventing self role changes and no migration ever wrote one, so `update public.profiles set role = 'admin' where user_id = auth.uid()` succeeded for any signed-in person — measured on the live database, where it completed with no error and the row read back `admin`, before being rolled back. Latent only because nothing authorises on `profiles.role` yet; it stops being latent the moment `human_node` means "eligible for paid work funded from somebody else's budget". Fixed with a column grant **and** a trigger, because the table-wide grant has already been silently restated once (`20260812120100:31`) and a `grant` line cannot undo a trigger. The sharp assertion runs **as `postgres` with a person's claims set**, bypassing both the grant and RLS so that only the trigger can refuse: run as `authenticated` it would be stopped by the column grant first and would still pass with the trigger deleted.
 
   **Still uncovered:** thread-scoped membership (`room_members.scope`), since threads do not exist yet, and ops/admin access paths.
 

@@ -10,6 +10,56 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### A comment promised a guard and no migration ever wrote it (`20260831110000`)
+
+`20260724000000_init.sql:21`, in the file that creates `profiles`, says role
+escalation is blocked here and that "a later migration adds a trigger preventing
+self role changes". **There is no later migration.** All forty-four were read.
+`profiles_update_own` carries `using (auth.uid() = user_id)` with no column
+restriction, and `20260728170000:22` grants `update` on **every column** to
+`authenticated`, restated verbatim at `20260812120100:31`.
+
+**Measured before the fix, on the live database, rather than argued:**
+`has_column_privilege('authenticated', 'public.profiles', 'role', 'UPDATE')`
+returned true, `update public.profiles set role = 'admin' where user_id =
+auth.uid()` **completed with no error**, and the row read back `admin`.
+
+This is the defect class this repository has now named five times — `risk_tier`
+unreachable for its whole life, `task_deps` holding no row for two weeks,
+`artifacts.storage_path` with no bucket, `projects.budget_ceiling` with no
+writer — and it is the worst-shaped member of the family, because **the promise
+reads as though it were kept.** The other four announce themselves as absences;
+this one announces itself as a control. That is how it survived forty-four
+migrations of review.
+
+**Latent today, and it stops being latent in the next slice.** Nothing currently
+authorises on `profiles.role`: `apps/api/src/plugins/auth.ts:48` reads the role
+from the JWT and every ownership check comes from `rooms.owner_id`, which is why
+this is a fix and not an incident. The marketplace domain lands next and makes
+`human_node` mean "eligible for paid work funded from somebody else's authorised
+budget", at which point a self-service role column is escalation directly into
+the money path.
+
+**Two controls, because the first has already been silently undone once.** The
+column grant (`revoke update`, then `grant update (display_name, jurisdiction,
+languages)`) is the real fix. The trigger exists because `20260812120100`
+restated the table-wide grant while doing something else entirely, so a future
+migration restoring `grant update on public.profiles` would re-open this with no
+diff that looks like a security change. **A `grant` line cannot undo a trigger.**
+`auth.uid() is not null` is the whole person/server distinction: `service_role`
+writes with no JWT, so ops promotion through the server path is untouched, and a
+request carrying a person's claims is a person whatever function it travels
+through — so a future `SECURITY DEFINER` helper cannot launder a role change on a
+user's behalf. Predicate entirely in the trigger's `when` clause, body nothing
+but the raise, exactly as `private.guard_ad_entity_external_id`
+(`20260829150000`) is written.
+
+Covered by four assertions in `supabase/tests/rls_membership.sql` (now 26). The
+one that matters is run **as `postgres` with a person's claims set**, bypassing
+both the grant and RLS, so the only thing left refusing the write is the trigger:
+a test run as `authenticated` would be refused by the column grant first and
+would still pass with the trigger deleted.
+
 ### The marketing domain gets its first writer (`20260829130000`, `20260829140000`)
 
 Four marketing tables landed with their guards and **no writer at all**, which was
@@ -523,7 +573,7 @@ Audit         events (append-only, event-sourced)   notifications   delivery_log
 ## Identity & tenancy
 
 - `users` (Supabase `auth.users`) → `profiles(user_id PK/FK, display_name, role, jurisdiction, languages[], created_at)`.
-- **Roles:** `user` | `human_node` | `verified_pro` | `admin` | `ops` — carried as a JWT claim **and** in `profiles.role` (the DB backstop).
+- **Roles:** `user` | `human_node` | `verified_pro` | `admin` | `ops` — carried as a JWT claim **and** in `profiles.role` (the DB backstop). **Never self-service** (`20260831110000`): `authenticated` holds a column grant covering `display_name`, `jurisdiction` and `languages` only, and a trigger refuses a `role` change from anyone carrying a JWT even if the table-wide grant is ever restored.
 - Tenancy scoping is **project- and room-membership based** (not a single `org_id` column) so a user, the AI, and multiple nodes can share a room with different privileges.
 
 ## Chat schema

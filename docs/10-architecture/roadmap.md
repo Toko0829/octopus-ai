@@ -15,7 +15,7 @@
 **Goal:** a production-grade skeleton everything builds on.
 
 - Turborepo monorepo (`apps/web|api|matcher|agent`, `packages/db|contracts|core|rag|agent-tools|realtime|ui|observability|config`).
-- Provision Supabase (Postgres 16, RLS, GoTrue JWKS, Storage, Realtime); Supavisor pooling.
+- Provision Supabase (Postgres 17, RLS, GoTrue JWKS, Storage, Realtime); Supavisor pooling.
 - `auth-identity`: sessions, JWKS verification, role model, baseline RLS + pgTAP.
 - CI/CD (GitHub Actions + Turborepo cache), migrations, secrets, Zod env validation.
 - Observability skeleton (OTel, Sentry, LLM-trace sink) + `.docmeta.yml` doc-drift check.

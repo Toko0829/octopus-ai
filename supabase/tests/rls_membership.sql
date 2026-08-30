@@ -24,7 +24,7 @@
 
 begin;
 
-select extensions.plan(22);
+select extensions.plan(26);
 
 -- ---------------------------------------------------------------- fixtures
 
@@ -228,6 +228,62 @@ select extensions.ok(
 select extensions.ok(
   not has_table_privilege('anon', 'public.messages', 'TRUNCATE'),
   'anon cannot TRUNCATE messages'
+);
+
+-- ------------------------------------------- role is not self-service (20260831110000)
+--
+-- `20260724000000:21` promised this guard in a comment and no migration wrote
+-- it, so `update public.profiles set role = 'admin' where user_id = auth.uid()`
+-- succeeded for any signed-in person until `20260831110000`. Four assertions,
+-- because the two layers fail differently and both halves of each have to hold.
+
+-- Helper: the SQLSTATE a statement raises while carrying a person's claims but
+-- NOT their role. Running as `postgres` bypasses both the grant and RLS, which
+-- is exactly the point: whatever is left refusing the write is the trigger and
+-- nothing else. A test that ran as `authenticated` would be refused by the
+-- column grant first and would pass with the trigger deleted.
+create or replace function pg_temp.errcode_claiming(p_user uuid, p_sql text)
+returns text language plpgsql as $$
+begin
+  -- A null user means "no JWT at all", the server path. Set the empty string
+  -- rather than a claims object with a null `sub`, so the case cannot pass
+  -- because of how auth.uid() happens to coerce a null inside JSON.
+  perform set_config('request.jwt.claims',
+    case when p_user is null then ''
+         else json_build_object('sub', p_user, 'role', 'authenticated')::text end,
+    true);
+  execute p_sql;
+  perform set_config('request.jwt.claims', '', true);
+  return null;
+exception when others then
+  perform set_config('request.jwt.claims', '', true);
+  return sqlstate;
+end $$;
+
+select extensions.ok(
+  not has_column_privilege('authenticated', 'public.profiles', 'role', 'UPDATE'),
+  'authenticated holds no UPDATE grant on profiles.role: promotion is not a client write'
+);
+
+select extensions.ok(
+  has_column_privilege('authenticated', 'public.profiles', 'display_name', 'UPDATE'),
+  'authenticated can still edit its own display_name: the column grant did not over-revoke'
+);
+
+select extensions.is(
+  pg_temp.errcode_claiming(pg_temp.id('owner'), format(
+    'update public.profiles set role = ''admin'' where user_id = %L', pg_temp.id('owner'))),
+  '42501',
+  'the trigger refuses a self-promotion even with the grant bypassed, which is the layer '
+  'a future `grant update on public.profiles` cannot silently undo'
+);
+
+select extensions.is(
+  pg_temp.errcode_claiming(null, format(
+    'update public.profiles set role = ''human_node'' where user_id = %L', pg_temp.id('member'))),
+  null::text,
+  'the server still sets roles: auth.uid() is null under service_role, so onboarding a '
+  'node is not locked out by its own guard'
 );
 
 select * from extensions.finish();
