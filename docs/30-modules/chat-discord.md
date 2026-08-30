@@ -6,7 +6,7 @@
 >
 > The visual/interaction spec is in [discord-chat-spec.md](../20-design/discord-chat-spec.md); this module doc is the behavior/data view. Update both on any layout, role, embed, or transport change.
 >
-> **Implementation status (Phase 2, in progress):** the chat runs entirely on live data. The **server-authoritative write path and persistence are live**: `POST /api/rooms/:roomId/messages` and `GET /api/rooms/:roomId/messages` (since-cursor catch-up) in `apps/api`, with delivery to Realtime subscribers verified end-to-end, and `apps/web` reads sign-in, rooms, channels, members, message history, live Realtime delivery and Realtime Presence with **no mock data left**. **The AI is a member rather than a widget:** a posted goal starts an agent run and the reply arrives as an ordinary message with `author_kind='agent'`, rendered inline. **Four embed components are live**, each described below: `plan` (`20260812120000`), `question` (`20260815120000`), `artifact` (`20260815210000`) and `replan` (`20260828130000`). **Not built yet:** threads/topics, reactions, pins, mentions, saved messages, and the remaining embed components (approval, pay, sign, assign), which land with the marketplace and payments. See [design-system-frontend.md](design-system-frontend.md).
+> **Implementation status (Phase 2, in progress):** the chat runs entirely on live data. The **server-authoritative write path and persistence are live**: `POST /api/rooms/:roomId/messages` and `GET /api/rooms/:roomId/messages` (since-cursor catch-up) in `apps/api`, with delivery to Realtime subscribers verified end-to-end, and `apps/web` reads sign-in, rooms, channels, members, message history, live Realtime delivery and Realtime Presence with **no mock data left**. **The AI is a member rather than a widget:** a posted goal starts an agent run and the reply arrives as an ordinary message with `author_kind='agent'`, rendered inline. **Four embed components are live**, each described below: `plan` (`20260812120000`), `question` (`20260815120000`), `artifact` (`20260815210000`) and `replan` (`20260828130000`). **Threads exist as guards only** (`20260901120000` … `20260901123000`): the `threads` table, `messages.thread_id` and thread-scoped membership are live and enforced, and **nothing can create a thread** — no write policy, no client write grant, no route, no UI. Creation lands with the matcher slice that first needs one. See "Threads & topics" below. **Not built yet:** any thread writer or thread UI, thread realtime topics, reactions, pins, mentions, saved messages, and the remaining embed components (approval, pay, sign, assign), which land with the marketplace and payments. See [design-system-frontend.md](design-system-frontend.md).
 
 ## 5-region layout
 
@@ -61,6 +61,14 @@ Approve / Pay / Sign / Assign / Accept — **permission-gated by role**, carryin
 
 Threads per subtask; Zulip-style **named topics** for resumable subtasks. A node engagement lives in its own thread; node membership is **scoped + time-boxed** (`room_members.scope`, `expires_at`).
 
+> **Live as guards, with no writer** (`20260901120000` … `20260901123000`). `threads` carries `id`, `room_id` (denormalised so tenancy policies are a membership call rather than a join), `channel_id`, `task_id?` and `title`; `messages.thread_id` is nullable and constrained by a composite foreign key so a message's thread is provably in the message's own room. `room_members.scope` is finally enforced, having been unconstrained text with no reader for 44 migrations.
+>
+> **A thread holding messages cannot be deleted.** `on delete set null` would re-home them into the null-thread room stream, which room-scoped members read, so a deletion would be a disclosure. NO ACTION rather than RESTRICT, so deleting a whole room still cascades.
+>
+> **One thread per task, ever** (`task_id` is a plain unique). A reassignment after a no-show creates a second engagement and must continue in the same thread, because the trail of what happened on a task is the thing read afterwards.
+>
+> **A thread-scoped member has no realtime.** Thread topics are not built: both `realtime.messages` policies were narrowed to `scope = 'room'` in place, extending rather than replacing them so the time-box survives. Until a `'chat:thread:'` branch lands with the slice that first admits a node, such a member reads through the since-cursor `GET`, which runs as the caller and returns exactly their thread. Full posture in [security-compliance.md](../10-architecture/security-compliance.md) and [ADR-0017](../40-adr/0017-thread-admission-is-a-property-of-the-membership.md).
+
 ## Mentions, reactions, pins
 
 `@user` / `@agent` / `@role` / `#channel` (autocomplete), reactions, pins, saved messages. Mentions + pending-action counts feed [notifications](notifications.md).
@@ -87,4 +95,4 @@ Warm Chat skin by default; compact density for power users; per-business accent 
 
 ## Key entities
 
-`rooms` · `channels` / `threads` · `messages` (idempotency key, `seq` ordering cursor, `author_kind`) · `reactions` / `pins` · `action_embeds` (component, payload, `required_role`, state) · presence (ephemeral, Realtime).
+`rooms` · `channels` · `threads` (**live**, no writer) · `messages` (idempotency key, `seq` ordering cursor, `author_kind`, `thread_id?`) · `room_members` (`scope`, `thread_id?`, `expires_at`) · `reactions` / `pins` · `action_embeds` (component, payload, `required_role`, state) · presence (ephemeral, Realtime).
