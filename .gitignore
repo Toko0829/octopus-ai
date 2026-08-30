@@ -53,3 +53,6 @@ rag-trace.json
 # shipped derivatives (apps/web/public/*.webp) are committed; the 13MB 16-bit
 # masters they are made from are not.
 tools/art/out/
+
+# Supabase CLI scratch (version probe, branch refs) — never part of the repo.
+supabase/.temp/

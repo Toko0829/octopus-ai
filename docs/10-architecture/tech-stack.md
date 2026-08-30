@@ -40,7 +40,7 @@
 
 ## Data layer
 
-- **Supabase Postgres 16** with **RLS** as the authorization backstop; **Supavisor** transaction pooling; **Storage** (S3-compatible, RLS-scoped buckets, signed URLs); **Realtime** (Broadcast-from-Postgres + Presence).
+- **Supabase Postgres 17** with **RLS** as the authorization backstop; **Supavisor** transaction pooling; **Storage** (S3-compatible, RLS-scoped buckets, signed URLs); **Realtime** (Broadcast-from-Postgres + Presence).
 
 ## Durable orchestration + jobs
 

@@ -23,7 +23,7 @@
    trigger  │      service_role          │ triggers run     │
    run      ▼             ▼              ▼                  │
    ┌────────────────┐ ┌──────────────┐ ┌───────────────────┴───────────────┐
-   │ apps/matcher    │ │ Supabase     │ │ Supabase Postgres 16 (source of    │
+   │ apps/matcher    │ │ Supabase     │ │ Supabase Postgres 17 (source of    │
    │ (Fastify)       │ │ Auth (GoTrue)│ │ truth): users, rooms, messages,    │
    │ node matching + │ │ JWKS         │ │ projects, tasks, ledger, escrow,   │
    │ waitpoint close │ └──────────────┘ │ documents+doc_chunks (pgvector)    │
@@ -297,7 +297,7 @@ The shared-corpus counterpart to `/sources`, called by the sweep. Deliberately a
 | `services/ai`  | **Python** (FastAPI + Pydantic, LlamaIndex), OpenAPI-typed seam, stateless               | The reasoning core and RAG: retrieval, planning, drafting, tool **selection**, eval gates, provider calls. **Proposes only** — it never writes rows or moves money. ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) |
 | Trigger.dev v3 | Managed (Trigger Cloud) or self-host on Fly.io                                           | Durable orchestration: long-run compute, waitpoints, retries, idempotency, per-run trace UI.                                                                                                                                       |
 | pg-boss        | On Supabase Postgres                                                                     | Utility jobs (email, thumbnails, RAG re-index, reconciliation) — no Redis at MVP.                                                                                                                                                  |
-| Supabase       | Postgres 16 + RLS, GoTrue (JWKS), Storage, Realtime                                      | Single source of truth + auth + storage + chat transport.                                                                                                                                                                          |
+| Supabase       | Postgres 17 + RLS, GoTrue (JWKS), Storage, Realtime                                      | Single source of truth + auth + storage + chat transport.                                                                                                                                                                          |
 
 ## The two-layer brain
 

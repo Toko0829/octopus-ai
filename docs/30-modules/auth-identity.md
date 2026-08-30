@@ -29,6 +29,9 @@
 - Roles: `user` · `human_node` · `verified_pro` · `admin` · `ops`.
 - Carried as a **JWT claim** _and_ mirrored in `profiles.role` (the DB backstop RLS reads).
 - The **node vs user** distinction drives matcher and payments permissions; `verified_pro` (license-verified) is required for regulated tasks.
+- **A role is set by the server and never by its holder** (`20260831110000`). `authenticated` holds a column grant on `profiles` covering `display_name`, `jurisdiction` and `languages` only, and `private.guard_profile_role_self_service` refuses a `role` change from any writer carrying a JWT. `service_role` writes with no claims, so `auth.uid()` reads null and the server path is untouched — which is also what makes the guard fail in the useful direction: a future `SECURITY DEFINER` helper cannot launder a role change on a user's behalf, because the claims travel with the request rather than with the role.
+
+  This was a **promise enforced by nothing** for forty-four migrations. `20260724000000:21` states that role escalation is blocked and that a later migration adds the trigger; none did, and the escalation was confirmed to succeed against the live database before the fix. Two controls rather than one, because the table-wide `update` grant this replaces had already been silently restated once (`20260812120100:31`) by a migration doing something else, and a `grant` line cannot undo a trigger. Asserted in `supabase/tests/rls_membership.sql`.
 
 ## RLS membership model
 
