@@ -6,6 +6,7 @@ import { crawlSweep } from './crawl';
 import { publishSweep } from './publish';
 import { metricsSweep } from './metrics';
 import { optimizeSweep } from './optimize';
+import { matcherSweep } from './match';
 import { notifyWaiting } from './waiting';
 import { produceCampaignCards } from './campaign-cards';
 import type { ExecutorDeps } from './executor';
@@ -68,6 +69,14 @@ export interface TickerOptions {
    * the product is quietly not keeping (see `OPTIMIZE_ENABLED`, ADR-0014).
    */
   optimize?: { maxPerPass: number };
+  /**
+   * Offer escalated steps to expert nodes, and cascade when one says no. Absent
+   * means this deployment does not match, which is supported and is not the
+   * default: the panel offers a button saying an expert will be found, and a
+   * deployment that moves the step to `matching` and never looks again is the
+   * same untruth the three flags above exist to avoid (see `MATCHER_ENABLED`).
+   */
+  matcher?: { maxPerPass: number };
   log: {
     info: (obj: unknown, msg: string) => void;
     warn: (obj: unknown, msg: string) => void;
@@ -285,6 +294,25 @@ export function startTicker(opts: TickerOptions): () => void {
           });
         } catch (err) {
           opts.log.error({ err, worker }, 'optimize sweep failed');
+        }
+      }
+
+      // Offering escalated steps, after the money sweeps and before the crawl.
+      // The ordering rule on this pass is who is waiting: an owner who clicked
+      // "Find an expert" and a node with nothing to do are both people, so this
+      // outranks re-reading a stranger's page. It yields to the three above
+      // because it moves no money at all, and a campaign spending past its
+      // ceiling cannot wait behind a matching pass. Its own try/catch, like
+      // every sweep here.
+      if (opts.matcher) {
+        try {
+          await matcherSweep({
+            admin: opts.admin,
+            maxPerPass: opts.matcher.maxPerPass,
+            log: opts.log,
+          });
+        } catch (err) {
+          opts.log.error({ err, worker }, 'matcher sweep failed');
         }
       }
 

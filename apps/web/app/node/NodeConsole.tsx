@@ -1,17 +1,20 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import type { NodeCredential, NodeProfile } from '@octopus/contracts';
+import { useEffect, useMemo, useState } from 'react';
+import type { NodeCredential, NodeOffer, NodeProfile } from '@octopus/contracts';
 import {
-  NO_WORK_YET,
+  NO_OPEN_OFFERS,
   SKILL_TAXONOMY,
   ineligibilityReason,
   isEligibleForWork,
+  offerabilityGap,
   skillRejectionReason,
 } from '@octopus/marketplace';
 import {
   addNodeCredential,
   addNodeSkill,
+  declineOffer,
+  getNodeOffers,
   patchNode,
   removeNodeSkill,
   revokeNodeCredential,
@@ -68,11 +71,13 @@ const JURISDICTION = /^[A-Z]{2}(-[A-Z0-9]{1,10}){0,2}$/;
 
 interface Props {
   initial: NodeProfile;
+  initialOffers: NodeOffer[];
   email: string | null;
 }
 
-export function NodeConsole({ initial, email }: Props) {
+export function NodeConsole({ initial, initialOffers, email }: Props) {
   const [node, setNode] = useState(initial);
+  const [offers, setOffers] = useState(initialOffers);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,7 +109,16 @@ export function NodeConsole({ initial, email }: Props) {
         </p>
       )}
 
-      <Status node={node} eligible={eligible} reason={reason} />
+      <Status node={node} eligible={eligible} reason={reason} offers={offers} />
+
+      <Offers
+        offers={offers}
+        eligible={eligible}
+        onChanged={async () => {
+          const { offers: fresh } = await getNodeOffers();
+          setOffers(fresh);
+        }}
+      />
 
       <section className="node-card">
         <h2 className="node-h2">Taking work</h2>
@@ -165,11 +179,19 @@ function Status({
   node,
   eligible,
   reason,
+  offers,
 }: {
   node: NodeProfile;
   eligible: boolean;
   reason: string | null;
+  offers: NodeOffer[];
 }) {
+  // The one gap eligibility does not cover: a verified, available node with no
+  // rate passes every check on this page and is still excluded by the matcher's
+  // pool query, because an offer is measured against a rate. Without this line
+  // they wait forever with nothing on screen explaining it.
+  const gap = offerabilityGap(node);
+  const openOffers = offers.filter((o) => o.status === 'open').length;
   return (
     <section className="node-card">
       <h2 className="node-h2">Where you stand</h2>
@@ -186,9 +208,198 @@ function Status({
         </li>
       </ul>
       {reason && <p className="node-note">{reason}</p>}
-      {eligible && <p className="node-note">{NO_WORK_YET}</p>}
+      {eligible && gap && <p className="node-note">{gap}</p>}
+      {eligible && !gap && openOffers === 0 && <p className="node-note">{NO_OPEN_OFFERS}</p>}
     </section>
   );
+}
+
+/** Stage names as a person would say them, not as the planner stores them. */
+const STAGE_COPY: Record<string, string> = {
+  strategy: 'Positioning and strategy',
+  content: 'Content',
+  creative: 'Creative',
+  channels: 'Channels and ads',
+  conversion: 'Conversion',
+  measurement: 'Measurement',
+};
+
+/**
+ * The offers waiting for this node, and the one thing they can do about one.
+ *
+ * **Accept is rendered and disabled, with its reason printed beside it.** The
+ * alternative was to omit it, and that is worse: a node reading a list of work
+ * they cannot take has no way to tell whether accepting is coming, broken, or
+ * something they failed to qualify for. This console already uses the same idiom
+ * for the availability control while a node is unverified.
+ *
+ * Declining is two steps, because it cannot be undone: the cascade moves to the
+ * next expert and `offers_task_node_idx` means this node is never asked about
+ * this step again.
+ */
+function Offers({
+  offers,
+  eligible,
+  onChanged,
+}: {
+  offers: NodeOffer[];
+  eligible: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const open = offers.filter((o) => o.status === 'open');
+  const settled = offers.filter((o) => o.status !== 'open');
+
+  // Nothing at all and never anything: no section rather than an empty one. An
+  // ineligible node is already told why by the status card above.
+  if (!eligible && offers.length === 0) return null;
+
+  async function decline(offerId: string) {
+    setBusy(offerId);
+    setError(null);
+    try {
+      await declineOffer(offerId, reason.trim() || undefined);
+      setConfirming(null);
+      setReason('');
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not decline that offer.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section className="node-card">
+      <h2 className="node-h2">Work offered to you</h2>
+
+      {error && (
+        <p className="node-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      {open.length === 0 && offers.length > 0 && (
+        <p className="node-note">Nothing is open right now. What you already answered is below.</p>
+      )}
+
+      {open.map((offer) => (
+        <article key={offer.id} className="node-offer">
+          <h3 className="node-offer-title">{offer.task.title}</h3>
+          {offer.task.stage && (
+            <p className="node-offer-stage">{STAGE_COPY[offer.task.stage] ?? offer.task.stage}</p>
+          )}
+          {offer.task.detail && <p className="node-body">{offer.task.detail}</p>}
+          <p className="node-note">
+            Open until <ExpiryDate value={offer.expiresAt} />. If you do nothing, it goes to the
+            next expert.
+          </p>
+
+          <div className="node-row">
+            <button type="button" className="btn" disabled title="Escrow is not built yet">
+              Accept
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy !== null}
+              onClick={() => {
+                setConfirming(confirming === offer.id ? null : offer.id);
+                setReason('');
+              }}
+            >
+              {confirming === offer.id ? 'Keep it' : 'Decline'}
+            </button>
+          </div>
+          <p className="node-note">
+            Accepting is not on yet. Taking a step also locks its payment in escrow, and escrow
+            ships next.
+          </p>
+
+          {confirming === offer.id && (
+            <div className="node-confirm">
+              <label className="node-label" htmlFor={`reason-${offer.id}`}>
+                Why, if you want to say (optional)
+              </label>
+              <textarea
+                id={`reason-${offer.id}`}
+                className="node-textarea"
+                value={reason}
+                maxLength={500}
+                rows={3}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Outside what I do, the brief is unclear, no time this week"
+              />
+              <p className="node-note">
+                Declining is final for this step. It goes to another expert and you will not be
+                asked about it again.
+              </p>
+              <div className="node-row">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy !== null}
+                  onClick={() => void decline(offer.id)}
+                >
+                  {busy === offer.id ? 'Declining' : 'Decline it'}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy !== null}
+                  onClick={() => setConfirming(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </article>
+      ))}
+
+      {settled.length > 0 && (
+        <>
+          <h3 className="node-h3">Earlier</h3>
+          <ul className="node-history">
+            {settled.map((offer) => (
+              <li key={offer.id}>
+                <span className="node-history-title">{offer.task.title}</span>
+                <span className="node-history-status">{SETTLED_COPY[offer.status]}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+const SETTLED_COPY: Record<string, string> = {
+  declined: 'You declined it',
+  expired: 'It ran out of time',
+  withdrawn: 'The owner took it back',
+  accepted: 'You accepted it',
+  open: 'Open',
+};
+
+/**
+ * A date rendered on the client only.
+ *
+ * Formatting a timestamp during a server render produces the server's locale and
+ * time zone, which then differs from what the browser renders and trips a
+ * hydration mismatch. Rendering the ISO string first and replacing it after mount
+ * keeps both passes agreeing.
+ */
+function ExpiryDate({ value }: { value: string }) {
+  const [text, setText] = useState(value.slice(0, 10));
+  useEffect(() => {
+    setText(new Date(value).toLocaleString());
+  }, [value]);
+  return <span className="mono">{text}</span>;
 }
 
 type Runner = (key: string, work: () => Promise<NodeProfile | void>) => Promise<void>;

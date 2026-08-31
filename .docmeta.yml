@@ -31,8 +31,12 @@ mappings:
     owner: 'docs/10-architecture/architecture.md'
     also_touch: ['docs/30-modules/auth-identity.md']
 
-  - path: 'apps/matcher/**'
-    owner: 'docs/30-modules/human-nodes-marketplace.md'
+  # `apps/matcher/**` was forward-registered from Phase 0 and is deliberately
+  # gone. ADR-0010 put durable work on the Postgres we already have, so the
+  # matcher shipped in slice 4 as a sweep on the `apps/api` ticker with its pure
+  # half in `packages/marketplace`. Both paths are mapped below and above; a
+  # third mapping for a service nobody is going to build is the forward
+  # registration outliving the decision that made it wrong.
 
   - path: 'apps/agent/**'
     owner: 'docs/30-modules/ai-orchestrator.md'
@@ -63,8 +67,10 @@ mappings:
       ['docs/10-architecture/learning-flywheel.md', 'docs/60-playbooks/full-funnel-creator.md']
 
   # The marketplace's pure domain logic: the skill taxonomy, the verification
-  # seam and its registry, and eligibility. `apps/matcher/**` above maps to the
-  # same doc and still does not exist on disk; it lands with slice 4.
+  # seam and its registry, eligibility, and since slice 4 the stage-to-skill map,
+  # jurisdiction containment (ADR-0015) and the matcher's ranking. The sweep that
+  # uses them is `apps/api/src/lib/match.ts`, covered by the `apps/api/**`
+  # mapping above.
   - path: 'packages/marketplace/**'
     owner: 'docs/30-modules/human-nodes-marketplace.md'
     also_touch: ['docs/10-architecture/security-compliance.md']

@@ -5,7 +5,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ineligibilityReason, isEligibleForWork, type NodeEligibilityInput } from './eligibility';
+import {
+  NO_OPEN_OFFERS,
+  ineligibilityReason,
+  isEligibleForWork,
+  offerabilityGap,
+  type NodeEligibilityInput,
+} from './eligibility';
 
 const STATUSES: NodeEligibilityInput['kycStatus'][] = [
   'unverified',
@@ -78,5 +84,32 @@ describe('ineligibilityReason', () => {
         expect(ineligibilityReason({ kycStatus, availability }) ?? '').not.toContain('—');
       }
     }
+  });
+});
+
+describe('offerabilityGap', () => {
+  it('names the rate as what is stopping offers, because nothing else will', () => {
+    // A verified, available node with no rate passes every check on this page
+    // and is still excluded by the matcher's pool query. Without this sentence
+    // they wait indefinitely with no surface stating why.
+    expect(offerabilityGap({ rate: null })).toMatch(/rate/i);
+  });
+
+  it('has nothing to say once a rate is set', () => {
+    expect(offerabilityGap({ rate: 120 })).toBeNull();
+    expect(offerabilityGap({ rate: 0.5 })).toBeNull();
+  });
+
+  it('writes no em dash, per rule 22', () => {
+    expect(offerabilityGap({ rate: null }) ?? '').not.toContain('—');
+    expect(NO_OPEN_OFFERS).not.toContain('—');
+  });
+
+  it('no longer promises that the matcher is unbuilt', () => {
+    // NO_WORK_YET said "until the matcher ships". The matcher has shipped, and
+    // a sentence that outlives its own condition is the drift this repository
+    // treats as a bug.
+    expect(NO_OPEN_OFFERS).not.toMatch(/matcher ships|no work to offer yet/i);
+    expect(NO_OPEN_OFFERS).toMatch(/offer appears here/i);
   });
 });

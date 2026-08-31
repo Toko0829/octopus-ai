@@ -39,15 +39,15 @@ count. A prefix test answers both, exactly, and an integer answers the ranking.
 Neither needs a coordinate.
 
 PostGIS answers a genuinely different question — radius, polygon, distance —
-and the module needs it exactly once, for `on-site-inspection` within *n* km of
+and the module needs it exactly once, for `on-site-inspection` within _n_ km of
 a point. **No task can ask that today.** `projects.market` is free text and
 `documents.jurisdiction` is free text; there is no point anywhere in the schema
 to measure from.
 
 **The decisive argument is representation, not cost.** The RAG corpus is keyed
 by text jurisdiction, the jurisdiction packs are text, and the task location is
-text. Storing node service area as a geometry would give one question — *does
-this person work where this work is?* — two representations that must be kept
+text. Storing node service area as a geometry would give one question — _does
+this person work where this work is?_ — two representations that must be kept
 in step by hand. That is precisely the defect `20260827110000` recorded and
 paid for: `is_project_member` and `roomForProject` answered one question two
 ways, and six projects, forty-seven tasks and twenty-eight artifacts went
@@ -78,8 +78,8 @@ is capability we would have to defend rather than capability we would use.
 ## Trigger to revisit
 
 **The first task that carries a point rather than a jurisdiction** — that is,
-the first on-site vertical. At that moment the answer is a *nullable geometry
-column beside the codes*, not a replacement for them: the codes stay because
+the first on-site vertical. At that moment the answer is a _nullable geometry
+column beside the codes_, not a replacement for them: the codes stay because
 the corpus, the packs and the plan all still speak in them, and the geometry
 answers the one question they cannot. That migration gets its own ADR, because
 running two representations deliberately is a different decision from running

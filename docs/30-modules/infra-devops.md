@@ -335,3 +335,16 @@ A third **`eval` job** runs the retrieval golden set ([rag-knowledge.md](rag-kno
 ## Key entities / artifacts
 
 `packages/config` (env schema) · `packages/db` (migrations, RLS) · `.docmeta.yml` · CI pipelines · deployment configs · secrets.
+
+### Matcher sweep flags (slice 4)
+
+| Variable               | Default | Notes                                                                                                 |
+| ---------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
+| `MATCHER_ENABLED`      | on      | Kill switch. Off still lets a step be dispatched and shows "Finding an expert"; no offer is ever made |
+| `MATCHER_MAX_PER_TICK` | 3       | Bounds offers **created**, not tasks read, so cascades cannot starve a ready offer                    |
+
+On by default sits with `PUBLISH_ENABLED` / `METRICS_ENABLED` / `OPTIMIZE_ENABLED`
+rather than with `CRAWL_ENABLED`. The polarity rule this file has followed since
+publish is that a sweep opts in only when there is a stranger to protect; crawling
+reaches regulators' servers and the matcher reaches nobody. It is also doubly inert:
+nothing enters `matching` except an owner's explicit click.

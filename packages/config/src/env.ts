@@ -165,6 +165,44 @@ const EnvSchema = z.object({
   OPTIMIZE_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
 
   /**
+   * Whether this deployment offers escalated steps to expert nodes.
+   *
+   * **On by default, and it belongs with the three above rather than with
+   * `CRAWL_ENABLED`.** The polarity rule this file has followed since publish is
+   * that a sweep is off by default only when there is a stranger to protect:
+   * crawling reaches regulators' servers and can be rude, so it opts in. The
+   * matcher reaches nobody. Every row it writes is ours, every read is indexed,
+   * and it moves no money at all, since escrow is a later slice.
+   *
+   * It is also doubly inert, which is the `OPTIMIZE_ENABLED` argument repeated:
+   * nothing enters `matching` except an owner clicking "Find an expert" on a
+   * step that stopped, and nothing else writes that state. So a deployment that
+   * never dispatches never pays for this flag being on.
+   *
+   * The reason it is not off by default is the one that decided the other three.
+   * The panel offers a button that says an expert will be found; with the sweep
+   * disabled, clicking it moves the step to `matching` and leaves it there
+   * forever, which is a false statement on the surface this whole slice exists
+   * to make honest. A kill switch, like its siblings: set it to `false` and
+   * steps can still be dispatched, still show "Finding an expert", and no offer
+   * is ever made.
+   */
+  MATCHER_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
+  /**
+   * How many offers one pass may create.
+   *
+   * Three, matching its siblings, and it bounds offers CREATED rather than tasks
+   * examined. Settling an expired offer and cascading a declined one are both
+   * cheap conditional updates and are deliberately not counted against this, so
+   * a backlog of steps waiting for their next candidate cannot starve the one
+   * step whose offer is ready to go out.
+   */
+  MATCHER_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
+
+  /**
    * Signing key for the OAuth `state` parameter.
    *
    * **Optional in this schema and required at the point of use**, which is a

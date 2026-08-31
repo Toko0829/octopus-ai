@@ -53,13 +53,35 @@ export function ineligibilityReason(node: NodeEligibilityInput): string | null {
 }
 
 /**
- * What an eligible node is owed today, which is the truth rather than a promise.
+ * What an eligible node with nothing in front of them is told.
  *
- * `human-nodes-marketplace.md:64-76` names the dead end this slice must not
- * create: "a person who completes KYC and is never offered anything". Being
- * ops-invited is what makes that a decision rather than an accident, and saying
- * it plainly on the surface is the other half. It stops being true when the
- * matcher lands, and this constant is where that edit happens.
+ * This constant replaces `NO_WORK_YET`, whose own comment named this edit in
+ * advance: "It stops being true when the matcher lands, and this constant is
+ * where that edit happens." The matcher has landed, so the sentence changes from
+ * a standing apology to a description of how work arrives. What has **not**
+ * changed is that nodes are still ops-invited: the matcher decides who is
+ * offered a step, not who may become a node, and `invite_node` is still granted
+ * to `service_role` alone.
  */
-export const NO_WORK_YET =
-  'There is no work to offer yet. Octopus cannot match you to a task until the matcher ships, and you were invited knowing that.';
+export const NO_OPEN_OFFERS =
+  'There is no work to offer you right now. When an owner sends a step out for an expert and you match it, the offer appears here.';
+
+/**
+ * The one gap a node can close themselves that eligibility does not cover.
+ *
+ * `node_profiles.rate` is nullable and the matcher's pool query requires it,
+ * because a rate is what an offer is measured against and `20260831120000:160-165`
+ * sized the column to `projects.budget_ceiling` for exactly that comparison. So
+ * a verified, available node with no rate is eligible by every check on this
+ * page and will still never be offered anything.
+ *
+ * That is the dead-end shape this repository keeps recording, in its quietest
+ * form: nothing is broken, no control is disabled, and the person waits
+ * indefinitely for a reason no surface states. Returns null when there is
+ * nothing to say.
+ */
+export function offerabilityGap(node: { rate: number | null }): string | null {
+  return node.rate === null
+    ? 'Set your rate to start receiving offers. Work is matched against it, so a node without one is never offered anything.'
+    : null;
+}

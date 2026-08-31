@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   AddNodeCredentialBody,
   AddNodeSkillBody,
+  DeclineOfferBody,
   PatchNodeBody,
   SubmitNodeVerificationBody,
 } from '@octopus/contracts';
@@ -28,6 +29,7 @@ import {
   removeNodeSkill,
   revokeNodeCredential,
 } from '../lib/nodes';
+import { auditOfferDeclined, declineOffer, readNodeOffers } from '../lib/offers';
 
 /**
  * A node's own record, and nothing else in the marketplace.
@@ -445,4 +447,126 @@ export async function nodeRoutes(app: FastifyInstance, opts: NodeRoutesOptions):
       return fail(reply, 500, 'internal_error', 'Could not submit your identity check.');
     }
   });
+
+  /**
+   * The offers made to this node.
+   *
+   * A separate route rather than a field on `GET /api/node`, because the two
+   * change on different clocks: a profile changes when the node edits it, and
+   * offers change when somebody else's step moves. Folding them together would
+   * refetch the whole record after every decline.
+   *
+   * **The projection is the access control here, exactly as it is for channel
+   * connections.** A node has no RLS grant on `tasks` or `projects` and gains
+   * none: the three task fields on the card are read with the service key and
+   * copied in. What is deliberately absent is the owner, because
+   * `20260901122000` closed the node-sees-owner and owner-sees-node halves
+   * together and the engagement slice is where that pair gets opened on purpose.
+   */
+  app.get('/api/node/offers', { preHandler: requireAuth }, async (request, reply) => {
+    const found = await requireNode(request, reply);
+    if (!found) return reply;
+
+    const admin = createServiceClient(opts.supabase);
+    try {
+      const offers = await readNodeOffers(admin, found.userId);
+      return reply.code(200).send({ offers });
+    } catch (err) {
+      request.log.error({ err, userId: found.userId }, 'offer list read failed');
+      return fail(reply, 500, 'internal_error', 'Could not load your offers.');
+    }
+  });
+
+  /**
+   * Saying no.
+   *
+   * **This route settles the offer and never touches the task.** The matcher
+   * sweep is the single writer of `tasks.state` in this domain, and it moves the
+   * task back to `matching` on its next pass when it sees a settled offer. Two
+   * writers racing on one task, one reacting to a person and one to a clock, is
+   * how a step gets offered to two nodes at once.
+   *
+   * The consequence is visible and accepted: for up to one tick the node has
+   * declined and the owner still reads "Offered to an expert". That is a delay
+   * in a status line, where the alternative is a double offer.
+   *
+   * **There is no accept route**, and its absence is the slice boundary rather
+   * than an omission. Accepting is inseparable from funding escrow, so an accept
+   * that wrote no ledger row would leave somebody holding work nobody had paid
+   * for. The surface says so where the button would be.
+   */
+  app.post(
+    '/api/node/offers/:offerId/decline',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = z.object({ offerId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'Bad offer id.');
+
+      const body = DeclineOfferBody.safeParse(request.body ?? {});
+      if (!body.success) {
+        return fail(
+          reply,
+          400,
+          'bad_request',
+          'A decline takes an optional reason and nothing else.',
+        );
+      }
+
+      const found = await requireNode(request, reply);
+      if (!found) return reply;
+
+      const admin = createServiceClient(opts.supabase);
+      try {
+        const outcome = await declineOffer(admin, {
+          offerId: params.data.offerId,
+          nodeId: found.userId,
+          reason: body.data.reason ?? null,
+        });
+
+        if (outcome.kind === 'not_found') {
+          return fail(reply, 404, 'not_found', 'Offer not found.');
+        }
+        if (outcome.kind === 'expired') {
+          return fail(
+            reply,
+            409,
+            'conflict',
+            'That offer has expired, so there is nothing to decline.',
+          );
+        }
+        if (outcome.kind === 'settled') {
+          return fail(
+            reply,
+            409,
+            'conflict',
+            'That offer is no longer open, so there is nothing to decline.',
+          );
+        }
+
+        // A replay is the mechanism working: the node clicked twice, or retried a
+        // request whose response they never saw. Returning the row they already
+        // wrote is the honest answer, and it matches how a repeated skill claim
+        // is treated two routes above.
+        if (outcome.kind === 'declined') {
+          await auditOfferDeclined(
+            admin,
+            {
+              projectId: outcome.projectId,
+              nodeId: found.userId,
+              offerId: outcome.offer.id,
+              taskId: outcome.taskId,
+              round: outcome.round,
+              reason: body.data.reason ?? null,
+            },
+            request.log,
+          );
+        }
+
+        return reply.code(200).send({ offer: outcome.offer });
+      } catch (err) {
+        request.log.error({ err, userId: found.userId }, 'offer decline failed');
+        return fail(reply, 500, 'internal_error', 'Could not decline that offer.');
+      }
+    },
+  );
 }

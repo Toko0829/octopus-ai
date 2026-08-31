@@ -238,16 +238,16 @@ The marketplace half (`MATCHING` through `PAID`) has no code behind it until the
 
 That migration rewrote `private.task_transition_allowed` from plpgsql to SQL to add one arc (`needs_user → approved`) and, in restating the map, **silently lost eight others** the original `20260813120000` had. Nothing asserted they had ever been there, which is why it went unnoticed for two weeks. Every one belongs to the marketplace half, so none was reachable and none has caused a defect — but each has to come back **with the slice that first makes it reachable**, never earlier, because an arc into a state nobody can leave is the `escalated` defect on purpose.
 
-| Arc | Restored in | Why not earlier |
-| ----------------------------- | ----------- | ---------------------------------------------------------------------------- |
-| `matching → failed` | slice 4 | no eligible node is a real outcome; without it the task strands mid-search |
-| `offered → failed` | slice 4 | the cascade exhausted the pool |
-| `claimed → matching` | slice 5 | the no-show / withdraw-before-funding path back into the cascade |
-| `proof_submitted → in_progress` | slice 6 | a proof withdrawn or superseded before review starts |
-| `escrow_funded → disputed` | slice 8 | a `disputed` task with no ops console is a state nobody can leave |
-| `in_progress → disputed` | slice 8 | as above |
-| `rejected → disputed` | slice 8 | as above |
-| `payout_pending → disputed` | slice 8 | as above |
+| Arc                             | Restored in | Why not earlier                                                            |
+| ------------------------------- | ----------- | -------------------------------------------------------------------------- |
+| `matching → failed`             | slice 4     | no eligible node is a real outcome; without it the task strands mid-search |
+| `offered → failed`              | slice 4     | the cascade exhausted the pool                                             |
+| `claimed → matching`            | slice 5     | the no-show / withdraw-before-funding path back into the cascade           |
+| `proof_submitted → in_progress` | slice 6     | a proof withdrawn or superseded before review starts                       |
+| `escrow_funded → disputed`      | slice 8     | a `disputed` task with no ops console is a state nobody can leave          |
+| `in_progress → disputed`        | slice 8     | as above                                                                   |
+| `rejected → disputed`           | slice 8     | as above                                                                   |
+| `payout_pending → disputed`     | slice 8     | as above                                                                   |
 
 **A ninth nobody had counted: `blocked → failed`.** The universal `p_to in ('cancelled', 'blocked')` rule is evaluated before the `blocked` case, so `blocked → cancelled` survived by accident and `blocked → failed` did not. Recorded here rather than fixed, since nothing writes `blocked` yet either.
 
@@ -342,3 +342,28 @@ The durable workflow honors a cancellation signal at the next safe checkpoint; i
 ## Relationship to the orchestrator
 
 The orchestrator **proposes** (plans/updates the DAG, runs executors); this engine **commits** (persists state transitions durably, schedules, routes). The split keeps non-deterministic reasoning separate from deterministic, resumable state.
+
+## `matching` and `offered` have producers now (slice 4)
+
+Both states were declared by `20260813120000` and had no code behind them for the
+length of the project. As of `20260903120000`:
+
+- **`escalated → matching`** is the owner clicking "Find an expert" on the project
+  panel, through `find_expert` on the resolution route. Not a sweep: a sweep
+  claiming every escalated step on deploy would have pushed twelve live tasks at a
+  cold-start pool and removed the two controls that already worked.
+- **`matching → offered`** is the matcher sweep inserting one offer.
+- **`offered → matching`** is the cascade, after a decline or a 48-hour expiry.
+- **`matching → escalated`** is exhaustion: nobody left to ask, so the step returns
+  to its owner with a message
+  ([ADR-0018](../40-adr/0018-offer-exhaustion-returns-the-step-to-its-owner.md)).
+
+**`matching → failed` and `offered → failed` stay dropped.** They were booked to
+this slice and the slice decided against them: `failed` is terminal, it would block
+every dependent step, and it would put beyond reach work the owner can still take.
+The ADR dates the reversal and `marketplace_rls.sql` carries the corrected wording.
+
+**The sweep is the single writer of `tasks.state` here.** The node's decline route
+settles the offer row and stops; the next tick moves the task. Every move is
+conditional on the state that was read, so the owner resolving a step and the
+matcher dispatching it cannot both win.

@@ -4,13 +4,14 @@ import type {
   ArtifactFileUrl,
   Channel,
   ChannelConnection,
-  NodeCredential,
-  NodeProfile,
-  NodeSkill,
   EmbedActionResponse,
   ListMessagesResponse,
   MarketingChannel,
   Message,
+  NodeCredential,
+  NodeOffer,
+  NodeProfile,
+  NodeSkill,
   ProjectDetail,
   ProjectSummary,
   RoomMember,
@@ -100,7 +101,7 @@ export function getProjects(roomId: string) {
 export function resolveStep(
   projectId: string,
   taskId: string,
-  input: { action: 'answer'; text: string } | { action: 'retry' },
+  input: { action: 'answer'; text: string } | { action: 'retry' } | { action: 'find_expert' },
 ) {
   return bff<{ state: string; ranExecutor: boolean }>(
     `/projects/${projectId}/tasks/${taskId}/resolution`,
@@ -358,5 +359,40 @@ export function actOnEmbed(
   return bff<EmbedActionResponse>(`/rooms/${roomId}/embeds/${embedId}/actions`, {
     method: 'POST',
     body: JSON.stringify(input),
+  });
+}
+
+/**
+ * The offers waiting for this node.
+ *
+ * A separate call from `getNode` on purpose: offers change when somebody else's
+ * step moves, so refetching them after a decline should not also refetch a
+ * profile nobody edited.
+ *
+ * The projection carries no task id and nothing identifying the owner, and that
+ * is the access control rather than a tidy shape: a node has no grant on `tasks`
+ * or `projects`, and the owner-sees-node and node-sees-owner pair stays closed
+ * until the engagement slice opens it deliberately.
+ */
+export function getNodeOffers() {
+  return bff<{ offers: NodeOffer[] }>('/node/offers');
+}
+
+/**
+ * Say no to an offer.
+ *
+ * The reason is optional and reaches the owner's audit trail, because "the brief
+ * is too vague" and "this is outside what I do" are different problems: the
+ * first is fixable now, the second says the match itself was wrong.
+ *
+ * There is no accept counterpart, and its absence is a slice boundary rather
+ * than an oversight. Accepting is inseparable from funding escrow, so a button
+ * that wrote no ledger row would leave somebody holding work nobody had paid
+ * for. The console says exactly that where the button will go.
+ */
+export function declineOffer(offerId: string, reason?: string) {
+  return bff<{ offer: NodeOffer }>(`/node/offers/${offerId}/decline`, {
+    method: 'POST',
+    body: JSON.stringify(reason ? { reason } : {}),
   });
 }

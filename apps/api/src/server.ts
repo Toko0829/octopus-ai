@@ -152,6 +152,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     // Enforcing the ceilings owners typed against what those campaigns spent.
     // Doubly inert until somebody sets a ceiling, so the same kill-switch shape.
     optimize: env.OPTIMIZE_ENABLED ? { maxPerPass: env.OPTIMIZE_MAX_PER_TICK } : undefined,
+    // Offering escalated steps to expert nodes. Inert until an owner clicks, so
+    // the same kill-switch shape again: `false` still lets a step be dispatched
+    // and still shows "Finding an expert", and no offer is ever made.
+    matcher: env.MATCHER_ENABLED ? { maxPerPass: env.MATCHER_MAX_PER_TICK } : undefined,
     log: app.log,
   });
   app.addHook('onClose', async () => stopTicker());
