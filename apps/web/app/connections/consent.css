@@ -98,3 +98,42 @@
 .consent > .btn {
   justify-self: start;
 }
+
+/* ---- Added by the node onboarding slice ----
+
+   The identity check reuses this stylesheet rather than getting its own,
+   because it is the same surface: a quiet, standalone, light-skinned page where
+   somebody is deciding something about themselves. The classes below are the
+   four this page needs and the connect flow did not: a two-line option, an
+   inline error, and a closing note. Nothing above is modified. */
+
+.consent-scope-name {
+  display: block;
+  color: var(--text);
+}
+
+.consent-scope-note {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Words and a border, never colour alone (rule 15). The tint is the second
+   signal, not the only one. */
+.consent-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--r-md);
+  background: var(--warn-quiet);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+.consent-foot {
+  margin: 6px 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--text-muted);
+}

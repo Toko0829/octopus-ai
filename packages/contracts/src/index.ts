@@ -987,6 +987,139 @@ export const CompleteConnectionBody = z.object({
 });
 export type CompleteConnectionBody = z.infer<typeof CompleteConnectionBody>;
 
+/* ----------------------------------------------- the node's own record */
+
+/** Mirrors `public.kyc_status`. No `expired`: a lapse is availability, not identity. */
+export const KycStatus = z.enum(['unverified', 'pending', 'verified', 'rejected', 'suspended']);
+export type KycStatus = z.infer<typeof KycStatus>;
+
+/** Mirrors `public.node_availability`. No `busy`: that is the engagement's business. */
+export const NodeAvailability = z.enum(['available', 'paused', 'offboarded']);
+export type NodeAvailability = z.infer<typeof NodeAvailability>;
+
+/** Mirrors `public.credential_kind`. */
+export const CredentialKind = z.enum(['lawyer', 'accountant', 'notary']);
+export type CredentialKind = z.infer<typeof CredentialKind>;
+
+/**
+ * A skill a node claims, and whether anybody has confirmed it.
+ *
+ * `verified` is always false today and is on the wire anyway, because the
+ * surface says "claimed, not verified" beside every row and a field that appears
+ * later would let that sentence quietly stop being true.
+ */
+export const NodeSkill = z.object({
+  tag: z.string(),
+  verified: z.boolean(),
+  verifiedAt: z.string().nullable(),
+});
+export type NodeSkill = z.infer<typeof NodeSkill>;
+
+/**
+ * A licence a node claims.
+ *
+ * `evidencePath` is deliberately **not** here. `node_credentials.verified` is
+ * write-once true and requires dated evidence, which requires a bucket that does
+ * not exist, so nothing in this slice verifies a licence and nothing uploads a
+ * document. The column stays unread rather than half-read.
+ */
+export const NodeCredential = z.object({
+  id: z.string().uuid(),
+  kind: CredentialKind,
+  jurisdiction: z.string(),
+  issuer: z.string().nullable(),
+  licenceNumber: z.string().nullable(),
+  verified: z.boolean(),
+  revokedAt: z.string().nullable(),
+});
+export type NodeCredential = z.infer<typeof NodeCredential>;
+
+/**
+ * Everything a node may see about themselves, **and nothing about anybody else**.
+ *
+ * Two absences carry the design. There is no verification log: the subject of a
+ * `node_verifications` row is refused it by grant rather than shown zero rows
+ * (`20260831123000:104-119`), because a face-search result names a third party
+ * the node may be a duplicate of. And there is no counterparty: `node_profiles`
+ * has no policy for anyone but the subject, and `private.shares_room_with`
+ * requires room scope on both sides, so an admitted node currently sees nobody
+ * at all. Both are stated in docs/30-modules/human-nodes-marketplace.md and
+ * opened by the engagement slice, not by this type.
+ *
+ * `trustScore` and `completedEngagements` are readable and server-written. They
+ * appear on no request body anywhere, which is the point: a node who could set
+ * their own trust score is a fraudster with a ranking dial.
+ */
+export const NodeProfile = z.object({
+  userId: z.string().uuid(),
+  kycStatus: KycStatus,
+  availability: NodeAvailability,
+  trustScore: z.number().nullable(),
+  completedEngagements: z.number().int(),
+  serviceJurisdictions: z.array(z.string()),
+  languages: z.array(z.string()),
+  rate: z.number().nullable(),
+  ratePeriod: z.enum(['hour', 'task']).nullable(),
+  currency: z.string(),
+  skills: z.array(NodeSkill),
+  credentials: z.array(NodeCredential),
+});
+export type NodeProfile = z.infer<typeof NodeProfile>;
+
+/**
+ * What a node may change about themselves.
+ *
+ * The allow-list **is** the control, and it is expressed as a closed object
+ * rather than as a filter in the handler for the reason the connection
+ * projection is a named type: a field added here reads as what it is, where a
+ * field forgotten in a handler's pick list reads as nothing at all.
+ * `kycStatus`, `trustScore`, `completedEngagements` and `suspendedReason` are
+ * absent on purpose and `.strict()` refuses a body carrying one rather than
+ * ignoring it, so an attempt is a 400 somebody can see rather than a silent
+ * no-op that looks like it worked.
+ *
+ * `rate` and `ratePeriod` move together because the table requires it
+ * (`node_profiles_rate_has_period` is `(rate is null) = (rate_period is null)`),
+ * and sending one without the other is a 400 rather than a 23514.
+ */
+export const PatchNodeBody = z
+  .object({
+    serviceJurisdictions: z.array(z.string().min(1)).min(1).optional(),
+    languages: z.array(z.string().min(1)).min(1).optional(),
+    rate: z.number().positive().nullable().optional(),
+    ratePeriod: z.enum(['hour', 'task']).nullable().optional(),
+    currency: z.string().length(3).optional(),
+    availability: NodeAvailability.optional(),
+  })
+  .strict();
+export type PatchNodeBody = z.infer<typeof PatchNodeBody>;
+
+/** One claim at a time, so each write is a single statement needing no transaction. */
+export const AddNodeSkillBody = z.object({ tag: z.string().min(1) });
+export type AddNodeSkillBody = z.infer<typeof AddNodeSkillBody>;
+
+export const AddNodeCredentialBody = z.object({
+  kind: CredentialKind,
+  jurisdiction: z.string().min(1),
+  issuer: z.string().min(1).optional(),
+  licenceNumber: z.string().min(1).optional(),
+});
+export type AddNodeCredentialBody = z.infer<typeof AddNodeCredentialBody>;
+
+/**
+ * Submitting an identity check.
+ *
+ * `sessionRef` is the provider's own reference for the flow the person just
+ * completed, the exact counterpart of an OAuth authorization code. The client
+ * does not choose an outcome and cannot: for the built-in fake the reference is
+ * minted on its own screen, and for a real provider it comes back from theirs.
+ */
+export const SubmitNodeVerificationBody = z.object({
+  provider: z.string().min(1),
+  sessionRef: z.string().min(1),
+});
+export type SubmitNodeVerificationBody = z.infer<typeof SubmitNodeVerificationBody>;
+
 const ProjectParams = z.object({ projectId: z.string().uuid() });
 
 export const contract = c.router(

@@ -311,7 +311,11 @@ select extensions.is(
     'update public.node_profiles set kyc_status = ''suspended'' where user_id = %L',
     pg_temp.npid('nodeB'))),
   '23514',
-  'a suspension with no recorded reason is refused: it could be neither defended nor lifted'
+  'a suspension is refused. NOTE, since 20260902120000 this passes for a second reason and '
+  'the first is now unreachable: no arc in the lifecycle map reaches suspended at all, '
+  'because suspension has no writer until an ops console exists, so the trigger raises '
+  'before node_profiles_suspended_has_reason is ever evaluated. Both raise 23514. The '
+  'constraint regains its own coverage in the slice that first suspends somebody'
 );
 
 select extensions.is(
@@ -444,7 +448,15 @@ select extensions.is(
 );
 
 -- One status change, then one unrelated edit. Only the first should be audited.
-update public.node_profiles set kyc_status = 'verified' where user_id = pg_temp.npid('nodeB');
+--
+-- The arc is `unverified -> pending` rather than `unverified -> verified`, and
+-- it was changed by `20260902120000`. That migration put the lifecycle map into
+-- this same trigger, and no arc goes straight from unverified to verified:
+-- submission has to precede a decision. The subject of this assertion is
+-- untouched, because it was never about which arc was taken. It is about the
+-- trigger's WHEN clause firing once for a status change and not at all for an
+-- unrelated edit, and it still is.
+update public.node_profiles set kyc_status = 'pending' where user_id = pg_temp.npid('nodeB');
 update public.node_profiles set languages = array['en', 'ka'] where user_id = pg_temp.npid('nodeB');
 
 select extensions.is(

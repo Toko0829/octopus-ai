@@ -143,6 +143,59 @@ make slice 4's restoration read as a dated decision rather than as drift —
 `20260815220000` silently dropped eight arcs with nothing asserting they had
 ever been there.
 
+### The marketplace gets its writers (`20260902120000` … `20260902122000`)
+
+Three functions, **no table change and no grant change at all**. That is the
+property worth stating first: the four tables landed with their guards a slice
+early precisely so that the writers would arrive to a schema rather than to a
+migration, and they did. `supabase/tests/marketplace_rls.sql` is still 46/46,
+including all ten of its privilege assertions.
+
+**`private.node_kyc_transition_allowed` + the map inside
+`private.guard_node_kyc_audit`** (`20260902120000`). `20260831120000:252-268`
+deferred the lifecycle map and named this function as its home, "beside the
+insert rather than instead of it, because the house rule is one trigger for both
+so that an audit entry cannot be forgotten by a caller and cannot describe a
+transition that did not happen." Five arcs land — `unverified → pending`,
+`pending → verified | rejected | unverified`, `rejected → pending` — and nothing
+else. Nothing reaches `suspended` and nothing leaves `verified`, because neither
+has a writer, and permitting an unmakeable transition is the `task_deps` defect.
+The helper is separate so a suite can assert one arc per assertion without
+arranging a fixture, matching `task_transition_allowed`,
+`campaign_transition_allowed` and `ad_entity_transition_allowed`.
+
+One consequence, recorded rather than left to be discovered:
+`node_profiles_suspended_has_reason` is now **unreachable**, so the assertion in
+`marketplace_rls.sql` that used to exercise it passes for a second reason. Both
+raise `23514`. The note is in the suite, beside the assertion.
+
+**`public.invite_node(uuid, text[], text[])`** (`20260902121000`), `security
+invoker`, granted to `service_role` alone. Creates the `node_profiles` row and
+promotes `profiles.role` to `human_node` in one transaction, because supabase-js
+has none and a half-applied invite is either a node the system does not
+recognise or a `human_node` with nothing behind it. It never demotes (`admin`
+and `ops` raise `insufficient_privilege`), is idempotent on a re-invite via `on
+conflict do nothing`, and writes a `node.invited` event because the invite
+changes no `kyc_status` and would otherwise leave no trail. The role trigger
+does not fire because `auth.uid()` is null under `service_role`, which is the
+bypass `20260831110000:59-67` was written with.
+
+**`public.decide_node_kyc(uuid, text, jsonb, text)`** (`20260902122000`), same
+grant posture. Its shape was decided by the table rather than the other way
+round: `node_verifications` has `update`, `delete` and `truncate` revoked from
+`service_role` too, so `insert ... on conflict do nothing` is the only idiom and
+the verdict is **derived from the rows in the table after the insert, never from
+the payload**. A replay inserts nothing, so deciding from the argument would
+work by accident where deciding from the table works by construction. This is
+`campaign_outcomes`' lesson (`20260829123000`) applied to identity. The status
+change is an ordinary `update`, so it passes through the map above and a node who
+never submitted cannot be verified.
+
+**Verified against the live database: `supabase/tests/node_onboarding.sql`,
+36/36**, inside a transaction that rolled back, plus `marketplace_rls.sql` still
+46/46. Advisors run afterwards: **no new lint**. The `rls_enabled_no_policy`
+INFO on `node_verifications` still stands and is still the design.
+
 ### A comment promised a guard and no migration ever wrote it (`20260831110000`)
 
 `20260724000000_init.sql:21`, in the file that creates `profiles`, says role
@@ -774,17 +827,17 @@ Four tables are live (`20260831120000` … `20260831123000`) and five are
 deferred. The table says which is which, because a list mixing live tables with
 intentions reads as though all of them are there.
 
-| Table                | Status                                  | Key columns / notes                                                                                                                                                                                       |
-| -------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node_profiles`      | ✅ live `20260831120000`, **no writer** | `user_id` **PK** (a node is a user), `kyc_status`, `availability`, `trust_score` (NULL = cold start, never 0), `service_jurisdictions text[]`, `rate` + `rate_period` (NULL = nothing quoted, never free) |
-| `node_skills`        | ✅ live `20260831121000`, **no writer** | `(node_id, skill_tag)` PK, `verified`. Tag is shape-checked text, not an enum                                                                                                                             |
-| `node_credentials`   | ✅ live `20260831122000`, **no writer** | Renamed from the spec's `credentials`. `kind`, `jurisdiction`, `verified` (write-once true), `evidence_path`, `revoked_at`                                                                                |
-| `node_verifications` | ✅ live `20260831123000`, **no writer** | The check log. **No policy and no client grant at all**; append-only including for `service_role`                                                                                                         |
-| `offers`             | ⏳ slice 4, with the matcher            | Its entire content is a lifecycle. A transition map for transitions nobody can make is the `ad_entities` mistake, corrected once already                                                                  |
-| `engagements`        | ⏳ slice 5, with accept-and-fund        | **No state column** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)): engagement state is `tasks.state`. Carries `agreed_price`, `deadline_at`, `terms_hash`, `outcome`              |
-| `proof_artifacts`    | ⏳ slice 6, with the proof loop         | `artifacts` already has `kind` and `storage_path`. A second answer to "where is the deliverable" is the `is_project_member` defect class; slice 6 decides table vs. columns                               |
-| `ratings`            | ⏳ slice 8                              | Written after `paid`. Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                                 |
-| `disputes`           | ⏳ slice 8, with the ops path           | A `disputed` task with no ops console is a state nobody can leave — the `escalated` defect reproduced deliberately                                                                                        |
+| Table                | Status                                                                     | Key columns / notes                                                                                                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node_profiles`      | ✅ live `20260831120000`, written by `invite_node` + `decide_node_kyc`     | `user_id` **PK** (a node is a user), `kyc_status`, `availability`, `trust_score` (NULL = cold start, never 0), `service_jurisdictions text[]`, `rate` + `rate_period` (NULL = nothing quoted, never free) |
+| `node_skills`        | ✅ live `20260831121000`, written by `/api/node/skills`                    | `(node_id, skill_tag)` PK, `verified`. Tag is shape-checked text, not an enum                                                                                                                             |
+| `node_credentials`   | ✅ live `20260831122000`, written by `/api/node/credentials` (claims only) | Renamed from the spec's `credentials`. `kind`, `jurisdiction`, `verified` (write-once true), `evidence_path`, `revoked_at`                                                                                |
+| `node_verifications` | ✅ live `20260831123000`, written by `decide_node_kyc`                     | The check log. **No policy and no client grant at all**; append-only including for `service_role`                                                                                                         |
+| `offers`             | ⏳ slice 4, with the matcher                                               | Its entire content is a lifecycle. A transition map for transitions nobody can make is the `ad_entities` mistake, corrected once already                                                                  |
+| `engagements`        | ⏳ slice 5, with accept-and-fund                                           | **No state column** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)): engagement state is `tasks.state`. Carries `agreed_price`, `deadline_at`, `terms_hash`, `outcome`              |
+| `proof_artifacts`    | ⏳ slice 6, with the proof loop                                            | `artifacts` already has `kind` and `storage_path`. A second answer to "where is the deliverable" is the `is_project_member` defect class; slice 6 decides table vs. columns                               |
+| `ratings`            | ⏳ slice 8                                                                 | Written after `paid`. Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                                 |
+| `disputes`           | ⏳ slice 8, with the ops path                                              | A `disputed` task with no ops console is a state nobody can leave — the `escalated` defect reproduced deliberately                                                                                        |
 
 **`credentials` is named `node_credentials` here, diverging from the module doc
 on purpose.** A table called `public.credentials` three tables from

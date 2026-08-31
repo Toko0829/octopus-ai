@@ -11,6 +11,7 @@ import { agentRunRoutes } from './routes/agent-runs';
 import { embedRoutes } from './routes/embeds';
 import { sourceRoutes } from './routes/sources';
 import { connectionRoutes } from './routes/connections';
+import { nodeRoutes } from './routes/nodes';
 import { createAuthVerifier } from './plugins/auth';
 import { stateConfigFrom } from './lib/oauth-state';
 import { startTicker } from './lib/ticker';
@@ -105,6 +106,13 @@ export async function buildServer(): Promise<FastifyInstance> {
     webUrl: env.WEB_URL,
     state: stateConfigFrom(env),
   });
+
+  // A node's own record. Takes no web URL and no state config, because nothing
+  // here redirects anywhere: the identity provider's flow is a page in our own
+  // app for as long as the only registered verifier is the in-repo fake.
+  // Creating a node is deliberately absent from this route group and from every
+  // other one, since onboarding is ops-invited through `invite_node`.
+  await app.register(nodeRoutes, { verify, supabase });
 
   // The durable backbone (ADR-0010). Started here rather than as a separate
   // process because there is nothing to separate yet: a run's state is rows, so

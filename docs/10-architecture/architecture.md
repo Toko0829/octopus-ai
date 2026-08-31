@@ -504,6 +504,44 @@ projection that started returning one would fail to typecheck before it reached 
 browser. `packages/marketing` gained `ChannelAuthProvider`, its fake, a registry
 whose `carriesRealCredentials` flag the writer refuses on, and `checkScopes`.
 
+## A node reading and editing their own record
+
+`GET | PATCH /api/node`, `POST | DELETE /api/node/skills[/:tag]`,
+`POST /api/node/credentials`, `POST /api/node/credentials/:id/revoke` and
+`POST /api/node/verification`. Every path is **`/node`, singular, with no id
+segment**, which removes a class of bug before it can be written: there is no
+`:userId` to forget to compare against `request.user.sub`, so no request can name
+somebody else's record. When the matcher lands and an owner has to read a node,
+that is a different route with a different authorisation question and it should
+look different.
+
+**This group inverts the connections group on the read side and matches it on the
+write side.** Reads run as the caller, because the three readable tables carry
+`select`-own policies keyed on `auth.uid()`, so RLS row visibility **is** the
+authorization and a person who was never invited simply sees no row. They are
+told **404, never 403**: whether somebody is a node is not a fact a stranger gets
+to confirm. Writes run as the service role, because none of the four tables has an
+INSERT or UPDATE grant to `authenticated` and the suite pins that deliberately, so
+every handler reads as the caller first and passes the id it proved into a writer
+that constrains on it.
+
+**`node_verifications` is not read anywhere in `lib/nodes.ts`**, and that absence
+is the security property rather than an omission: the table refuses
+`permission denied` to the subject of its own record, and projecting it through a
+service client would hand back exactly what the grant was withheld to prevent.
+Two other projections are controls rather than conveniences and are asserted in
+both directions against their row schemas: `CREDENTIAL_COLUMNS` omits
+`evidence_path` and `NODE_COLUMNS` omits `suspended_reason`.
+
+**Nothing in this group creates a node.** `public.invite_node` is granted to
+`service_role` alone and its only caller is `scripts/invite-node.mjs`, because
+onboarding is ops-invited for as long as there is no matcher to offer anybody
+work. `PatchNodeBody` is `.strict()`, so a body carrying `kycStatus` or
+`trustScore` is a 400 rather than a field quietly dropped: a silent drop returns
+200 and lets somebody believe a control applied. `packages/marketplace` holds the
+skill taxonomy and the verification registry, whose `carriesRealPii` flag the
+writer refuses on, exactly as `carriesRealCredentials` works one section above.
+
 ## Changing a plan that is already running
 
 `POST /api/projects/:projectId/replan` takes the owner's reason and returns `202`.

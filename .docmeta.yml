@@ -62,6 +62,13 @@ mappings:
     also_touch:
       ['docs/10-architecture/learning-flywheel.md', 'docs/60-playbooks/full-funnel-creator.md']
 
+  # The marketplace's pure domain logic: the skill taxonomy, the verification
+  # seam and its registry, and eligibility. `apps/matcher/**` above maps to the
+  # same doc and still does not exist on disk; it lands with slice 4.
+  - path: 'packages/marketplace/**'
+    owner: 'docs/30-modules/human-nodes-marketplace.md'
+    also_touch: ['docs/10-architecture/security-compliance.md']
+
   - path: 'packages/agent-tools/**'
     owner: 'docs/30-modules/ai-orchestrator.md'
 

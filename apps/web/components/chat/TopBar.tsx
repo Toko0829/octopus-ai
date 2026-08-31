@@ -11,6 +11,12 @@ interface Props {
    * is that it asks for something.
    */
   waitingOnYou: number;
+  /**
+   * Whether the viewer is also an invited expert. Shows one link and nothing
+   * else: their profile is a separate surface because a node is admitted to a
+   * task thread rather than to this room.
+   */
+  isNode: boolean;
 }
 
 /**
@@ -18,7 +24,7 @@ interface Props {
  * omitted until projects carry a budget ceiling, because a number on a trust
  * surface has to be real.
  */
-export function TopBar({ channel, memberCount, onOpenWork, waitingOnYou }: Props) {
+export function TopBar({ channel, memberCount, onOpenWork, waitingOnYou, isNode }: Props) {
   return (
     <header className="topbar">
       <div className="topbar-chan">
@@ -41,6 +47,11 @@ export function TopBar({ channel, memberCount, onOpenWork, waitingOnYou }: Props
           </span>
         )}
       </button>
+      {isNode && (
+        <a className="topbar-work" href="/node">
+          Your node profile
+        </a>
+      )}
       <ThemeToggle />
     </header>
   );
