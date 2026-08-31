@@ -155,13 +155,16 @@ Next reloads `.env.local` on change; the Fastify service needs a restart.
 
 ## Workspaces
 
-| Path                 | Package              | What                                                      |
-| -------------------- | -------------------- | --------------------------------------------------------- |
-| `apps/web`           | `@octopus/web`       | Next.js 15 frontend + thin BFF; chat shell at `/app`      |
-| `apps/api`           | `@octopus/api`       | Fastify 5 API: chat write path, rooms, agent runs         |
-| `packages/config`    | `@octopus/config`    | Zod-validated env + shared constants                      |
-| `packages/contracts` | `@octopus/contracts` | ts-rest + Zod API contract (shared client/server)         |
-| `services/ai`        | `octopus-ai` (uv)    | **Python.** RAG + reasoning core. Outside the pnpm graph. |
+| Path                   | Package                | What                                                      |
+| ---------------------- | ---------------------- | --------------------------------------------------------- |
+| `apps/web`             | `@octopus/web`         | Next.js 15 frontend + thin BFF; chat shell at `/app`      |
+| `apps/api`             | `@octopus/api`         | Fastify 5 API: chat write path, rooms, agent runs         |
+| `packages/config`      | `@octopus/config`      | Zod-validated env + shared constants                      |
+| `packages/contracts`   | `@octopus/contracts`   | ts-rest + Zod API contract (shared client/server)         |
+| `packages/core`        | `@octopus/core`        | Workflow reasoning: router, scheduler, critic, recovery   |
+| `packages/marketing`   | `@octopus/marketing`   | Spend caps, ad-platform and OAuth seams, their registries |
+| `packages/marketplace` | `@octopus/marketplace` | Skill taxonomy, identity-verification seam, eligibility   |
+| `services/ai`          | `octopus-ai` (uv)      | **Python.** RAG + reasoning core. Outside the pnpm graph. |
 
 Future apps/packages are created when their roadmap phase arrives — see [infra-devops.md](docs/30-modules/infra-devops.md) for the full intended layout.
 
@@ -174,6 +177,40 @@ Future apps/packages are created when their roadmap phase arrives — see [infra
 `supabase/` holds `config.toml`, `seed.sql`, and the migrations in `supabase/migrations/` (identity, chat, grants, RAG schema, hybrid search). Bring up a local stack with the Supabase CLI (`supabase start`).
 
 Migration versions must match their filenames. If you apply one through a tool that stamps its own timestamp, correct the `version` in `supabase_migrations.schema_migrations` afterwards, or `supabase db push` will try to replay it.
+
+## Inviting a node (ops)
+
+There is no sign-up form for an expert, and there is not going to be one until
+the matcher exists. `public.invite_node` is granted to `service_role` alone and
+the only thing that calls it is this script, so **the invite is the row**: a
+`node_profiles` record cannot exist unless somebody holding the secret key made
+it. That is the cold-start decision in
+[human-nodes-marketplace.md](docs/30-modules/human-nodes-marketplace.md) —
+an empty marketplace with three invited notaries is a decision, and one with a
+public sign-up form is a dead end, because nothing can offer anybody any work
+yet.
+
+The person must have signed up first. An invitation attaches to an account and
+never creates one.
+
+```bash
+SUPABASE_URL=... SUPABASE_SECRET_KEY=... node scripts/invite-node.mjs --email them@example.com --jurisdictions US-TX,US --languages en --confirm
+```
+
+It prints what it is about to do and refuses to act without `--confirm`, because
+it promotes a role and creates a paid-work identity. It refuses an `admin` or
+`ops` account outright (an invite never demotes) and is safe to re-run: a second
+invite for the same person resets nothing.
+
+They then go to `/node` to state where they work, claim skills and licences, and
+pass an identity check. **The only registered verifier is the in-repo fake**, at
+`/node/verify`, which checks nothing and says so on the screen; the outcome is
+picked there so that every arc of the KYC lifecycle has a writer. Persona and
+Stripe Identity are both paid and neither is wired, and `carriesRealPii` refuses
+the first real one at the writer rather than in a document.
+
+**This is not an ops console.** The admin surfaces are Phase 3
+([admin-ops.md](docs/30-modules/admin-ops.md)).
 
 ## Seeding the knowledge base
 

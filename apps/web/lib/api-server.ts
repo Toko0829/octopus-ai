@@ -1,5 +1,11 @@
 import 'server-only';
-import type { Channel, ListMessagesResponse, Room, RoomMember } from '@octopus/contracts';
+import type {
+  Channel,
+  ListMessagesResponse,
+  NodeProfile,
+  Room,
+  RoomMember,
+} from '@octopus/contracts';
 import { getAccessToken } from './supabase/server';
 
 /**
@@ -47,4 +53,17 @@ export function fetchMembers(roomId: string) {
 
 export function fetchMessages(roomId: string) {
   return get<ListMessagesResponse>(`/rooms/${roomId}/messages?limit=100`);
+}
+
+/**
+ * The caller's own marketplace record, or null when they have none.
+ *
+ * Null is the ordinary answer, not a failure: almost everybody signing in is a
+ * workspace owner rather than a node, and the API answers 404 to a caller with
+ * no `node_profiles` row because whether somebody is a node is not a fact
+ * strangers get to confirm. `get` already folds a 404 into null without logging
+ * it as an incident, which is exactly the behaviour wanted here.
+ */
+export function fetchNode() {
+  return get<{ node: NodeProfile }>('/node');
 }

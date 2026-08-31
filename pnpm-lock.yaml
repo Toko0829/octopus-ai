@@ -44,6 +44,9 @@ importers:
       '@octopus/marketing':
         specifier: workspace:*
         version: link:../../packages/marketing
+      '@octopus/marketplace':
+        specifier: workspace:*
+        version: link:../../packages/marketplace
       '@supabase/supabase-js':
         specifier: ^2.111.0
         version: 2.111.0
@@ -81,6 +84,9 @@ importers:
       '@octopus/marketing':
         specifier: workspace:*
         version: link:../../packages/marketing
+      '@octopus/marketplace':
+        specifier: workspace:*
+        version: link:../../packages/marketplace
       '@supabase/ssr':
         specifier: ^0.12.4
         version: 0.12.4(@supabase/supabase-js@2.111.0)
@@ -154,6 +160,22 @@ importers:
       '@octopus/contracts':
         specifier: workspace:*
         version: link:../contracts
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.7(@types/node@22.20.1)(tsx@4.23.1)(yaml@2.9.0)
+
+  packages/marketplace:
+    dependencies:
       zod:
         specifier: ^3.24.0
         version: 3.25.76

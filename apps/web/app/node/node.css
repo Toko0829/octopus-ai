@@ -1,0 +1,234 @@
+/* The node's own surface: a single scrolling column of cards, standalone rather
+   than inside the workspace shell.
+
+   Light Editorial on the sign-in and consent precedent. This is somebody's own
+   record of who they are and what they charge, which is a trust surface in the
+   same sense a consent screen is, and it gets the same quiet treatment.
+   See docs/20-design/design-system.md.
+
+   **The page paints its own ground, all of it.** `body` resolves from `:root`
+   and sits outside this subtree, so a centred narrow block would leave the
+   OS-dark body showing down both sides. That is the defect the landing slice
+   recorded and the reason the grid carries `--bg` while the column carries only
+   the content. */
+.node {
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  display: grid;
+  grid-template-columns: minmax(0, 620px);
+  justify-content: center;
+  align-content: start;
+  gap: 14px;
+  padding: 8vh 24px 20vh;
+}
+
+.node-eyebrow {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.node-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: 1.2;
+  color: var(--text);
+}
+
+.node-body {
+  margin: 0;
+  font-size: var(--text-base);
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.node-card {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.node-h2 {
+  margin: 0;
+  font-size: var(--text-base);
+  color: var(--text);
+}
+
+.node-h3 {
+  margin: 8px 0 0;
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+.node-note {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.node-muted {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Words and a border, never colour alone (rule 15). */
+.node-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--r-md);
+  background: var(--warn-quiet);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+/* ---- Status ----
+
+   The dot is decoration and the word is the content, which is why the dot
+   carries `aria-hidden` in the markup and why every state below has a distinct
+   word beside it. Somebody who cannot tell the tints apart reads exactly the
+   same page. */
+.node-status {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.node-status li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+}
+
+.node-status-label {
+  min-width: 88px;
+  color: var(--text-muted);
+}
+
+.node-status-value {
+  color: var(--text);
+}
+
+.node-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex: none;
+}
+
+.node-dot-verified,
+.node-dot-available {
+  background: var(--green-500);
+}
+
+.node-dot-pending {
+  background: var(--amber-500);
+}
+
+.node-dot-rejected,
+.node-dot-suspended {
+  background: var(--red-500);
+}
+
+/* ---- Rows and inputs ---- */
+
+.node-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.node-row .auth-input {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 8ch;
+}
+
+.node-currency {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.node-cta {
+  justify-self: start;
+  align-self: start;
+}
+
+/* ---- Tags and lists ---- */
+
+.node-tags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.node-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+  color: var(--text);
+}
+
+.node-tag-x {
+  border: 0;
+  background: none;
+  padding: 0;
+  line-height: 1;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.node-tag-x:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.node-tag-x:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.node-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.node-list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: var(--text-sm);
+}

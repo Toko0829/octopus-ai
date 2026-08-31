@@ -36,6 +36,15 @@ import { ProjectPanel } from './ProjectPanel';
 interface Props {
   viewerId: string;
   viewerEmail: string | null;
+  /**
+   * Whether the viewer also has a marketplace record.
+   *
+   * Presentation only, and it decides one link. A node who owns a workspace
+   * would otherwise have no way to reach `/node` from inside the app, which is
+   * the "structurally correct home that nobody opens" failure this repository
+   * recorded when connected accounts lived behind a modal.
+   */
+  isNode?: boolean;
   rooms: Room[];
   initialRoomId: string;
   initialChannels: Channel[];
@@ -46,6 +55,7 @@ interface Props {
 export function ChatApp({
   viewerId,
   viewerEmail,
+  isNode = false,
   rooms,
   initialRoomId,
   initialChannels,
@@ -372,6 +382,7 @@ export function ChatApp({
           memberCount={uiMembers.length}
           onOpenWork={() => setWorkOpen(true)}
           waitingOnYou={waitingOnYou}
+          isNode={isNode}
         />
         {banner && (
           <div className="banner" role="status">

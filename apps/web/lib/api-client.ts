@@ -4,6 +4,9 @@ import type {
   ArtifactFileUrl,
   Channel,
   ChannelConnection,
+  NodeCredential,
+  NodeProfile,
+  NodeSkill,
   EmbedActionResponse,
   ListMessagesResponse,
   MarketingChannel,
@@ -209,6 +212,95 @@ export function resumeCampaign(projectId: string, campaignId: string) {
   return bff<ProjectDetail>(`/projects/${projectId}/campaigns/${campaignId}/resume`, {
     method: 'POST',
     body: JSON.stringify({}),
+  });
+}
+
+/* ---------------------------------------------------- the node's own record */
+
+/**
+ * A node's whole record, and only ever their own.
+ *
+ * Every path here is `/node`, singular, with no id in it. There is nothing to
+ * pass and therefore nothing to tamper with: the API reads the caller's own row
+ * under RLS and a person who was never invited gets a 404 rather than a 403.
+ *
+ * `NodeProfile` carries no verification log, and cannot: the subject of a
+ * `node_verifications` row is refused it by grant, because a face-search result
+ * names a third party. A projection that started returning one would fail to
+ * typecheck here rather than quietly reaching a browser.
+ */
+export function getNode() {
+  return bff<{ node: NodeProfile }>('/node');
+}
+
+/**
+ * Change what a node owns about themselves.
+ *
+ * The body is validated `.strict()` on the far side, so sending `kycStatus` or
+ * `trustScore` is a 400 rather than a field silently dropped. That is deliberate:
+ * a trimmed field returns 200 and lets somebody believe a control applied.
+ */
+export function patchNode(patch: {
+  serviceJurisdictions?: string[];
+  languages?: string[];
+  rate?: number | null;
+  ratePeriod?: 'hour' | 'task' | null;
+  currency?: string;
+  availability?: 'available' | 'paused' | 'offboarded';
+}) {
+  return bff<{ node: NodeProfile }>('/node', {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export function addNodeSkill(tag: string) {
+  return bff<{ skill: NodeSkill }>('/node/skills', {
+    method: 'POST',
+    body: JSON.stringify({ tag }),
+  });
+}
+
+export async function removeNodeSkill(tag: string) {
+  // 204, so there is no body to parse and `bff` would throw on the empty one.
+  const res = await fetch(`/api/bff/node/skills/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.message ?? `Request failed (${res.status})`);
+  }
+}
+
+export function addNodeCredential(input: {
+  kind: 'lawyer' | 'accountant' | 'notary';
+  jurisdiction: string;
+  issuer?: string;
+  licenceNumber?: string;
+}) {
+  return bff<{ credential: NodeCredential }>('/node/credentials', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function revokeNodeCredential(credentialId: string) {
+  return bff<{ credential: NodeCredential }>(`/node/credentials/${credentialId}/revoke`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+/**
+ * Submit an identity check.
+ *
+ * `sessionRef` is the provider's own reference for the flow the person just
+ * completed, the counterpart of an OAuth authorization code. The client never
+ * chooses an outcome: for the built-in test verifier the reference is minted on
+ * its own screen, and for a real provider it comes back from theirs.
+ */
+export function submitNodeVerification(provider: string, sessionRef: string) {
+  return bff<{ node: NodeProfile }>('/node/verification', {
+    method: 'POST',
+    body: JSON.stringify({ provider, sessionRef }),
   });
 }
 
