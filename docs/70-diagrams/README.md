@@ -11,7 +11,7 @@ sequenceDiagram
     participant API as apps/api (Fastify)
     participant PG as Postgres (RLS)
     participant RT as Realtime
-    participant Agent as apps/agent (Trigger.dev)
+    participant Agent as executor (apps/api ticker)
     participant Matcher as apps/matcher
     actor Node as Human Node
 
@@ -41,7 +41,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    subgraph Backbone["Durable execution backbone (Trigger.dev)"]
+    subgraph Backbone["Durable execution backbone (Postgres, ADR-0010)"]
       W[Waitpoints] --- R[Retries/Idempotency] --- U[Run UI]
     end
     subgraph Core["Supervisor / orchestrator reasoning core"]

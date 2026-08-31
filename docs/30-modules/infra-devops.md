@@ -17,7 +17,7 @@ apps/
   web       Next.js frontend + thin BFF (Discord-style chat UI)
   api       Fastify authoritative REST API, JWT verify, chat write path, webhooks
   matcher   Fastify marketplace/node-matching + waitpoint completion
-  agent     agent runtime (AI SDK loop) executed as Trigger.dev v3 tasks
+  agent     agent runtime (AI SDK loop); not built, the executor runs in api (ADR-0010)
 packages/
   db            Supabase migrations, RLS policies, generated TS types, query layer, pg-boss setup
   contracts     Zod schemas + ts-rest/OpenAPI contract shared by api and web
@@ -35,7 +35,7 @@ supabase/       migrations, RLS policies, seed, edge functions
 
 - `apps/web` → **Vercel**.
 - `apps/api`, `apps/matcher`, agent workers → **Fly.io** (containers).
-- Trigger.dev → Cloud first, self-host on Fly.io later.
+- Durable runs → our own Postgres, in `apps/api` ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). Trigger.dev Cloud stays a documented escape hatch and is not provisioned.
 - Supabase → managed cloud.
 - **Region co-location** near the launch cohort to minimize Postgres/Realtime latency.
 

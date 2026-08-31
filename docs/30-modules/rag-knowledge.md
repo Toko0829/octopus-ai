@@ -204,7 +204,7 @@ Vectors live in the same Postgres as everything else — relational, RLS-permiss
 
 ## Ingestion pipeline
 
-`registry → crawl → change-detect → parse → normalize → chunk → contextualize → embed → index → structured-load → validate → observe`. Heavy work runs as background jobs (pg-boss / Trigger.dev), never in the request path. Details + the 12 steps in [rag.md](../10-architecture/rag.md).
+`registry → crawl → change-detect → parse → normalize → chunk → contextualize → embed → index → structured-load → validate → observe`. Heavy work runs as background jobs (the `apps/api` ticker today, pg-boss when a job is genuinely a job), never in the request path. Details + the 12 steps in [rag.md](../10-architecture/rag.md).
 
 ## Retrieval
 

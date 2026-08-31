@@ -44,7 +44,8 @@
 
 ## Durable orchestration + jobs
 
-- **Trigger.dev v3** for agent runs (long compute, `wait.forToken()` human waitpoints, retries, idempotency, run UI). See [ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md).
+- **Postgres** for agent runs: the `tasks` state machine is the run's progress, a `lease_until` on `task_runs` distinguishes a dead worker from a slow one, a reclaim sweep recovers what a crash dropped, and a ticker holding one advisory claim schedules the whole thing. A human waitpoint needs no primitive: a task at `escalated` or `needs_user` waits in a row at zero compute. See [ADR-0010](../40-adr/0010-postgres-durable-runner.md), amending [ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md).
+- **Trigger.dev v3**, then **Temporal**, remain the documented escape hatches if a single locked ticker is ever outgrown.
 - **pg-boss** for utility jobs on the existing Postgres.
 
 ## RAG stack
@@ -81,7 +82,7 @@ The AI/RAG layer is a separate **Python** service; the rest of the backend is No
 | DB access                 | psycopg / SQLAlchemy over the same Supabase Postgres (`service_role`, server-side only)   |
 | Deploy                    | Fly.io container, co-located with Postgres                                                |
 
-Seam: OpenAPI-typed HTTP + shared Postgres + job queue for ingestion. Node owns durability (Trigger.dev) and all side-effecting tools. See [architecture.md](architecture.md) and [ai-orchestrator.md](../30-modules/ai-orchestrator.md).
+Seam: OpenAPI-typed HTTP + shared Postgres + job queue for ingestion. Node owns durability (the Postgres lease and ticker, [ADR-0010](../40-adr/0010-postgres-durable-runner.md)) and all side-effecting tools. See [architecture.md](architecture.md) and [ai-orchestrator.md](../30-modules/ai-orchestrator.md).
 
 ## Rejected alternatives (with rationale)
 
@@ -91,9 +92,10 @@ Seam: OpenAPI-typed HTTP + shared Postgres + job queue for ingestion. Node owns 
 | **Postgres Changes**                      | Broadcast-from-Postgres               | WAL-per-subscriber fans out poorly and can leak columns. ([ADR-0003](../40-adr/0003-realtime-broadcast-not-postgres-changes.md))                               |
 | **Dedicated vector DB** (Pinecone/Qdrant) | pgvector in Postgres                  | Loses transactional consistency + RLS-for-free; only earns its keep past tens of millions of chunks. ([ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md)) |
 | **BullMQ / Redis at MVP**                 | pg-boss                               | Avoids standing up Redis; reach for BullMQ only once Redis exists for other reasons.                                                                           |
-| **Temporal at MVP**                       | Trigger.dev v3                        | Gold-standard durability at real operational cost; documented escape hatch. ([ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md))          |
+| **Temporal at MVP**                       | Postgres lease + ticker               | Gold-standard durability at real operational cost; still the documented escape hatch. ([ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md), [ADR-0010](../40-adr/0010-postgres-durable-runner.md)) |
 | **Default shadcn + Inter + zinc**         | custom "Ink & Bioluminescence" tokens | Reads as generic AI slop; we diverge deliberately. ([ADR-0005](../40-adr/0005-house-style-not-purple-gradient.md))                                             |
-| **Vercel Workflows**                      | Trigger.dev                           | Ties orchestration to Vercel, away from the Fastify/Supabase core.                                                                                             |
+| **Vercel Workflows**                      | Postgres lease + ticker               | Ties orchestration to Vercel, away from the Fastify/Supabase core.                                                                                             |
+| **Managed orchestrator at all**           | Postgres lease + ticker               | ADR-0006 left no continuation to preserve and `20260813120000` put the state machine in the database, so the engine would buy a solution to a problem the design had already avoided. ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)) |
 
 ## Dependency & upgrade policy
 

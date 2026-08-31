@@ -137,7 +137,7 @@ Every tool is a Zod-typed function with a **risk tier**. Tools have **no ambient
 | `write_artifact`                 | reversible | to Supabase Storage                                                     |
 | `post_message`                   | reversible | writes to chat as the AI member                                         |
 | `fund_escrow` / `release_escrow` | high-risk  | spend caps + RBAC enforced **in tool code**; user approval required     |
-| `request_human_node`             | high-risk  | creates task, hands matcher requirements, **suspends run on waitpoint** |
+| `request_human_node`             | high-risk  | **not built.** The router parks the step at `escalated` and the owner sends it to the marketplace; the row is the waitpoint ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)) |
 
 > **First-vertical tools:** the marketing growth engine adds typed, guardrailed tools — `generate_creative`, `draft_copy`, `connect_channel`, `create_campaign`/`create_ad_set`/`create_ad`, `publish_content`, `set_budget`, `pull_metrics`, `optimize_campaign` — all `high-risk` where they publish or spend (spend caps enforced in tool code). See [marketing-growth-engine.md](marketing-growth-engine.md).
 
@@ -349,8 +349,9 @@ Non-negotiables (full list in [security-compliance.md](../10-architecture/securi
 
 ## Human-in-the-loop waitpoints
 
-- `request_human_node` creates a task row, hands the matcher the requirements, and the agent **suspends on a Trigger.dev waitpoint token**.
-- On verified completion the matcher/Fastify **completes the token** and the run **resumes deterministically** at the suspended step.
+- **The waitpoint is a row, not a token** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). A task parked at `escalated` or `needs_user` waits at zero compute for as long as it takes; there is no continuation to suspend, because ADR-0006 left none.
+- The router puts it there. `packages/core/src/router.ts` sends every human-owned step to `escalated`, and the owner sends it to the marketplace from the project panel. **`request_human_node` is not built**: it was specified in Phase 0 as the tool that suspends a run on a vendor waitpoint, and both halves of that sentence stopped being true. Its remaining job, handing the matcher a set of requirements, is done by the stage-to-skill map in `packages/marketplace`.
+- On verified completion the next tick picks the task up in its new state and the run continues. Resumption is a read, so it is deterministic by construction rather than by replay.
 
 ## AI-as-chat-member
 
@@ -364,11 +365,11 @@ Surface to the user **only**: irreversible/high-risk approvals, subjective/brand
 
 ## Key entities
 
-`task_runs` · `agent_steps` (event-sourced) · `tool_invocations` (idempotency keys, audit, risk tier) · `escalations` · `artifacts` · waitpoint tokens. Full schema in [data-model.md](../10-architecture/data-model.md).
+`task_runs` · `agent_steps` (event-sourced) · `tool_invocations` (idempotency keys, audit, risk tier) · `escalations` · `artifacts`. **No waitpoint tokens**: the waiting task row is the waitpoint ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). Full schema in [data-model.md](../10-architecture/data-model.md).
 
 ## Observability
 
-Per-run tracing (`projectId` + `agentRunId`), LLM traces (prompt/response/token/cost) to the LLM-trace sink, Trigger.dev run UI for step-level replay, kill switch/pause. See [observability.md](../10-architecture/observability.md).
+Per-run tracing (`projectId` + `agentRunId`), LLM traces (prompt/response/token/cost) to the LLM-trace sink, kill switch/pause. **There is no step-level replay UI**, which [ADR-0010](../40-adr/0010-postgres-durable-runner.md) named as the real cost of owning the runner; what replaces it is the append-only `events` log, which records every transition with the rule that fired, plus the Phase 3 audit-trail explorer in [admin-ops.md](admin-ops.md). See [observability.md](../10-architecture/observability.md).
 
 **Flywheel capture:** every plan diff, tool result, user approve/reject/edit, and human-node correction is event-sourced and projected into the [learning flywheel](../10-architecture/learning-flywheel.md) as labeled data — the AI should need fewer corrections over time.
 

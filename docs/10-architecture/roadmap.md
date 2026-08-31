@@ -6,7 +6,7 @@
 
 - **Wedge first, then expand.** Nail full-funnel marketing for creators before adding verticals. Depth over breadth.
 - **The flywheel is the product.** Every phase must increase outcome-labeled data and reduce the human-correction rate. See [learning-flywheel.md](learning-flywheel.md).
-- **Start managed, self-host deliberately.** Managed Supabase + Trigger.dev first.
+- **Start managed, self-host deliberately.** Managed Supabase first. Durable orchestration went the other way and stayed on our own Postgres ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)), because the managed option was blocked on credentials for the length of the project while two unrelated decisions removed the problem it solved.
 - **Compliance is first-class** — ad-policy/brand-safety and spend guardrails exist from the first launch; money-services licensing clears before payouts.
 - **Docs land with the code** in every phase (this doc set is Phase 0's deliverable).
 
@@ -115,7 +115,7 @@
 | ------------------------------------ | ---------------------------------------------------- |
 | Fine-tuned proprietary model         | enough Phase-3 outcome/correction data               |
 | Fastify WS gateway + Redis           | past ~500 concurrent / server-authoritative ordering |
-| Self-hosted / Temporal orchestration | Trigger.dev cost/limits outgrown                     |
+| Trigger.dev / Temporal orchestration | a single locked ticker outgrown ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)) |
 | Dedicated vector DB / pgvectorscale  | tens of millions of chunks or high QPS               |
 | Business-formation verticals         | marketing wedge is working + flywheel spinning       |
 

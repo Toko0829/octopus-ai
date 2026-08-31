@@ -29,7 +29,7 @@
 ## Agent / orchestration
 
 - **Orchestrator / supervisor** — the reasoning core that plans the task DAG and is the **single writer** to it. Ephemeral read-only sub-agents are used as tools.
-- **Durable execution backbone** — the layer (Trigger.dev v3) that makes runs survive crashes/deploys and sleep for days on waitpoints.
+- **Durable execution backbone** — the layer that makes runs survive crashes/deploys and sleep for days on waitpoints. It is our own Postgres: a lease on `task_runs`, a reclaim sweep and a single-claim ticker ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). A waitpoint is a task row.
 - **Waitpoint** — a durable suspension point (`wait.forToken()`) where the agent run pauses (at zero compute) awaiting a human node's verified completion, then resumes deterministically.
 - **Task DAG** — the directed acyclic graph of typed tasks for a project, with hard/soft/resource dependencies.
 - **Replan-by-diff** — reconciling the DAG after each task by applying add/cancel/modify **diffs**, never regenerating from scratch (preserves completed work + audit history).

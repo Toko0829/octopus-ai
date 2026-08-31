@@ -57,7 +57,7 @@ Reassess (Qdrant / pgvectorscale StreamingDiskANN) only past tens of millions of
 11. **Validate** — schema + citation-coverage + eval spot-checks.
 12. **Observe** — emit ingestion metrics/traces (parse-failure spikes, drift).
 
-Heavy ingestion runs as background jobs (pg-boss / Trigger.dev), **never in the request path**.
+Heavy ingestion runs as background jobs (the `apps/api` ticker today, pg-boss when a job is genuinely a job), **never in the request path**.
 
 ## Retrieval (hybrid + rerank)
 

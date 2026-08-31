@@ -350,7 +350,7 @@ until the first acceptance criteria naming more than one node.
 
 ## Waitpoint completion
 
-On approval, the marketplace/Fastify **completes the agent's Trigger.dev waitpoint token**, and the durable run **resumes deterministically** at the suspended step ([ai-orchestrator.md](ai-orchestrator.md)).
+**There is no token to complete** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). A human task waits by sitting in a `task_state` the scheduler does not select, at zero compute, for as long as it takes. On approval the marketplace moves that row, and the next tick picks it up in its new state. Resumption is a read rather than a replay, so it is deterministic by construction ([ai-orchestrator.md](ai-orchestrator.md)).
 
 ## Anti-fraud
 

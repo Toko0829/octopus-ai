@@ -9,7 +9,7 @@ Every service and every agent step is instrumented. A failure that isn't traced,
 ## Trace correlation model
 
 - Two IDs thread through everything: **`projectId`** (the venture) and **`agentRunId`** (the durable run).
-- They propagate across `apps/web` → `apps/api` → `apps/matcher` → `apps/agent`, into each Trigger.dev run, each LLM call, and each Sentry event.
+- They propagate across `apps/web` → `apps/api` → `apps/matcher` → `apps/agent`, into each durable run, each LLM call, and each Sentry event.
 - Any log line, span, LLM trace, or error can be pivoted back to the exact project + run + step.
 
 ## OpenTelemetry
@@ -21,7 +21,7 @@ Every service and every agent step is instrumented. A failure that isn't traced,
 ## Error tracking
 
 - **Sentry** across all runtimes with source maps; release tagging; alerting on new/regressed issues.
-- Durable-run failures surface both in Sentry and the **Trigger.dev run UI** (step-level replay).
+- Durable-run failures surface in Sentry and in the append-only **`events` log**, which records every transition with the rule that fired. **There is no step-level replay UI**: [ADR-0010](../40-adr/0010-postgres-durable-runner.md) declined one knowingly and named the audit-trail explorer in [admin-ops.md](../30-modules/admin-ops.md) as its Phase 3 replacement.
 
 ## LLM observability
 

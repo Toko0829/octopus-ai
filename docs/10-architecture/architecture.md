@@ -29,11 +29,11 @@
    │ waitpoint close │ └──────────────┘ │ documents+doc_chunks (pgvector)    │
    └───────┬─────────┘                  │ RLS · triggers → realtime.broadcast│
            │                            └───────────────▲───────────────────┘
-           │ complete waitpoint                          │ INSERT rows (AI as member)
+           │ task row changes state                      │ INSERT rows (AI as member)
            ▼                                             │
    ┌───────────────────────────────┐          ┌──────────┴───────────────┐
-   │ Trigger.dev v3 (durable)      │─────────▶│ apps/agent (Node)         │
-   │ waitpoints · retries · run UI │◀─────────│ durable steps · TOOLS     │
+   │ ticker + lease (in apps/api)  │─────────▶│ executor (Node)           │
+   │ one claim · reclaim · retries │◀─────────│ durable steps · TOOLS     │
    └───────────────────────────────┘          └──────────┬───────────────┘
                                                          │ OpenAPI HTTP
                                                          ▼
@@ -291,17 +291,17 @@ The shared-corpus counterpart to `/sources`, called by the sweep. Deliberately a
 | Service        | Tech                                                                                     | Responsibility                                                                                                                                                                                                                     |
 | -------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apps/web`     | Next.js 15 App Router (Vercel), `@supabase/ssr`, RSC, ts-rest client                     | Discord-style UI; holds the session cookie; light read-aggregation; **proxies all mutations/long work to Fastify**; streams assistant tokens from Realtime. Never runs agent loops.                                                |
-| `apps/api`     | Node 22 + Fastify 5 (Fly.io), jose/JWKS, `fastify-type-provider-zod`, `@fastify/swagger` | Authoritative REST API. Verifies JWTs; owns the chat **write** path; project/task CRUD; triggers agent runs; hosts webhooks (Stripe, Trigger.dev, IDV).                                                                            |
+| `apps/api`     | Node 22 + Fastify 5 (Fly.io), jose/JWKS, `fastify-type-provider-zod`, `@fastify/swagger` | Authoritative REST API. Verifies JWTs; owns the chat **write** path; project/task CRUD; triggers agent runs; **holds the durable backbone** (the ticker, the run lease and every sweep, [ADR-0010](../40-adr/0010-postgres-durable-runner.md)); hosts webhooks (Stripe, IDV).                                                                            |
 | `apps/matcher` | Fastify (may start as a module of `api`), `service_role`, geo + skill/rating filters     | Finds eligible nodes for a human task, notifies, manages accept/decline, adds the accepted node to the room (RLS membership), and **completes the agent's waitpoint** on verification.                                             |
-| `apps/agent`   | Node 22, executed **as Trigger.dev tasks**, Zod-typed tools                              | Drives the run: calls `services/ai` for each reasoning step, then **executes the side effects** it proposes — persists plan/tasks/artifacts, posts to chat, `request_human_node`. Authz and spend caps live here, in tool code.    |
+| `apps/agent`   | **Not built.** Node 22, Zod-typed tools; today this is the executor and the sweeps inside `apps/api`   | Drives the run: calls `services/ai` for each reasoning step, then **executes the side effects** it proposes — persists plan/tasks/artifacts, posts to chat. Authz and spend caps live here, in tool code. It earns its own deployment when the ticker outgrows one process.    |
 | `services/ai`  | **Python** (FastAPI + Pydantic, LlamaIndex), OpenAPI-typed seam, stateless               | The reasoning core and RAG: retrieval, planning, drafting, tool **selection**, eval gates, provider calls. **Proposes only** — it never writes rows or moves money. ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) |
-| Trigger.dev v3 | Managed (Trigger Cloud) or self-host on Fly.io                                           | Durable orchestration: long-run compute, waitpoints, retries, idempotency, per-run trace UI.                                                                                                                                       |
+| Postgres runner | `task_runs.lease_until`, a reclaim sweep and a single advisory tick claim, all in `apps/api` | Durable orchestration on the database that already holds the state ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). A human waitpoint is a task row, not a token. **No step-level replay UI**, which the ADR names as the real cost; the `events` log replaces it.  |
 | pg-boss        | On Supabase Postgres                                                                     | Utility jobs (email, thumbnails, RAG re-index, reconciliation) — no Redis at MVP.                                                                                                                                                  |
 | Supabase       | Postgres 17 + RLS, GoTrue (JWKS), Storage, Realtime                                      | Single source of truth + auth + storage + chat transport.                                                                                                                                                                          |
 
 ## The two-layer brain
 
-1. **Durable execution backbone** (Trigger.dev v3) — survives crashes/deploys, retries steps, and _sleeps for days_ on human waitpoints at zero compute cost. It owns _when_ work runs and guarantees replay-safety.
+1. **Durable execution backbone** (Postgres, [ADR-0010](../40-adr/0010-postgres-durable-runner.md)) — survives crashes/deploys, retries steps, and _sleeps for days_ on human waitpoints at zero compute cost, because a waiting task is a row rather than a suspended continuation. It owns _when_ work runs and guarantees replay-safety.
 2. **Supervisor / orchestrator reasoning core** (`services/ai`, Python) — decides _what_ to do: plans the task DAG, routes tasks (AI/HUMAN/USER), selects tools, and runs a maker-checker critic. Read-only sub-agents are spawned as tools; they never write the DAG. It **proposes**; `apps/agent` (Node) commits the result and performs every side effect.
 
 Separation matters: the reasoning core can be non-deterministic and fallible; the backbone makes the _system_ deterministic, resumable, and auditable around it. The language split reinforces it — a jailbroken prompt in the Python core still cannot move money, because money only exists behind Node tool code and Postgres.
@@ -311,7 +311,7 @@ Separation matters: the reasoning core can be non-deterministic and fallible; th
 The AI/RAG layer is a **separate Python service** (`services/ai`, FastAPI); the rest of the backend stays Node/Fastify.
 
 - **Python (`services/ai`)** owns RAG (ingestion + retrieval + rerank), the agent **reasoning core** (planning, drafting, tool selection), evaluation (Ragas/DeepEval), provider calls (OpenAI for generation + embeddings, Cohere for rerank — [ADR-0007](../40-adr/0007-openai-generation-embeddings-cohere-rerank.md)), and future self-hosted/trained models. Stateless behind an OpenAPI-typed HTTP seam; ingestion/eval run as jobs; shares the same Supabase Postgres (`service_role`, server-side only).
-- **Node/Fastify** owns chat, realtime, auth, projects/tasks, marketplace, payments, notifications, the **durable backbone** (Trigger.dev) that drives the Python core, and **all side-effecting tools** (`post_message`, escrow, `request_human_node`) — which must run in the Postgres/RLS/Stripe world with authz in tool code.
+- **Node/Fastify** owns chat, realtime, auth, projects/tasks, marketplace, payments, notifications, the **durable backbone** (the Postgres lease and ticker, [ADR-0010](../40-adr/0010-postgres-durable-runner.md)) that drives the Python core, and **all side-effecting tools** (`post_message`, escrow, `request_human_node`) — which must run in the Postgres/RLS/Stripe world with authz in tool code.
 - **Rule: Python proposes, Node executes.** The Python core decides _what_ to do; Node performs the side effects with guardrails. A jailbroken prompt in Python still cannot move money. This maps directly onto the two-layer brain (reasoning core = Python, durable backbone + execution = Node).
 
 ## Postgres as the single source of truth
