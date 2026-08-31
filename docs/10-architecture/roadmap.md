@@ -60,7 +60,7 @@
 - Durable orchestration with human-in-the-loop waitpoints; idempotent/replay-safe steps; pg-boss utility jobs.
 - 🟡 `business-projects-workflow`: task state machine, scheduler, router (AI/HUMAN/USER), replan-by-diff, maker-checker. **Schema and guards are live** (`20260813120000`): `projects` / `tasks` / `task_deps` / `task_runs` / `events`, with the state machine and the DAG's acyclicity enforced by trigger rather than by the runner. Sequenced first on purpose, because both candidate durable runners drive this structure and neither defines it. Still to build: the scheduler and router themselves, and the step that turns an approved plan card into task rows.
 - `marketing-growth-engine`: **channel integrations** (paid ads incl. Meta/Google, social publishing, email, analytics) + **creative generation** (image/video/copy) as typed tools, all behind approval + spend guardrails.
-- 🟡 `human-nodes-marketplace`: expert-marketer onboarding + KYC, skill/trust graph (creative, ads, SEO, video, outreach), ranked matching, offers with expiry/cascade. **The domain, threads and onboarding are live** (`20260831120000`…`123000`, `20260901120000`…`123000`, `20260902120000`…`122000`): a node exists, has a profile, claims skills and licences, and passes an identity check through an in-repo fake verifier. **Ops-invited rather than self-service**, structurally — `invite_node` is granted to `service_role` alone and its only caller is `scripts/invite-node.mjs` — because a person who completes KYC and is never offered anything is the cold-start dead end. The matcher, offers, engagements, escrow, the proof loop, payouts, disputes and ratings are slices 4 through 8 and are not built, so `matching` is still a state with no code behind it.
+- 🟡 `human-nodes-marketplace`: expert-marketer onboarding + KYC, skill/trust graph (creative, ads, SEO, video, outreach), ranked matching, offers with expiry/cascade. **The domain, threads, onboarding and the matcher are live** (`20260831120000`…`123000`, `20260901120000`…`123000`, `20260902120000`…`122000`, `20260903120000`…`121000`): a node exists, has a profile, claims skills and licences, passes an identity check through an in-repo fake verifier, **and can now be offered work**. An owner sends an escalated step to the marketplace from the project panel, the ticker offers it to one ranked node at a time, and a decline or a 48-hour expiry cascades to the next. **Ops-invited rather than self-service**, structurally — `invite_node` is granted to `service_role` alone and its only caller is `scripts/invite-node.mjs` — and that stays true after slice 4: the cold-start dead end was a verified node with nothing to do, which the matcher fixes directly, while open registration would put strangers in a KYC funnel with no ops console to vet them until Phase 3. **Nobody can accept yet**, because accepting is inseparable from funding escrow: engagements, escrow, the proof loop, payouts, disputes and ratings are slices 5 through 8. Two arcs booked to slice 4 were deliberately not restored ([ADR-0018](../40-adr/0018-offer-exhaustion-returns-the-step-to-its-owner.md)).
 - `payments-billing`: escrow-equivalent holds, Connect Express payouts, double-entry ledger, spend caps in tool code; managed-ad-spend accounting.
 - Node join-per-task threads (RLS least-privilege), proof/approval, payout → resume → **campaigns launch** within spend caps.
 - 🟡 **Auto-optimize loop v1:** pull live metrics, pause/scale within guardrails; write outcomes to the flywheel. **The pause half is live** ([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)): metrics are pulled, a CPA ceiling breach pauses the campaign, the decision is logged with its arithmetic, and the owner can resume from the panel. Scale/reallocate are not built.
@@ -111,13 +111,13 @@
 
 ## Deferred-by-design (with triggers)
 
-| Deferral                             | Trigger to build                                     |
-| ------------------------------------ | ---------------------------------------------------- |
-| Fine-tuned proprietary model         | enough Phase-3 outcome/correction data               |
-| Fastify WS gateway + Redis           | past ~500 concurrent / server-authoritative ordering |
+| Deferral                             | Trigger to build                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------------------- |
+| Fine-tuned proprietary model         | enough Phase-3 outcome/correction data                                                  |
+| Fastify WS gateway + Redis           | past ~500 concurrent / server-authoritative ordering                                    |
 | Trigger.dev / Temporal orchestration | a single locked ticker outgrown ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)) |
-| Dedicated vector DB / pgvectorscale  | tens of millions of chunks or high QPS               |
-| Business-formation verticals         | marketing wedge is working + flywheel spinning       |
+| Dedicated vector DB / pgvectorscale  | tens of millions of chunks or high QPS                                                  |
+| Business-formation verticals         | marketing wedge is working + flywheel spinning                                          |
 
 ## Definition of "production-ready" (exit gate, every phase)
 

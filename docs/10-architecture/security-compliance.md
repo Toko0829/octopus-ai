@@ -166,3 +166,26 @@ The table has **no policy and no grant to any client role**, so a read returns `
 - [ ] Retrieved/external content treated as data; no PII in URLs/logs/RAG.
 - [ ] Regulated output carries disclaimer + escalation path.
 - [ ] Money movement idempotent + event-sourced.
+
+### Offer visibility (marketplace slice 4)
+
+`public.offers` has **one policy**, `node_id = auth.uid()`, and `grant select` to
+`authenticated`. Three consequences are deliberate and asserted rather than
+reviewed:
+
+- **The node sees only their own offers.** A plain equality with no join, because
+  `node_profiles` is keyed on `user_id`.
+- **The project owner sees none**, including for their own project's steps. An
+  offer names a node, and `20260901122000` narrowed `private.shares_room_with` to
+  close the owner-sees-node and node-sees-owner halves together. Handing the owner
+  a row carrying `node_id` would reopen that pair through a side door one slice
+  before the engagement slice decides what it should show. The panel shows
+  `tasks.state`, which is what the owner needs.
+- **Nothing is deleted, including by `service_role`.** `delete` and `truncate` are
+  revoked from every role: the offer trail is what a dispute reads.
+
+The node-facing projection is the second control and is asserted directly, the way
+the channel-connection projection is: `NodeOffer` carries three task fields and
+**no task id, no project id and nothing identifying the owner**. The node holds no
+RLS grant on `tasks` or `projects` and gains none, so those fields are read
+service-side and copied in.

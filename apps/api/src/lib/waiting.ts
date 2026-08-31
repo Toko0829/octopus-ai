@@ -18,10 +18,12 @@ import { roomForProject } from './room-for-project';
  * a brand decision and an account connection are one conversation, not three
  * notifications.
  *
- * **The two states are not merged**, because only one of them is actionable. A
- * task needing the person is something they can answer now; a task needing an
- * expert node is waiting on a marketplace that does not exist yet, and saying so
- * plainly beats implying somebody is on their way.
+ * **The two states are not merged**, because they ask for different things. A
+ * task needing the person is something only they can answer; a task needing an
+ * expert is something they now choose what to do with, since the marketplace
+ * exists and the panel offers three ways forward. Neither message implies
+ * somebody is already on their way, because until an owner dispatches a step
+ * nobody is.
  */
 
 /** The outcomes that mean a human is now the blocker. */
@@ -74,13 +76,14 @@ export function waitingMessage(summary: WaitingSummary, titles: Map<string, stri
 
   if (summary.escalated.length > 0) {
     const lines = summary.escalated.map((r) => `- ${name(r)}`).join('\n');
-    // Deliberately not dressed up as progress. The marketplace is Phase 2 work
-    // that does not exist, so a message implying someone has been contacted would
-    // be false on the surface this product asks people to trust.
+    // Still not dressed up as progress. A step sitting here has not been offered
+    // to anybody: dispatching it is the owner's click, so a message implying
+    // somebody had been contacted would be false on the surface this product
+    // asks people to trust. What changed is that there is now something to do.
     parts.push(
       `${summary.escalated.length === 1 ? 'One step needs' : `${summary.escalated.length} steps need`} an expert rather than me:\n\n${lines}\n\n` +
-        'I cannot bring one in yet, so these are paused rather than under way. ' +
-        'Nothing has been spent or published.',
+        'I cannot start these myself. Open the project panel to send one to an expert ' +
+        'or to take it on yourself. Nothing has been spent or published.',
     );
   }
 

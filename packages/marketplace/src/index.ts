@@ -25,13 +25,28 @@
  * `carriesRealCredentials`.
  *
  * **Eligibility** (`eligibility.ts`), the code mirror of the one constraint in
- * the domain with no second layer behind it, plus the sentence a verified node
- * is owed while the matcher does not exist.
+ * the domain with no second layer behind it, plus the sentences a node is owed
+ * when nothing is in front of them and when their own row is what is stopping
+ * offers arriving.
  *
- * `@octopus/contracts` is deliberately **not** a dependency yet. Nothing here is
- * on a wire: the node's surface talks to `apps/api`, which owns the wire types.
- * That changes the first time a marketplace shape appears on a card payload,
- * which is the matcher's offer in slice 4.
+ * Slice 4 adds three more, and each closes a gap the schema could not.
+ *
+ * **The stage-to-skill map** (`stage-skills.ts`), because `tasks` carries no
+ * `required_skills` and the two alternatives were a model deciding who gets paid
+ * or an owner answering the question they escalated because they could not.
+ *
+ * **Jurisdiction containment** (`jurisdiction.ts`), the two operations ADR-0015
+ * named when it rejected PostGIS, written now and exercised by no real match
+ * yet, which that file says out loud.
+ *
+ * **Matching** (`matching.ts`), the ranking and the offer settlement rule, which
+ * rank on price and a stable tiebreak because every other input the module doc
+ * specifies is NULL on every row that exists.
+ *
+ * `@octopus/contracts` is deliberately **not** a dependency, still. The offer
+ * shapes that cross the wire are declared there and consumed by `apps/api` and
+ * `apps/web`; nothing in this package is on a wire, and an offer never becomes a
+ * card payload because it is addressed to one node rather than to a room.
  *
  * See docs/30-modules/human-nodes-marketplace.md.
  */
@@ -75,8 +90,35 @@ export {
 } from './verification-registry';
 
 export {
-  NO_WORK_YET,
+  NO_OPEN_OFFERS,
   ineligibilityReason,
   isEligibleForWork,
+  offerabilityGap,
   type NodeEligibilityInput,
 } from './eligibility';
+
+export {
+  MAPPED_STAGES,
+  mapIsWithinTaxonomy,
+  mappedSkillTags,
+  skillsForStage,
+} from './stage-skills';
+
+export {
+  bestCoveringJurisdiction,
+  isJurisdictionCode,
+  jurisdictionCovers,
+  jurisdictionExactness,
+} from './jurisdiction';
+
+export {
+  OFFER_TTL_MS,
+  decideOfferSettlement,
+  nextCandidate,
+  offerExpiresAt,
+  rankCandidates,
+  type CandidateNode,
+  type OfferSettlement,
+  type RankOptions,
+  type SettleableOffer,
+} from './matching';

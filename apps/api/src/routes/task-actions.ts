@@ -8,6 +8,8 @@ import { createServiceClient, createUserClient, type SupabaseConfig } from '../l
 import { createSchedulerPorts } from '../lib/scheduler';
 import { resolveProjectOwner } from '../lib/project-owner';
 import { resolveTask, type TaskAction } from '../lib/task-resolution';
+import { readEligiblePool } from '../lib/match';
+import { skillsForStage } from '@octopus/marketplace';
 
 /**
  * Unsticking a step from the project panel.
@@ -27,6 +29,21 @@ import { resolveTask, type TaskAction } from '../lib/task-resolution';
  *
  * `20260827120000` added the two arcs this needs, mirroring the ones `NEEDS_USER`
  * already had.
+ *
+ * **`find_expert` is the third action, and it is the marketplace's front door.**
+ * It is a person's click rather than a sweep's decision on purpose: twelve steps
+ * sit in `escalated` on the live database, and a sweep claiming them all on
+ * deploy would offer a cold-start pool a dozen steps at once while taking away
+ * the two buttons that already work. The matcher acts only on what an owner
+ * sent, and everything after the click (rank, offer, cascade, expire) is the
+ * ticker's.
+ *
+ * **Both refusals here happen before the task moves**, which is the property
+ * worth stating: a step whose stage maps to no skill, or whose skills nobody
+ * eligible claims, stays exactly where it is with all three buttons intact. The
+ * alternative, moving it to `matching` and letting the sweep bounce it back,
+ * would spend an arc and post a system message to tell the owner something this
+ * route already knew.
  */
 
 const Params = z.object({
@@ -35,8 +52,8 @@ const Params = z.object({
 });
 
 const Body = z.object({
-  action: z.enum(['answer', 'retry']),
-  /** What the owner did. Required for `answer`, ignored for `retry`. */
+  action: z.enum(['answer', 'retry', 'find_expert']),
+  /** What the owner did. Required for `answer`, ignored for the other two. */
   text: z.string().trim().max(8000).optional(),
 });
 
@@ -64,7 +81,9 @@ export async function taskActionRoutes(
       const params = Params.safeParse(request.params);
       if (!params.success) return fail(reply, 400, 'bad_request', 'Bad project or task id.');
       const body = Body.safeParse(request.body);
-      if (!body.success) return fail(reply, 400, 'bad_request', 'Say whether to answer or retry.');
+      if (!body.success) {
+        return fail(reply, 400, 'bad_request', 'Say whether to answer, retry, or find an expert.');
+      }
 
       const { projectId, taskId } = params.data;
       const action: TaskAction = body.data.action;
@@ -78,7 +97,7 @@ export async function taskActionRoutes(
         // the API does not confirm the existence of something it will not show.
         const { data: taskRow, error: taskErr } = await db
           .from('tasks')
-          .select('id, project_id, title, owner_type, state, risk_tier, citations')
+          .select('id, project_id, title, stage, owner_type, state, risk_tier, citations')
           .eq('id', taskId)
           .eq('project_id', projectId)
           .maybeSingle();
@@ -89,6 +108,7 @@ export async function taskActionRoutes(
           id: string;
           project_id: string;
           title: string;
+          stage: string | null;
           owner_type: RoutableTask['ownerType'];
           state: string;
           risk_tier: RoutableTask['riskTier'];
@@ -109,6 +129,72 @@ export async function taskActionRoutes(
         if (!outcome.ok) return fail(reply, 409, 'conflict', outcome.reason);
 
         const admin = createServiceClient(opts.supabase);
+
+        if (action === 'find_expert') {
+          // What kind of expert. `tasks` carries no `required_skills`, so the
+          // stage map in `packages/marketplace` answers it from the one field the
+          // planner does fill in. An unmapped stage is a real answer rather than
+          // a guess: offering somebody's step to whoever happens to match is
+          // worse than saying plainly that we do not know.
+          const skills = skillsForStage(task.stage);
+          if (skills.length === 0) {
+            return fail(
+              reply,
+              409,
+              'conflict',
+              'I do not know what kind of expert this step needs, so I cannot search for one. ' +
+                'You can do it yourself or try again.',
+            );
+          }
+
+          // Check there is somebody to ask BEFORE burning the arc. The pool read
+          // is the same one the sweep runs, imported rather than rewritten, so
+          // the precheck and the search can never disagree about who is eligible.
+          const pool = await readEligiblePool(admin, skills);
+          if (pool.length === 0) {
+            return fail(
+              reply,
+              409,
+              'conflict',
+              'No expert with the right skills is available yet, so this step stays with you. ' +
+                'You can do it yourself, try again, or search later.',
+            );
+          }
+
+          const { data: moved, error: moveErr } = await admin
+            .from('tasks')
+            .update({ state: outcome.resolution.to })
+            .eq('id', task.id)
+            .eq('state', task.state)
+            .select('id');
+          if (moveErr) throw moveErr;
+          if (!moved || moved.length === 0) {
+            return fail(reply, 409, 'conflict', 'That step moved while you were writing.');
+          }
+
+          // The owner's act, with their id on it. The sweep's own events are
+          // `system`, because everything it does afterwards is machinery carrying
+          // out this decision rather than making one.
+          const { error: eventErr } = await admin.from('events').insert({
+            project_id: task.project_id,
+            actor_id: userId,
+            actor_kind: 'user',
+            verb: 'task.match_requested',
+            subject_type: 'task',
+            subject_id: task.id,
+            payload: { stage: task.stage, skills, pool_size: pool.length },
+          });
+          if (eventErr) {
+            request.log.error({ err: eventErr, taskId }, 'match request event was not written');
+          }
+
+          // No inline tick. The offer goes out on the next pass, within one tick
+          // interval, and the panel already reads "Finding an expert" the moment
+          // this returns. Approving a plan runs a tick inline because a person is
+          // watching a card commit; nobody is watching a stranger decide.
+          request.log.info({ taskId, userId, skills }, 'owner sent a step to the marketplace');
+          return reply.code(200).send({ state: outcome.resolution.to, ranExecutor: false });
+        }
 
         if (outcome.resolution.writesArtifact) {
           // Their write-up IS the deliverable, stored exactly as the chat answer

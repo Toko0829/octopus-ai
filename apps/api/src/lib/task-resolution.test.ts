@@ -64,3 +64,44 @@ describe('resolveTask · retry', () => {
     }
   });
 });
+
+describe('resolveTask: find_expert', () => {
+  it('sends an escalated step to the marketplace', () => {
+    const out = resolveTask('escalated', 'find_expert', '');
+    expect(out.ok).toBe(true);
+    expect(out.ok && out.resolution.to).toBe('matching');
+  });
+
+  it('writes no artifact, because nothing was produced', () => {
+    const out = resolveTask('escalated', 'find_expert', 'ignored');
+    expect(out.ok && out.resolution.writesArtifact).toBe(false);
+  });
+
+  it('refuses a step that is waiting on the person rather than on an expert', () => {
+    // `needs_user` is a decision only the owner can make. Offering it to a
+    // stranger would be asking somebody else to choose their brand direction.
+    const out = resolveTask('needs_user', 'find_expert', '');
+    expect(out.ok).toBe(false);
+    expect(out.ok === false && out.reason).toMatch(/needed an expert/i);
+  });
+
+  it('refuses from every state that is not escalated', () => {
+    for (const state of [
+      'pending',
+      'ready',
+      'routing',
+      'ai_running',
+      'matching',
+      'offered',
+      'approved',
+      'done',
+    ] as const) {
+      expect(resolveTask(state, 'find_expert', '').ok, state).toBe(false);
+    }
+  });
+
+  it('writes no em dash in its refusal, per rule 22', () => {
+    const out = resolveTask('needs_user', 'find_expert', '');
+    expect(out.ok === false && out.reason).not.toContain('—');
+  });
+});

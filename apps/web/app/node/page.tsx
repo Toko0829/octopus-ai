@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation';
 import './node.css';
 import { NodeConsole } from './NodeConsole';
 import { createClient } from '../../lib/supabase/server';
-import { fetchNode } from '../../lib/api-server';
+import { fetchNode, fetchNodeOffers } from '../../lib/api-server';
 
 export const metadata: Metadata = {
   title: 'Octopus · Your node profile',
@@ -59,5 +59,12 @@ export default async function NodePage() {
     );
   }
 
-  return <NodeConsole initial={result.node} email={user.email ?? null} />;
+  // Fetched only once the caller is known to be a node, so a stranger's page
+  // load never reaches the offers route at all. Null on failure rather than a
+  // thrown error: a console that cannot list offers is still worth rendering,
+  // because the profile it also shows is what most visits are for.
+  const offerResult = await fetchNodeOffers();
+  const offers = offerResult?.offers ?? [];
+
+  return <NodeConsole initial={result.node} initialOffers={offers} email={user.email ?? null} />;
 }

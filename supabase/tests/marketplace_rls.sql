@@ -470,13 +470,22 @@ select extensions.is(
 -- ------------------------------ the task machine, deliberately unchanged (2)
 --
 -- Slice 1 restores no arc. `20260815220000` silently dropped eight of them with
--- nothing asserting they had ever been there, so pinning the absence is what makes
--- slice 4's restoration read as a dated decision rather than as drift.
+-- nothing asserting they had ever been there, so pinning the absence is what
+-- makes any later decision about them read as dated rather than as drift.
+--
+-- **Corrected in slice 4 rather than left to read as a promise.** This message
+-- used to say the arc "is restored in slice 4, with the matcher that can produce
+-- it". Slice 4 built the matcher and decided against restoring it
+-- ([ADR-0018](../../docs/40-adr/0018-offer-exhaustion-returns-the-step-to-its-owner.md)):
+-- an exhausted cascade returns the step to its owner at `escalated`, because
+-- `failed` is terminal and would strand work the owner can still take. The
+-- verdict this asserts is unchanged; only the reason is, and leaving the old
+-- wording would have left a test file promising something nobody intends to do.
 
 select extensions.ok(
   not private.task_transition_allowed('matching', 'failed'),
-  'matching -> failed is still refused: it is restored in slice 4, with the matcher that '
-  'can produce it, and not before'
+  'matching -> failed is still refused, and stays that way: exhaustion returns the step '
+  'to its owner rather than into a terminal state (ADR-0018)'
 );
 
 select extensions.ok(

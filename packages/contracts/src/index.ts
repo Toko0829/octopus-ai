@@ -1120,6 +1120,71 @@ export const SubmitNodeVerificationBody = z.object({
 });
 export type SubmitNodeVerificationBody = z.infer<typeof SubmitNodeVerificationBody>;
 
+/* ----------------------------------------------- offers, as the node sees them */
+
+/** Mirrors `public.offer_status`. `accepted` is declared and unreachable until escrow. */
+export const OfferStatus = z.enum(['open', 'declined', 'expired', 'withdrawn', 'accepted']);
+export type OfferStatus = z.infer<typeof OfferStatus>;
+
+/**
+ * One offer, projected for the node it was made to.
+ *
+ * **The projection is the access control, and it is asserted rather than
+ * reviewed**, exactly as the channel-connection projection is: the node has no
+ * RLS grant on `tasks` or `projects` and gains none here, so the three task
+ * fields below are read service-side and copied in. What is absent is the
+ * interesting part and each absence is deliberate.
+ *
+ * **No task id and no project id.** They would be useless to a node who cannot
+ * read either table, and handing out an internal key invites the next surface to
+ * try.
+ *
+ * **Nothing identifying the owner.** `20260901122000` narrowed
+ * `private.shares_room_with` to require room scope on both sides, closing the
+ * owner-sees-node and node-sees-owner halves together, and the engagement slice
+ * is where that pair is opened deliberately. A name on an offer card would
+ * reopen it here by accident, one slice early.
+ *
+ * **No rate and no budget**, because nothing has been agreed. `agreed_price` is
+ * a fact about a deal, and slice 5's `engagements` is where a deal first exists.
+ */
+export const NodeOffer = z.object({
+  id: z.string().uuid(),
+  status: OfferStatus,
+  round: z.number().int().nonnegative(),
+  expiresAt: z.string(),
+  createdAt: z.string(),
+  declinedAt: z.string().nullable(),
+  declineReason: z.string().nullable(),
+  task: z.object({
+    title: z.string(),
+    stage: z.string().nullable(),
+    detail: z.string().nullable(),
+  }),
+});
+export type NodeOffer = z.infer<typeof NodeOffer>;
+
+export const ListNodeOffersResponse = z.object({ offers: z.array(NodeOffer) });
+export type ListNodeOffersResponse = z.infer<typeof ListNodeOffersResponse>;
+
+/**
+ * Declining an offer.
+ *
+ * The reason is optional and free text, and it is stored rather than merely
+ * counted because "the brief is too vague" and "this is outside what I do" are
+ * different problems for the owner: the first is fixable now, the second says
+ * the match was wrong. `.strict()` for the `PatchNodeBody` reason, so an attempt
+ * to send a status or an id is a 400 rather than a silently ignored field.
+ *
+ * **There is no accept body**, and its absence is the slice boundary. Accepting
+ * is inseparable from funding escrow, so an accept route that wrote nothing to a
+ * ledger would leave a node holding a step nobody had paid for.
+ */
+export const DeclineOfferBody = z
+  .object({ reason: z.string().trim().min(1).max(500).optional() })
+  .strict();
+export type DeclineOfferBody = z.infer<typeof DeclineOfferBody>;
+
 const ProjectParams = z.object({ projectId: z.string().uuid() });
 
 export const contract = c.router(

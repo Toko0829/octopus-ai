@@ -288,16 +288,16 @@ The shared-corpus counterpart to `/sources`, called by the sweep. Deliberately a
 
 ## Service map
 
-| Service        | Tech                                                                                     | Responsibility                                                                                                                                                                                                                     |
-| -------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/web`     | Next.js 15 App Router (Vercel), `@supabase/ssr`, RSC, ts-rest client                     | Discord-style UI; holds the session cookie; light read-aggregation; **proxies all mutations/long work to Fastify**; streams assistant tokens from Realtime. Never runs agent loops.                                                |
-| `apps/api`     | Node 22 + Fastify 5 (Fly.io), jose/JWKS, `fastify-type-provider-zod`, `@fastify/swagger` | Authoritative REST API. Verifies JWTs; owns the chat **write** path; project/task CRUD; triggers agent runs; **holds the durable backbone** (the ticker, the run lease and every sweep, [ADR-0010](../40-adr/0010-postgres-durable-runner.md)); hosts webhooks (Stripe, IDV).                                                                            |
-| `apps/matcher` | Fastify (may start as a module of `api`), `service_role`, geo + skill/rating filters     | Finds eligible nodes for a human task, notifies, manages accept/decline, adds the accepted node to the room (RLS membership), and **completes the agent's waitpoint** on verification.                                             |
-| `apps/agent`   | **Not built.** Node 22, Zod-typed tools; today this is the executor and the sweeps inside `apps/api`   | Drives the run: calls `services/ai` for each reasoning step, then **executes the side effects** it proposes — persists plan/tasks/artifacts, posts to chat. Authz and spend caps live here, in tool code. It earns its own deployment when the ticker outgrows one process.    |
-| `services/ai`  | **Python** (FastAPI + Pydantic, LlamaIndex), OpenAPI-typed seam, stateless               | The reasoning core and RAG: retrieval, planning, drafting, tool **selection**, eval gates, provider calls. **Proposes only** — it never writes rows or moves money. ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) |
-| Postgres runner | `task_runs.lease_until`, a reclaim sweep and a single advisory tick claim, all in `apps/api` | Durable orchestration on the database that already holds the state ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). A human waitpoint is a task row, not a token. **No step-level replay UI**, which the ADR names as the real cost; the `events` log replaces it.  |
-| pg-boss        | On Supabase Postgres                                                                     | Utility jobs (email, thumbnails, RAG re-index, reconciliation) — no Redis at MVP.                                                                                                                                                  |
-| Supabase       | Postgres 17 + RLS, GoTrue (JWKS), Storage, Realtime                                      | Single source of truth + auth + storage + chat transport.                                                                                                                                                                          |
+| Service         | Tech                                                                                                 | Responsibility                                                                                                                                                                                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/web`      | Next.js 15 App Router (Vercel), `@supabase/ssr`, RSC, ts-rest client                                 | Discord-style UI; holds the session cookie; light read-aggregation; **proxies all mutations/long work to Fastify**; streams assistant tokens from Realtime. Never runs agent loops.                                                                                           |
+| `apps/api`      | Node 22 + Fastify 5 (Fly.io), jose/JWKS, `fastify-type-provider-zod`, `@fastify/swagger`             | Authoritative REST API. Verifies JWTs; owns the chat **write** path; project/task CRUD; triggers agent runs; **holds the durable backbone** (the ticker, the run lease and every sweep, [ADR-0010](../40-adr/0010-postgres-durable-runner.md)); hosts webhooks (Stripe, IDV). |
+| `apps/matcher`  | Fastify (may start as a module of `api`), `service_role`, geo + skill/rating filters                 | Finds eligible nodes for a human task, notifies, manages accept/decline, adds the accepted node to the room (RLS membership), and **completes the agent's waitpoint** on verification.                                                                                        |
+| `apps/agent`    | **Not built.** Node 22, Zod-typed tools; today this is the executor and the sweeps inside `apps/api` | Drives the run: calls `services/ai` for each reasoning step, then **executes the side effects** it proposes — persists plan/tasks/artifacts, posts to chat. Authz and spend caps live here, in tool code. It earns its own deployment when the ticker outgrows one process.   |
+| `services/ai`   | **Python** (FastAPI + Pydantic, LlamaIndex), OpenAPI-typed seam, stateless                           | The reasoning core and RAG: retrieval, planning, drafting, tool **selection**, eval gates, provider calls. **Proposes only** — it never writes rows or moves money. ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md))                                            |
+| Postgres runner | `task_runs.lease_until`, a reclaim sweep and a single advisory tick claim, all in `apps/api`         | Durable orchestration on the database that already holds the state ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). A human waitpoint is a task row, not a token. **No step-level replay UI**, which the ADR names as the real cost; the `events` log replaces it.    |
+| pg-boss         | On Supabase Postgres                                                                                 | Utility jobs (email, thumbnails, RAG re-index, reconciliation) — no Redis at MVP.                                                                                                                                                                                             |
+| Supabase        | Postgres 17 + RLS, GoTrue (JWKS), Storage, Realtime                                                  | Single source of truth + auth + storage + chat transport.                                                                                                                                                                                                                     |
 
 ## The two-layer brain
 
@@ -616,3 +616,56 @@ The 10-step "open a cafe" trace lives in [core-loop.md](../00-overview/core-loop
 - **Vector scale** (tens of millions of chunks / high QPS) → pgvectorscale (StreamingDiskANN) in-Postgres first, dedicated store (Qdrant) only if forced ([ADR-0002](../40-adr/0002-stay-in-postgres-pgvector.md)).
 
 Each is deliberately deferred; triggers are recorded in [infra-devops.md](../30-modules/infra-devops.md) and [roadmap.md](roadmap.md).
+
+## The matcher (marketplace slice 4)
+
+**A sweep on the existing ticker, not a service.** `.docmeta.yml` forward-registered
+`apps/matcher/**` from Phase 0, and [ADR-0010](../40-adr/0010-postgres-durable-runner.md)
+overtook it: durable work runs on the Postgres we already have, in `apps/api`, and
+a fifth sweep beside publish, metrics, optimize and crawl needs no new deployment,
+no new secret and no new failure mode. The mapping was updated to match.
+
+- **Pure half:** `packages/marketplace/src/{stage-skills,jurisdiction,matching}.ts`
+  — the stage-to-skill map, ADR-0015's containment and specificity operations, and
+  ranking plus offer settlement. No clock, no client, exactly as
+  `packages/marketing` splits.
+- **IO half:** `apps/api/src/lib/match.ts`, three passes per tick: withdraw offers
+  whose task left the market, settle and cascade the offered, offer the matching.
+  `MATCHER_MAX_PER_TICK` bounds offers **created**, so a backlog of cascades cannot
+  starve the one offer ready to go out.
+- **Position:** after optimize, before crawl. The ordering rule on this pass is who
+  is waiting: an owner who clicked and a node with nothing to do are both people,
+  so it outranks re-reading a stranger's page; it moves no money, so it yields to
+  the three sweeps that do.
+
+**Two writers, one of each kind, and the split is the concurrency design.** The
+sweep is the **single writer of `tasks.state`** in this domain; the decline route
+settles an offer row and never touches the task. Two writers racing on one task,
+one reacting to a person and one to a clock, is how a step gets offered to two
+nodes at once. The visible cost is that for up to one tick a node has declined and
+the owner still reads "Offered to an expert".
+
+**Every task move is conditional on the state that was read**, so the owner
+resolving a step themselves and the sweep dispatching it cannot both win; the
+loser gets zero rows and answers 409, the idiom `reclaimLostRuns` already uses.
+
+### New routes
+
+| Route                                         | Who      | Notes                                                                                                                      |
+| --------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `POST /projects/:id/tasks/:taskId/resolution` | owner    | Gains `find_expert` beside `answer` and `retry`. Refuses on an unmappable stage or an empty pool **before** the task moves |
+| `GET /api/node/offers`                        | the node | Own offers only. The projection carries three task fields and nothing identifying the owner                                |
+| `POST /api/node/offers/:offerId/decline`      | the node | One conditional UPDATE carrying every precondition, including the deadline judged by Postgres                              |
+
+**There is no accept route**, and the absence is a slice boundary: accepting is
+inseparable from funding escrow, so one that wrote no ledger row would leave a
+node holding work nobody had paid for.
+
+### New environment flags
+
+`MATCHER_ENABLED` (on by default, a kill switch) and `MATCHER_MAX_PER_TICK`
+(default 3). On-by-default sits with publish, metrics and optimize rather than
+with crawl: the polarity rule is that a sweep opts in only when there is a
+stranger to protect, and the matcher reaches nobody. It is doubly inert until an
+owner clicks, and off by default would leave the panel's "Find an expert" button
+moving a step to `matching` where it waits forever.

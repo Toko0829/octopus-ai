@@ -40,13 +40,25 @@ let filters: { column: string; value: unknown }[];
 let rpcCalls: { name: string; args: Record<string, unknown> }[];
 let insertError: { code: string } | null;
 let updateError: { code: string } | null;
+let offerRows: Record<string, unknown>[];
+let taskRows: Record<string, unknown>[];
+/** Rows a conditional offer update should report as moved. */
+let offerUpdateMoves: Record<string, unknown> | null;
 
 function client() {
   return {
     from(table: string) {
       const b: Record<string, unknown> = {};
       const rowsFor = () =>
-        table === 'node_skills' ? skillRows : table === 'node_credentials' ? credentialRows : [];
+        table === 'node_skills'
+          ? skillRows
+          : table === 'node_credentials'
+            ? credentialRows
+            : table === 'offers'
+              ? offerRows
+              : table === 'tasks'
+                ? taskRows
+                : [];
       Object.assign(b, {
         select: () => b,
         eq: (column: string, value: unknown) => {
@@ -91,12 +103,25 @@ function client() {
             then: (resolve: (v: unknown) => unknown) => resolve({ data: skillRows, error: null }),
           });
         },
+        in: () => b,
+        gt: (column: string, value: unknown) => {
+          filters.push({ column, value });
+          return b;
+        },
         maybeSingle: async () => {
           if (table === 'node_profiles') return { data: profileRow, error: null };
           if (table === 'node_skills') return { data: skillRows[0] ?? null, error: null };
           if (table === 'node_credentials') return { data: credentialRows[0] ?? null, error: null };
+          if (table === 'offers') {
+            // An update carries the conditional result; a plain read returns the row.
+            const isUpdate = written.some((w) => w.table === 'offers' && w.op === 'update');
+            if (isUpdate) return { data: offerUpdateMoves, error: null };
+            return { data: offerRows[0] ?? null, error: null };
+          }
+          if (table === 'tasks') return { data: taskRows[0] ?? null, error: null };
           return { data: null, error: null };
         },
+        then: (resolve: (v: unknown) => unknown) => resolve({ data: rowsFor(), error: null }),
       });
       return b;
     },
@@ -153,6 +178,9 @@ beforeEach(() => {
   rpcCalls = [];
   insertError = null;
   updateError = null;
+  offerRows = [];
+  taskRows = [];
+  offerUpdateMoves = null;
 });
 
 describe('who can reach any of this', () => {
@@ -470,5 +498,200 @@ describe('POST /api/node/verification', () => {
     });
     expect(res.statusCode).toBe(409);
     expect(rpcCalls).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ offers */
+
+const OFFER = '44444444-4444-4444-8444-444444444444';
+const TASK_ID = '55555555-5555-4555-8555-555555555555';
+const PROJECT_ID = '66666666-6666-4666-8666-666666666666';
+
+function anOffer(over: Record<string, unknown> = {}) {
+  return {
+    id: OFFER,
+    task_id: TASK_ID,
+    project_id: PROJECT_ID,
+    node_id: NODE,
+    round: 0,
+    status: 'open',
+    expires_at: '2099-01-01T00:00:00.000Z',
+    created_at: '2026-09-01T00:00:00.000Z',
+    declined_at: null,
+    decline_reason: null,
+    ...over,
+  };
+}
+
+describe('GET /api/node/offers', () => {
+  it('is a 404 for somebody who is not a node', async () => {
+    profileRow = null;
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: '/api/node/offers', headers: as(STRANGER) });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('carries the task words a person needs and nothing identifying the owner', async () => {
+    profileRow = aProfile({ kyc_status: 'verified', availability: 'available', rate: 120 });
+    offerRows = [anOffer()];
+    taskRows = [
+      {
+        id: TASK_ID,
+        title: 'Write the launch emails',
+        stage: 'conversion',
+        detail: 'Five emails.',
+      },
+    ];
+
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: '/api/node/offers', headers: as(NODE) });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { offers: Record<string, unknown>[] };
+    expect(body.offers).toHaveLength(1);
+    const offer = body.offers[0] as Record<string, unknown>;
+    expect((offer.task as Record<string, unknown>).title).toBe('Write the launch emails');
+
+    // The projection IS the access control here, so assert the absences directly
+    // rather than trusting a reviewer to notice one creeping back in. A node has
+    // no grant on tasks or projects, and the owner-sees-node pair stays closed
+    // until the engagement slice opens it on purpose.
+    const flat = JSON.stringify(offer);
+    expect(flat).not.toContain(TASK_ID);
+    expect(flat).not.toContain(PROJECT_ID);
+    expect(offer).not.toHaveProperty('ownerId');
+    expect(offer).not.toHaveProperty('nodeId');
+  });
+
+  it('presents an offer past its deadline as expired, before any sweep has run', async () => {
+    // Expiry is compared at read time. Without this a node could open a
+    // live-looking offer, click Decline, and be told it had already expired.
+    profileRow = aProfile({ kyc_status: 'verified', availability: 'available', rate: 120 });
+    offerRows = [anOffer({ status: 'open', expires_at: '2020-01-01T00:00:00.000Z' })];
+    taskRows = [{ id: TASK_ID, title: 'Old work', stage: 'content', detail: null }];
+
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: '/api/node/offers', headers: as(NODE) });
+
+    const body = res.json() as { offers: { status: string }[] };
+    expect(body.offers[0]?.status).toBe('expired');
+  });
+});
+
+describe('POST /api/node/offers/:offerId/decline', () => {
+  it('declines an open offer and records who did it', async () => {
+    profileRow = aProfile({ kyc_status: 'verified', availability: 'available', rate: 120 });
+    offerRows = [anOffer()];
+    taskRows = [
+      { id: TASK_ID, title: 'Write the launch emails', stage: 'conversion', detail: null },
+    ];
+    offerUpdateMoves = anOffer({ status: 'declined', declined_at: '2026-09-02T00:00:00.000Z' });
+
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/offers/${OFFER}/decline`,
+      headers: as(NODE),
+      payload: { reason: 'Outside what I do' },
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // The conditional update carries every precondition, so two clicks racing
+    // cannot both win and the deadline is judged by Postgres rather than by us.
+    const update = written.find((w) => w.table === 'offers' && w.op === 'update');
+    expect((update?.values as Record<string, unknown>).status).toBe('declined');
+    expect(filters.some((f) => f.column === 'status' && f.value === 'open')).toBe(true);
+    expect(filters.some((f) => f.column === 'node_id' && f.value === NODE)).toBe(true);
+    expect(filters.some((f) => f.column === 'expires_at')).toBe(true);
+
+    // The event is project-scoped and names the node, unlike every other event
+    // in this file: a decline is a fact about somebody's step, not about a node.
+    const event = written.find((w) => w.table === 'events');
+    const values = event?.values as Record<string, unknown>;
+    expect(values.verb).toBe('offer.declined');
+    expect(values.actor_kind).toBe('node');
+    expect(values.actor_id).toBe(NODE);
+    expect(values.project_id).toBe(PROJECT_ID);
+  });
+
+  it('never touches the task, because the sweep is its only writer', async () => {
+    profileRow = aProfile({ kyc_status: 'verified', availability: 'available', rate: 120 });
+    offerRows = [anOffer()];
+    taskRows = [{ id: TASK_ID, title: 'Work', stage: 'content', detail: null }];
+    offerUpdateMoves = anOffer({ status: 'declined', declined_at: '2026-09-02T00:00:00.000Z' });
+
+    const app = await build();
+    await app.inject({
+      method: 'POST',
+      url: `/api/node/offers/${OFFER}/decline`,
+      headers: as(NODE),
+      payload: {},
+    });
+
+    // Two writers racing on one task, one reacting to a person and one to a
+    // clock, is how a step gets offered to two nodes at once.
+    expect(written.some((w) => w.table === 'tasks' && w.op === 'update')).toBe(false);
+  });
+
+  it('is a 404 for an offer belonging to somebody else', async () => {
+    // Not theirs and not existing are the same answer, the 404-not-403 idiom.
+    profileRow = aProfile({ kyc_status: 'verified', availability: 'available', rate: 120 });
+    offerRows = [];
+    offerUpdateMoves = null;
+
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/offers/${OFFER}/decline`,
+      headers: as(NODE),
+      payload: {},
+    });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('refuses a reason longer than the column allows, rather than truncating it', async () => {
+    profileRow = aProfile({ kyc_status: 'verified', availability: 'available', rate: 120 });
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/offers/${OFFER}/decline`,
+      headers: as(NODE),
+      payload: { reason: 'x'.repeat(501) },
+    });
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('refuses a body carrying anything but a reason', async () => {
+    // `.strict()`, for the PatchNodeBody reason: a silently dropped field
+    // returns 200 and lets somebody believe a control applied.
+    profileRow = aProfile({ kyc_status: 'verified', availability: 'available', rate: 120 });
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/offers/${OFFER}/decline`,
+      headers: as(NODE),
+      payload: { reason: 'no thanks', status: 'accepted' },
+    });
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('has no accept counterpart at all', async () => {
+    // The slice boundary, asserted rather than described: accepting is
+    // inseparable from funding escrow, and a route that wrote no ledger row
+    // would leave somebody holding work nobody had paid for.
+    profileRow = aProfile({ kyc_status: 'verified', availability: 'available', rate: 120 });
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/offers/${OFFER}/accept`,
+      headers: as(NODE),
+      payload: {},
+    });
+
+    expect(res.statusCode).toBe(404);
   });
 });

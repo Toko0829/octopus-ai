@@ -10,7 +10,7 @@
 specifies an engagement lifecycle:
 
 > `CLAIMED → ESCROW_FUNDED → IN_PROGRESS → PROOF_SUBMITTED → IN_REVIEW →
-> APPROVED → PAID` (with `REJECTED → IN_PROGRESS` bounded re-do, and `DISPUTED`
+APPROVED → PAID` (with `REJECTED → IN_PROGRESS` bounded re-do, and `DISPUTED`
 > → ops).
 
 It also lists `engagements` as an entity. The obvious reading is that
@@ -32,7 +32,7 @@ already spent.
 ## Decision
 
 **`engagements` carries no state enum.** Engagement state is read from
-`tasks.state`. The table carries the facts about the *deal* that the task
+`tasks.state`. The table carries the facts about the _deal_ that the task
 cannot hold.
 
 ## Why
@@ -78,7 +78,7 @@ Both are stated now so slice 5 arrives to them rather than discovering them:
 
 1. **One live engagement per task**, enforced by
    `create unique index engagements_one_live_idx on public.engagements (task_id)
-   where ended_at is null`. It cannot be a plain `unique (task_id)`, because a
+where ended_at is null`. It cannot be a plain `unique (task_id)`, because a
    reassignment after a node no-show creates a second engagement on the same
    task — and the machine already says so: `claimed → matching` is one of the
    arcs `20260815220000` dropped and slice 5 restores.

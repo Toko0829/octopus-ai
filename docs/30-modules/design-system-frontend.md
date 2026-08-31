@@ -409,3 +409,39 @@ Product copy follows the brand voice ([brand.md](../20-design/brand.md)): **no e
 ## Key entities
 
 `packages/ui` components · design tokens (CSS vars) · theme definitions · chat UI components · command-palette actions.
+
+## The marketplace surfaces (slice 4)
+
+**`/node` gains an offers section.** Open offers show the step's title, its funnel
+stage in words rather than the planner's token, its description, and when the
+offer runs out. Settled offers stay on the page as a quiet history line, because a
+list that empties after a decline reads as though the decline lost something.
+
+**Accept is rendered and disabled, with its reason printed beside it.** Omitting it
+would be worse: a node reading work they cannot take has no way to tell whether
+accepting is coming, broken, or something they failed to qualify for. This reuses
+the idiom the availability control already uses while a node is unverified.
+
+**Declining is two steps**, because it cannot be undone: the cascade moves on and
+`offers_task_node_idx` means this node is never asked about this step again. The
+confirm step carries an optional reason and says plainly that it is final.
+
+**The expiry timestamp renders client-side only.** Formatting a date during a
+server render produces the server's locale and time zone and then disagrees with
+what the browser renders, which trips a hydration mismatch; the ISO date renders
+first and is replaced after mount.
+
+**`ProjectPanel` gains a third action on an escalated step**, "Find an expert",
+beside "I will do this one" and "Try again". The refusal sentences from the route
+(an unmappable stage, an empty pool) surface verbatim in the existing alert line,
+so a step that cannot be staffed keeps all three controls and says why.
+
+Two copy retirements ride the same change, because a promise altered on a trust
+surface has to be altered where it was made: the panel's project flag no longer
+says "and none can be brought in yet", and the chat digest no longer says "I
+cannot bring one in yet, so these are paused rather than under way."
+
+**Once dispatched, the step shows a status label and no controls.** `matching` and
+`offered` already had copy in `STATE_COPY` ("Finding an expert", "Offered to an
+expert"); the `stuck` set stays `needs_user | escalated`. There is nothing useful
+to offer the owner while a stranger is deciding.

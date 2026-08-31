@@ -11,7 +11,7 @@ import type { TaskState } from '@octopus/contracts';
  * rather than a 500 carrying a Postgres error.
  */
 
-export type TaskAction = 'answer' | 'retry';
+export type TaskAction = 'answer' | 'retry' | 'find_expert';
 
 /**
  * `answer` means the owner did the work themselves, so the step is done.
@@ -35,6 +35,23 @@ const ANSWERABLE: ReadonlySet<string> = new Set<TaskState>(['needs_user', 'escal
  * from the UI.
  */
 const RETRYABLE: ReadonlySet<string> = new Set<TaskState>(['escalated']);
+
+/**
+ * `find_expert` means send it to the marketplace.
+ *
+ * Only from `escalated`, which is the state the router puts human-owned work in,
+ * and which until this slice had no exit but the two above. Not from
+ * `needs_user`: a step waiting on a decision only the owner can make is not work
+ * an expert could take, and offering it to one would be asking a stranger to
+ * choose somebody else's brand direction.
+ *
+ * **The owner starts this, not a sweep**, and that is the whole reason this arc
+ * is a person's action rather than a background pass. Twelve tasks sit in
+ * `escalated` on the live database; a sweep that claimed them all on deploy
+ * would offer a cold-start pool a dozen steps at once and take away the two
+ * buttons that currently work. The matcher acts only on what an owner sent.
+ */
+const MATCHABLE: ReadonlySet<string> = new Set<TaskState>(['escalated']);
 
 export interface Resolution {
   /** The state to move the task to. */
@@ -68,6 +85,16 @@ export function resolveTask(state: TaskState, action: TaskAction, text: string):
       return { ok: false, reason: 'Tell me what you did, and I will record it against the step.' };
     }
     return { ok: true, resolution: { to: 'approved', writesArtifact: true } };
+  }
+
+  if (action === 'find_expert') {
+    if (!MATCHABLE.has(state)) {
+      return {
+        ok: false,
+        reason: 'Only a step that stopped because it needed an expert can be sent to one.',
+      };
+    }
+    return { ok: true, resolution: { to: 'matching', writesArtifact: false } };
   }
 
   if (!RETRYABLE.has(state)) {

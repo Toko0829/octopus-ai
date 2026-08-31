@@ -2,6 +2,7 @@ import 'server-only';
 import type {
   Channel,
   ListMessagesResponse,
+  NodeOffer,
   NodeProfile,
   Room,
   RoomMember,
@@ -66,4 +67,15 @@ export function fetchMessages(roomId: string) {
  */
 export function fetchNode() {
   return get<{ node: NodeProfile }>('/node');
+}
+
+/**
+ * The node's offers, read on the server so the console renders with them
+ * already in hand.
+ *
+ * Same null-on-404 behaviour as `fetchNode`: a signed-in person who is not a
+ * node has no offers and that is not an incident.
+ */
+export function fetchNodeOffers() {
+  return get<{ offers: NodeOffer[] }>('/node/offers');
 }

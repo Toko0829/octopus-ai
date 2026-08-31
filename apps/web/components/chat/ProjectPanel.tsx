@@ -247,9 +247,7 @@ export function ProjectPanel({ roomId, canAct, onClose }: Props) {
                       <span className="work-flag waiting">{p.waitingOnYou} waiting on you</span>
                     )}
                     {p.escalated > 0 && (
-                      <span className="work-flag escalated">
-                        {p.escalated} needs an expert, and none can be brought in yet
-                      </span>
+                      <span className="work-flag escalated">{p.escalated} needs an expert</span>
                     )}
                     {p.artifactCount > 0 && (
                       <span className="work-flag delivered">
@@ -917,11 +915,23 @@ function ArtifactFile({
  * **`needs_user`** is the plan asking a question only this person can answer, so
  * the only thing to do is answer it.
  *
- * **`escalated`** is work the plan assigned to an expert. There is no marketplace,
- * so the honest offer is "do it yourself" plus "try again", and the second is
- * worth taking only when something changed, such as a source that was missing.
- * The copy says that plainly instead of implying a retry is itself the fix, and
- * it does not pretend an expert is coming.
+ * **`escalated`** is work the plan assigned to an expert, and it now has three
+ * ways forward rather than two. "Find an expert" sends it to the marketplace,
+ * which offers it to one ranked node at a time; "I will do this one" records the
+ * owner's own work as the deliverable; "Try again" is worth taking only when
+ * something changed, such as a source that was missing.
+ *
+ * **Sending it is a click rather than something that happens by itself**, which
+ * is the whole reason this button exists instead of a sweep over `escalated`.
+ * Twelve steps sit in that state on the live database, and a sweep claiming them
+ * on deploy would push a dozen at a cold-start pool while taking these controls
+ * away. Both refusals happen before the step moves, so a stage nobody can staff
+ * leaves all three buttons intact and says why.
+ *
+ * Once dispatched the step reads "Finding an expert" and has no controls, which
+ * is accepted rather than overlooked: there is nothing useful to offer while a
+ * stranger is deciding, and the cascade returns it within 48 hours per candidate
+ * if nobody takes it.
  */
 function ResolveStep({
   task,
@@ -934,11 +944,11 @@ function ResolveStep({
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
-  const [busy, setBusy] = useState<null | 'answer' | 'retry'>(null);
+  const [busy, setBusy] = useState<null | 'answer' | 'retry' | 'find_expert'>(null);
   const [error, setError] = useState<string | null>(null);
   const escalated = task.state === 'escalated';
 
-  async function run(action: 'answer' | 'retry') {
+  async function run(action: 'answer' | 'retry' | 'find_expert') {
     setBusy(action);
     setError(null);
     try {
@@ -958,6 +968,16 @@ function ResolveStep({
         <button type="button" className="work-action" onClick={() => setOpen(true)}>
           {escalated ? 'I will do this one' : 'Answer this'}
         </button>
+        {escalated && (
+          <button
+            type="button"
+            className="work-action"
+            disabled={busy !== null}
+            onClick={() => void run('find_expert')}
+          >
+            {busy === 'find_expert' ? 'Searching' : 'Find an expert'}
+          </button>
+        )}
         {escalated && (
           <button
             type="button"

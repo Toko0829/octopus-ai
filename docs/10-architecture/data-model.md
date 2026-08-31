@@ -955,3 +955,55 @@ Details worth knowing before touching this schema:
 - One concern per migration; RLS policy + pgTAP test land **with** the table.
 - **A check constraint that calls a function is not re-validated when the function changes.** Postgres validates a constraint when it is added and never again, so editing the body of something like `private.is_jurisdiction_code` (`20260831120000`) leaves every existing row passing a rule it no longer satisfies, silently. Any migration that changes such a function must `alter table … validate constraint` (or drop and re-add the constraint) for every table that calls it, in the same change.
 - Any change here requires updating this doc (owner in `.docmeta.yml`) and, if it changes tenant isolation, [security-compliance.md](security-compliance.md).
+
+## `offers` (marketplace slice 4, `20260903120000`)
+
+One offer of one task to one node. **The first table in the marketplace domain to
+land with its writers**, inverting the guards-before-writers ordering the other
+four followed, because `20260831120000:27-33` deferred it precisely on the
+grounds that "its entire content is a lifecycle" and a transition map nobody can
+exercise is the `ad_entities` mistake.
+
+| Column           | Type                   | Notes                                                                               |
+| ---------------- | ---------------------- | ----------------------------------------------------------------------------------- |
+| `id`             | `uuid` pk              |                                                                                     |
+| `task_id`        | `uuid not null`        | → `tasks` cascade                                                                   |
+| `project_id`     | `uuid not null`        | → `projects` cascade. Denormalised so the guard trigger's audit event needs no join |
+| `node_id`        | `uuid not null`        | → `node_profiles(user_id)` cascade                                                  |
+| `round`          | `int not null`         | Which cascade pass. Re-derived from the task's own transition history               |
+| `status`         | `public.offer_status`  | `open` is the only non-terminal value                                               |
+| `expires_at`     | `timestamptz not null` | Compared at read time; the sweep settles the row for the trail only                 |
+| `declined_at`    | `timestamptz`          | Required when `status = 'declined'`                                                 |
+| `decline_reason` | `text`                 | ≤ 500 chars, and only on a decline                                                  |
+
+**Enum `public.offer_status`:** `open | declined | expired | withdrawn |
+accepted`. Three settlements because they answer different questions; `accepted`
+is declared (add-value is irreversible) and **unreachable**, since accepting is
+inseparable from funding escrow.
+
+**Lifecycle:** `private.offer_transition_allowed` permits exactly `open →
+declined | expired | withdrawn`. One `security definer` trigger validates and
+writes the `offer.transitioned` audit event, with a `when (old.status is distinct
+from new.status)` clause so an ordinary edit is not read as a self-transition.
+The trigger binds `service_role`, so neither writer can route around the map.
+
+**Three uniqueness rules carry the design.** `(task_id, round)` is the sweep's
+replay contract: a pass that inserted and crashed re-derives the same round and
+collides rather than opening a second offer. `(task_id, node_id)` means a node is
+asked once ever. A partial unique on `(task_id) where status = 'open'` makes
+one-at-a-time cascade structural.
+
+**RLS and grants.** One policy, `offers_select_own` (`node_id = auth.uid()`), and
+`grant select` to `authenticated`. **The project owner reads zero rows**, which is
+deliberate and pgTAP-asserted: an offer names a node, and `20260901122000` closed
+the owner-sees-node and node-sees-owner pair together. `delete` and `truncate` are
+revoked **including from `service_role`**, the `node_verifications` precedent.
+
+**New index on `tasks`** (`20260903121000`): `tasks_market_idx (state) where state
+in ('matching','offered')`. The other two task indexes are project-scoped and
+serve the scheduler; the matcher is the first reader that asks a question across
+all projects.
+
+**New event verbs:** `offer.transitioned` (trigger), `offer.created` (the sweep,
+`system`), `offer.declined` (the route, `actor_kind = 'node'` with the node's id),
+and `task.match_requested` (the dispatch route, with the owner's id).

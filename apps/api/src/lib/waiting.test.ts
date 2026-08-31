@@ -76,13 +76,23 @@ describe('waitingMessage', () => {
     expect((message.match(/One step needs|steps need/g) ?? []).length).toBe(2);
   });
 
-  it('does not claim an expert is on the way, because none is', () => {
-    // The marketplace does not exist. A message implying somebody has been
-    // contacted would be false on the surface this product asks people to trust.
+  it('does not claim an expert is on the way, because none is yet', () => {
+    // The marketplace exists now, but a step sitting in `escalated` has not been
+    // offered to anybody: dispatching it is the owner's click. A message
+    // implying somebody had been contacted would still be false.
     const message = waitingMessage(summariseWaiting(report([result('t3', 'escalated')])), titles);
 
-    expect(message).toContain('cannot bring one in yet');
-    expect(message).toContain('paused rather than under way');
+    expect(message).toContain('cannot start these myself');
+    expect(message).not.toMatch(/expert (is|has been) (on the way|contacted|found)/i);
+  });
+
+  it('points at the panel, because that is where the three ways forward are', () => {
+    // The retired copy said "I cannot bring one in yet", which stopped being
+    // true the moment "Find an expert" appeared beside the other two buttons.
+    const message = waitingMessage(summariseWaiting(report([result('t3', 'escalated')])), titles);
+
+    expect(message).toContain('project panel');
+    expect(message).not.toContain('cannot bring one in yet');
   });
 
   it('says nothing was spent when work has stopped', () => {
