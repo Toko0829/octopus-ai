@@ -44,6 +44,62 @@ from .schemas import (
 logger = logging.getLogger("octopus.ai")
 
 
+# The attribute names a bare LogRecord already carries, derived rather than
+# hand-listed so a Python upgrade cannot leave a stale copy behind.
+_RESERVED = frozenset(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {
+    "asctime",
+    "message",
+    "taskName",
+}
+
+
+class _ExtraFormatter(logging.Formatter):
+    """Renders the `extra=` fields that every call site in this service passes.
+
+    Until this existed the service inherited uvicorn's default formatter, which
+    discards them, and the cost was not cosmetic. `planner.py` records the reason
+    a structured plan was unusable and that reason is the only thing separating a
+    truncated response from an upstream timeout, so the one field that identifies
+    the failure was written and thrown away on every occurrence. The same was
+    true of every `agent_run_id`, which is what ties a log line to the run a
+    person is waiting on.
+
+    Values are rendered with `repr` so an empty string and a missing key are
+    distinguishable, which is the distinction that matters when the field being
+    read is an error message.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        base = super().format(record)
+        extras = {
+            key: value
+            for key, value in record.__dict__.items()
+            if key not in _RESERVED and not key.startswith("_")
+        }
+        if not extras:
+            return base
+        rendered = " ".join(f"{key}={value!r}" for key, value in sorted(extras.items()))
+        return f"{base} | {rendered}"
+
+
+def configure_logging(level: int = logging.INFO) -> None:
+    """Attach the formatter to this package's logger only.
+
+    Scoped to `octopus` rather than to the root logger on purpose: uvicorn
+    configures its own handlers, and taking the root would either duplicate every
+    access line or silence it, depending on load order. `propagate = False` is
+    what keeps this from doing the first.
+    """
+    handler = logging.StreamHandler()
+    handler.setFormatter(_ExtraFormatter("%(levelname)s:%(name)s:%(message)s"))
+
+    package_logger = logging.getLogger("octopus")
+    package_logger.handlers.clear()
+    package_logger.addHandler(handler)
+    package_logger.setLevel(level)
+    package_logger.propagate = False
+
+
 class _State:
     """Process-wide singletons. Built at startup, closed at shutdown."""
 
@@ -66,6 +122,9 @@ async def lifespan(_: FastAPI):
     Configuration is resolved here so a missing key fails at startup with the
     variable named, rather than as a 500 on the first retrieval.
     """
+    # Before anything else logs, so the startup lines carry their context too.
+    configure_logging()
+
     settings = get_settings()
     state.settings = settings
     state.db = Database(settings)
