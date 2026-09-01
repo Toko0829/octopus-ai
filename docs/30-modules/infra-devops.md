@@ -283,6 +283,36 @@ pausing, and campaigns are still measured and shown. The cap bounds pauses
 **attempted** rather than campaigns judged, since judging is a cheap read plus a
 pure function.
 
+### The no-show sweep, and the one it is placed next to
+
+`NO_SHOW_ENABLED` (default **on**) and `NO_SHOW_MAX_PER_TICK` (default 3) control
+the sweep that returns a step to the marketplace when the expert who took it
+missed the agreed date ([ADR-0023](../40-adr/0023-a-breached-deadline-reassigns.md)).
+Same polarity as every key here except the crawler's, for the same reason: off by
+default is for the sweep that reaches a stranger's server, and this one reaches
+nobody outside the system. **What turning it off costs is stated rather than
+implied:** an abandoned step then sits at `escrow_funded` forever with its hold
+committing the owner's ceiling, which is the dead end slice 6 exists to close.
+
+**Doubly inert** in its siblings' sense: it selects only live engagements past
+`deadline_at` whose task is still `escrow_funded` or `in_progress`, so on a
+deployment where nobody has missed a deadline it does one indexed read and stops.
+
+**Its position on the pass is the point.** It runs immediately after the escrow
+reconcile and immediately **before** the matcher, the way optimize runs directly
+after metrics: it _produces_ tasks at `matching`, and the matcher picks them up in
+the same pass rather than a tick later, so a person waiting on a replacement
+expert waits one interval less for no extra work. It sits after the reconcile
+because both give money back and that one is unwinding work the owner has already
+cancelled, which is the less ambiguous case.
+
+The cap bounds reassignments **performed** rather than engagements examined, and
+the warnings the sweep sends are deliberately not counted against it, so a batch
+of nodes approaching their deadline cannot starve the one who passed it. It is
+small for a second reason its siblings do not have: each reassignment produces an
+offer on the next matcher pass, so a large number here would push a burst at a
+cold-start pool.
+
 ### Measuring shares publishing's polarity, not crawling's
 
 `METRICS_ENABLED` (default **on**) and `METRICS_MAX_PER_TICK` (default 3) control

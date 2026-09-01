@@ -67,6 +67,7 @@ function admin() {
         state.rows.filter((row) =>
           Object.entries(applied).every(([col, val]) => {
             if (col.startsWith('not:')) return row[col.slice(4)] !== null;
+            if (col.startsWith('neq:')) return row[col.slice(4)] !== val;
             if (col.startsWith('gt:')) return String(row[col.slice(3)]) > String(val);
             if (col.startsWith('in:')) return (val as unknown[]).includes(row[col.slice(3)]);
             return row[col] === val;
@@ -86,6 +87,13 @@ function admin() {
         },
         not: (column: string) => {
           applied[`not:${column}`] = true;
+          return b;
+        },
+        // Slice 6: `cascadeRound` excludes the owner's first dispatch rather than
+        // listing the states that count, so the stub has to honour a `neq` the
+        // way it honours `eq`.
+        neq: (column: string, value: unknown) => {
+          applied[`neq:${column}`] = value;
           return b;
         },
         gt: (column: string, value: unknown) => {
@@ -366,6 +374,82 @@ describe('matcherSweep: settling and cascading', () => {
     const move = written.find((w) => w.table === 'tasks' && w.op === 'update');
     expect((move?.values as Record<string, unknown>).state).toBe('matching');
     expect(move?.filters.state).toBe('offered');
+  });
+
+  it('counts a reassignment as a round, so it cannot collide with the no-show offer', async () => {
+    // **The defect slice 6 would otherwise have created**, and the reason the
+    // round derivation had to change in the same push. `20260906123000` adds
+    // `escrow_funded -> matching`, which does not pass through `offered`. Counted
+    // the old way, this task would re-derive round 0, the insert would collide on
+    // `offers_task_round_idx`, the 23505 arm would read back the no-show's
+    // ACCEPTED offer, and the sweep would dispatch a third node against it.
+    tables.tasks.rows = [aTask({ state: 'matching' })];
+    tables.node_skills.rows = [{ node_id: NODE_B, skill_tag: 'copywriting' }];
+    tables.node_profiles.rows = [aNode(NODE_B, 100)];
+    tables.offers.rows = [
+      {
+        id: 'o1',
+        task_id: TASK,
+        project_id: PROJECT,
+        node_id: NODE_A,
+        round: 0,
+        status: 'accepted',
+        expires_at: '2026-09-30T12:00:00.000Z',
+      },
+    ];
+    tables.events.rows = [
+      {
+        id: 'e1',
+        verb: 'task.transitioned',
+        subject_type: 'task',
+        subject_id: TASK,
+        payload: { from: 'escalated', to: 'matching' },
+        'payload->>from': 'escalated',
+        'payload->>to': 'matching',
+      },
+      {
+        id: 'e2',
+        verb: 'task.transitioned',
+        subject_type: 'task',
+        subject_id: TASK,
+        payload: { from: 'escrow_funded', to: 'matching' },
+        'payload->>from': 'escrow_funded',
+        'payload->>to': 'matching',
+      },
+    ];
+
+    await matcherSweep(deps());
+
+    const offer = written.find((w) => w.table === 'offers' && w.op === 'insert');
+    // Round 1, not 0: the owner's first dispatch is excluded and the
+    // reassignment is counted.
+    expect((offer?.values as Record<string, unknown>).round).toBe(1);
+    expect((offer?.values as Record<string, unknown>).node_id).toBe(NODE_B);
+  });
+
+  it('does not count the owner first dispatch as a return', async () => {
+    // The other half of the same predicate. `escalated -> matching` is the first
+    // time a step reaches the market, so round 0 is correct and counting it would
+    // start every cascade at 1 and skip a round number forever.
+    tables.tasks.rows = [aTask({ state: 'matching' })];
+    tables.node_skills.rows = [{ node_id: NODE_A, skill_tag: 'copywriting' }];
+    tables.node_profiles.rows = [aNode(NODE_A, 100)];
+    tables.events.rows = [
+      {
+        id: 'e1',
+        verb: 'task.transitioned',
+        subject_type: 'task',
+        subject_id: TASK,
+        payload: { from: 'escalated', to: 'matching' },
+        'payload->>from': 'escalated',
+        'payload->>to': 'matching',
+      },
+    ];
+
+    await matcherSweep(deps());
+
+    const offer = written.find((w) => w.table === 'offers' && w.op === 'insert');
+    expect((offer?.values as Record<string, unknown>).round).toBe(0);
   });
 
   it('leaves a live offer alone', async () => {

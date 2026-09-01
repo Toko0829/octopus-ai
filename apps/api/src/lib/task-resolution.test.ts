@@ -105,3 +105,70 @@ describe('resolveTask: find_expert', () => {
     expect(out.ok === false && out.reason).not.toContain('—');
   });
 });
+
+describe('resolveTask · the owner verdict on expert work', () => {
+  const NOTE = 'The hook does not land. Recut so the price reveal is in the first two seconds.';
+
+  it('approves work that an expert handed over', () => {
+    const out = resolveTask('proof_submitted', 'approve_work', '');
+    expect(out).toEqual({ ok: true, resolution: { to: 'approved', writesArtifact: false } });
+  });
+
+  it('sends work back with the note as the deliverable', () => {
+    const out = resolveTask('proof_submitted', 'reject_work', NOTE);
+    expect(out).toEqual({ ok: true, resolution: { to: 'rejected', writesArtifact: true } });
+  });
+
+  it('refuses to send work back with no reason', () => {
+    // The asymmetry is the point: approving needs no words, rejecting does. The
+    // node reads that note and works from it, and their fee sits in escrow while
+    // they guess without one.
+    const out = resolveTask('proof_submitted', 'reject_work', '   ');
+    expect(out.ok).toBe(false);
+    expect(out.ok === false && out.reason).toMatch(/needs to change/i);
+  });
+
+  it('refuses a verdict on a step with nothing waiting for review', () => {
+    for (const state of [
+      'escrow_funded',
+      'in_progress',
+      'approved',
+      'rejected',
+      'done',
+      'escalated',
+      'needs_user',
+    ] as const) {
+      expect(resolveTask(state, 'approve_work', '').ok, state).toBe(false);
+      expect(resolveTask(state, 'reject_work', NOTE).ok, state).toBe(false);
+    }
+  });
+
+  it('names the race when somebody is already recording a verdict', () => {
+    // `in_review` is transit-only: the route walks proof_submitted through it in
+    // one request. Seeing it means another click got there first, and saying so
+    // is more useful than "nothing to review".
+    const out = resolveTask('in_review', 'approve_work', '');
+    expect(out.ok).toBe(false);
+    expect(out.ok === false && out.reason).toMatch(/already recording/i);
+  });
+
+  it('does not let the review verbs reach a step the other verbs own', () => {
+    // The two control families must not overlap: `stuck` is "the plan cannot
+    // continue without you", `reviewable` is "somebody is waiting to be paid".
+    expect(resolveTask('escalated', 'approve_work', '').ok).toBe(false);
+    expect(resolveTask('proof_submitted', 'answer', 'done').ok).toBe(false);
+    expect(resolveTask('proof_submitted', 'find_expert', '').ok).toBe(false);
+    expect(resolveTask('proof_submitted', 'retry', '').ok).toBe(false);
+  });
+
+  it('writes no em dash in its refusals, per rule 22', () => {
+    const refusals = [
+      resolveTask('proof_submitted', 'reject_work', ''),
+      resolveTask('in_review', 'approve_work', ''),
+      resolveTask('done', 'approve_work', ''),
+    ];
+    for (const out of refusals) {
+      expect(out.ok === false && out.reason).not.toContain('\u2014');
+    }
+  });
+});

@@ -1309,6 +1309,16 @@ export const NodeEngagement = z.object({
      * so this is not a second machine, it is the same one read from the same row.
      */
     state: TaskState,
+    /**
+     * What this step asks for, from `tasks.acceptance_criteria`.
+     *
+     * **Disclosed because the node cannot do the work without it**, which is the
+     * test every field in this projection has to pass. It is also what the
+     * hand-over form is built from: one response field per criterion, checked by
+     * `reviewProof` for being non-empty and by nobody for being any good. Empty
+     * on a step planned before `20260816120000`, and the form degrades to a note.
+     */
+    acceptanceCriteria: z.array(z.string()),
   }),
   /** The room and thread the node was admitted to. Null only if the thread was deleted. */
   roomId: z.string().uuid().nullable(),
@@ -1331,6 +1341,89 @@ export type ListNodeEngagementsResponse = z.infer<typeof ListNodeEngagementsResp
  */
 export const AcceptOfferResponse = z.object({ engagement: NodeEngagement });
 export type AcceptOfferResponse = z.infer<typeof AcceptOfferResponse>;
+
+/**
+ * What a node hands over when they say the work is done.
+ *
+ * **Arrives as multipart form fields**, because the same request carries the
+ * files, and `writeFileArtifact` was written around uploading the object and the
+ * row together so a failure leaves neither. The alternative, a JSON submit plus
+ * a separate signed upload URL, reintroduces exactly the orphan that writer
+ * exists to prevent.
+ *
+ * `responses` is **positional against `tasks.acceptance_criteria`**, in the order
+ * they are stored on the task. The task row is authoritative and the route pairs
+ * them: a length that does not match the criteria the node was shown is refused
+ * rather than padded, because the plan may have been changed by a diff while the
+ * form was open and silently answering a question nobody asked is worse than
+ * asking somebody to reload.
+ */
+export const SubmitProofFields = z.object({
+  /** What was done, in the node's own words. The owner reads this first. */
+  note: z.string().trim().min(1).max(8000),
+  /** One per acceptance criterion, positionally. Empty strings are refused by the checker. */
+  responses: z.array(z.string().max(2000)).max(8).default([]),
+});
+export type SubmitProofFields = z.infer<typeof SubmitProofFields>;
+
+/**
+ * A proof the node submitted, projected back to them.
+ *
+ * **Read with the service key, not through a policy**, and that is the whole
+ * design. A thread-scoped member is not a project member (`20260901122000`), so
+ * they read zero rows from `artifacts` and zero objects from its bucket. Opening
+ * those by engagement was considered and rejected in slice 6: the storage policy
+ * resolves the tenant from the **project** in path segment one, so an
+ * engagement-scoped version would need a per-object text join or a change to a
+ * path convention stated in three places, and opening the row half alone would
+ * show a node a row whose file 404s. Opening `artifacts` by engagement would also
+ * hand over every artifact on that task, including the AI's drafts and the
+ * owner's own write-up, which is a disclosure decision that slice does not need
+ * to make.
+ *
+ * So the projection is the access control, exactly as it is for `NodeOffer` and
+ * `NodeEngagement`: the node's own engagement is read **as the caller** through
+ * `engagements_select_node`, and only then does the service key read the rows
+ * this shape describes. No task id, no project id, no citations.
+ */
+export const NodeProofArtifact = z.object({
+  id: z.string().uuid(),
+  title: z.string().nullable(),
+  /** The write-up. Null on a row that is a file. */
+  body: z.string().nullable(),
+  /** True when this row is a file, so the console offers a download rather than text. */
+  isFile: z.boolean(),
+  createdAt: z.string(),
+});
+export type NodeProofArtifact = z.infer<typeof NodeProofArtifact>;
+
+export const ListNodeProofResponse = z.object({ proof: z.array(NodeProofArtifact) });
+export type ListNodeProofResponse = z.infer<typeof ListNodeProofResponse>;
+
+/**
+ * What starting or submitting returns: the engagement, re-read.
+ *
+ * The engagement rather than a bare `{ ok: true }`, on `AcceptOfferResponse`'s
+ * reasoning: `task.state` is the only state an engagement has, it is what the
+ * console renders, and it is exactly what just changed. A client that retried a
+ * request whose response it never saw reads the same row and lands in the same
+ * place.
+ */
+export const NodeEngagementResponse = z.object({
+  engagement: NodeEngagement,
+  /**
+   * Present only on a submit that the floor check bounced. The node needs to see
+   * why they are still at `in_progress` rather than concluding the button failed.
+   */
+  bounced: z
+    .object({
+      reasons: z.array(z.string()),
+      /** Which criteria were left blank, by index, so the form can point at the field. */
+      unaddressed: z.array(z.number().int().nonnegative()),
+    })
+    .optional(),
+});
+export type NodeEngagementResponse = z.infer<typeof NodeEngagementResponse>;
 
 /**
  * **None of the `/api/node` routes appear in the ts-rest router below, and that

@@ -10,6 +10,147 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### The roster stops listing people who cannot read the room (`20260906125000`)
+
+A correction rather than part of slice 6's subject, and the **second** this policy
+has needed. It was found by looking at a real room with a real node in it for the
+first time, which is the first moment it was observable at all.
+
+`design-system-frontend.md` gave, as the reason a node's messages are badged by
+role rather than by name, that `room_members_select_member` "gives a room-scoped
+member the room-scoped roster plus their own row, so a thread-scoped membership is
+invisible to the owner". Measured as the owner: **two rows visible, one of them
+thread-scoped**, and the node rendered under "in this room" as a member of a room
+it cannot read.
+
+**The misreading is the one `20260901123000` was written to fix, surviving on the
+other side of the same predicate.** `private.member_scope_covers(room_id, null)`
+asks whether the **caller** is room-scoped; it does not filter which **rows** come
+back. So a room-scoped caller passed once and then saw every membership row in the
+room. That migration's own header calls `room_members` "the one table where the
+rows _are_ the scopes", which is exactly why a predicate about the caller reads as
+though it were about the row.
+
+**One conjunct changes**: `scope = 'room'` is added to the first disjunct, so it
+reads "a room-scoped caller sees room-scoped rows". The second disjunct is
+untouched and still gives anybody live their own row, whatever its scope, with the
+`is_room_member` conjunct that `20260901123000` records as not redundant. **The
+node's view does not move at all.**
+
+The policy is narrowed rather than the doc rewritten because the roster was making
+a false claim about somebody's access, and the owner loses nothing: they learn who
+took their step from the engagement line and read the node's `profiles` row
+through `private.engaged_counterparty`, neither of which is touched. The grant was
+also to every room-scoped member rather than to the owner, which is the mirror of
+the problem the thread narrowing exists to solve.
+
+**Nothing caught it because `thread_scope.sql` had never asserted what the owner
+sees on that table** — every case asked what a thread-scoped member sees. Three
+assertions now cover the other direction (51 to 54), including the regression half
+that the owner still reads their own room.
+
+### A deadline, and a step that goes back to the market (`20260906121000` … `20260906124000`)
+
+Marketplace slice 6, the second half. Four migrations, and the ordering between
+them is the point rather than a convenience.
+
+**`20260906121000` puts the number on the offer.** `offers.work_deadline_hours`,
+`not null default 168`, checked `> 0`. It is here rather than inlined in
+`accept_offer` for three reasons: there is then **one representation of a policy
+number** (the constant lives in `packages/marketplace` beside `OFFER_TTL_MS`, and
+the arithmetic happens in SQL); **the node sees it before they accept**, which is
+what the module doc's offer flow already promises; and it is **frozen per offer**,
+so changing the constant later cannot retroactively shorten a deadline on work
+already taken, exactly as `engagements.agreed_price` is frozen rather than re-read
+from the profile. It is distinct from `expires_at`, which is how long the node has
+to _answer_; conflating the two would make a slow reply eat into the time to
+deliver.
+
+**`20260906122000` gives `engagements.deadline_at` its writer**, two slices after
+it landed as a fact with no recorder. `accept_offer` stamps
+`now() + make_interval(hours => …)` from the offer row and **never from an
+argument**: `20260904125000:22-24` is binding, and the caller of the accept route
+is the node, so a node naming their own deadline is the same refusal as a node
+naming their own price. The signature is unchanged. The value also goes into the
+`engagement.created` payload beside `ceiling`, `committed_before` and
+`escrow_held_before`, on the same discipline: the numbers a decision rested on
+belong where a dispute can read them. **`room_members.expires_at` stays null**,
+deliberately: a membership boxed by the deadline would cut a node out of their own
+thread the instant they ran late, at exactly the moment they most need to say why.
+
+**`20260906123000` adds two arcs** and **`20260906124000` is their producer**, two
+files in one push on `20260904124000`'s idiom: a lifecycle only widens when
+something can walk the new edge.
+
+    escrow_funded -> matching     a node accepted and never started
+    in_progress   -> matching     a node started and stopped
+
+Why `matching` rather than `escalated` or `failed`, why three other arcs stay
+dropped, and why the reassignment is one transaction are all in
+[ADR-0023](../40-adr/0023-a-breached-deadline-reassigns.md). Two things belong
+here as data-model facts. `engagements.outcome = 'reassigned'` and the **partial**
+`engagements_one_live_idx` were both written for this path in `20260904120000` and
+have had no producer since; they get one here. And neither arc leaves from
+`proof_submitted` or `in_review`, which is enforced in the map **and** in the
+sweep's selection, deliberate duplication for the one rule where a single guard is
+not enough: a deadline passing after delivery is the owner's failure to review,
+and reassigning there would give a finished person's fee to a stranger.
+
+**`public.reassign_engagement(uuid)` is `service_role` only**, like
+`accept_offer`. A reassignment is a clock's decision; a button would let either
+party end the other's deal. Its step 2 is the whole safety argument: the task move
+is conditional on the two states a no-show can be in, and **zero rows raises**,
+unwinding everything, because a node who handed over in that window has won.
+
+Verified against the live database in rolled-back transactions:
+`supabase/tests/marketplace_proof.sql`, **34/34**.
+
+### A thread gets its own realtime topic (`20260906120000_thread_realtime_topics.sql`)
+
+Marketplace slice 6, first migration. `20260901122000` narrowed both
+`realtime.messages` policies with `and m.scope = 'room'`, which was right and left
+a thread-scoped node with **no socket at all**; slice 5 accepted a ten-second poll
+explicitly rather than deferring the question a third time. This closes it.
+
+**The broadcaster and the policy are in one file, and that is the ordering rather
+than a convenience.** `20260901122000:93-102` refused to add a `'chat:thread:'`
+branch on the grounds that it "would have no broadcaster and no subscriber, so it
+would be a third guard with no writer in a migration whose entire subject is that
+anti-pattern". Splitting them here reproduces exactly that, in one direction or
+the other: a policy with nothing emitting is a guard over an empty set, and an
+emitter with no policy is a topic nobody may join.
+
+**Two topics, not one.** `broadcast_message` emits `chat:thread:<thread>` **beside**
+`chat:room:<room>`, never instead of it. The owner is room-scoped, is entitled to
+read their node's thread messages, and already does; moving the row onto the
+thread topic alone would take that away **in realtime only**, so it would arrive
+on the next fetch and not on the socket. That presents as "the chat is slow for
+some messages and not others", which is the worst shape a delivery bug can take.
+`realtime.send()` traps its own exceptions, so neither call can undo the INSERT
+that is already committed.
+
+**Extended in place, never a third policy.** Both policies gain one `OR` disjunct
+through `alter policy`. A separate additive policy would union to the same rows
+and leave **two copies of the `expires_at` time-box** to keep in step, which is
+the two-representations defect ([ADR-0015](../40-adr/0015-service-geo-is-a-jurisdiction-code.md))
+in the one place it must not be: an expired node would keep a live socket while
+correctly losing the rows. The predicates stay inlined because the input is
+`realtime.topic()`, so neither picks anything up from a helper rewrite.
+
+**The send half gains the same disjunct for parity rather than for a feature.**
+It governs `channel.track()` presence, and there is no thread presence UI: nothing
+pushes on a thread topic today, and the only member whose scope covers a given
+thread topic is the node themselves. The pair has been written and altered
+together since it was created, and a pair that disagrees about which topics exist
+is a difference somebody has to rediscover.
+
+**No table change, no grant change.** `thread_scope.sql` grows from 46 to 51
+assertions and its verdicts move in both directions: it now pins that a
+thread-scoped member reaches their own thread topic and **not** the room topic,
+not another thread's, and not their own once expired, and that the owner reaches
+the room topic and no thread topic. Verified against the applied migration on the
+live database, 11/11 on the assertions that changed.
+
 ### The refusals get written down (`20260905120000_retrieval_gaps.sql`)
 
 **One table, no new capability, and the point of it is that the corpus has been

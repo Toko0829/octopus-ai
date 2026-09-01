@@ -42,6 +42,47 @@ import { bestCoveringJurisdiction, jurisdictionExactness } from './jurisdiction'
  */
 export const OFFER_TTL_MS = 48 * 60 * 60 * 1000;
 
+/**
+ * How long the node gets to do the work, once they have accepted.
+ *
+ * **A different clock from `OFFER_TTL_MS`, and conflating them would be a real
+ * defect rather than a tidiness one.** That one is how long somebody has to
+ * answer; this is how long they have to deliver. If they were the same number, a
+ * node who replied on the second day would have lost half their time to
+ * thinking about it.
+ *
+ * **Seven days, and a constant for `OFFER_TTL_MS`'s reason:** nothing about a
+ * deployment should change it, and staging and production disagreeing about when
+ * somebody loses paid work is not a difference worth being able to configure.
+ *
+ * The number itself is set by the same two facts, pulling the same way. **A node
+ * has no notification channel** — the notifications module is specified and
+ * unbuilt — so anything tight would expire against people who simply had not
+ * looked. And the work is full-funnel marketing: a video shoot, a landing page,
+ * an outreach sequence are days of work with other people's calendars in them,
+ * not a notarization with a closing date. It shortens when offers are actually
+ * delivered to somebody and when the first real deadline is missed for a reason
+ * other than silence.
+ *
+ * **Hours rather than milliseconds, unlike `OFFER_TTL_MS`**, because this one is
+ * written into `offers.work_deadline_hours` and the arithmetic happens in SQL:
+ * `accept_offer` freezes `now() + make_interval(hours => …)` onto the engagement,
+ * so the number crosses the boundary in the unit the column stores.
+ */
+export const WORK_TTL_HOURS = 168;
+
+/**
+ * How long before the deadline a node is warned.
+ *
+ * **The warning exists so reassignment is never the first thing a working node
+ * hears.** Somebody who is quietly getting on with it and has lost track of the
+ * date should get a nudge, not a cancellation; somebody who has genuinely
+ * disappeared is unaffected either way, which is why this is a day rather than an
+ * hour. It is a read of the same `deadline_at` rather than a second stored
+ * timestamp, so there is one representation of when the work is due.
+ */
+export const WORK_WARN_BEFORE_MS = 24 * 60 * 60 * 1000;
+
 /** A node the pool query returned, reduced to what ranking reads. */
 export interface CandidateNode {
   nodeId: string;

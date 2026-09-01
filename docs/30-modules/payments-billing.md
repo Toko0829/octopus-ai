@@ -47,10 +47,10 @@ Connect **Express** so Stripe handles the node's KYC/tax (1099-K / DAC7 / local 
 `alter type ... add value` cannot be rolled back and this vocabulary is young.
 **One arc is mapped:**
 
-| From   | To         | Made by                                                             |
-| ------ | ---------- | ------------------------------------------------------------------- |
-| `held` | `refunded` | `apps/api/src/lib/escrow-reconcile.ts`, on the ticker               |
-| `held` | `released` | **nobody yet.** The payout slice, and the map refuses it until then |
+| From   | To         | Made by                                                                                                                        |
+| ------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `held` | `refunded` | `apps/api/src/lib/escrow-reconcile.ts` (a cancelled step) **and** `public.reassign_engagement` (a no-show), both on the ticker |
+| `held` | `released` | **nobody yet.** The payout slice, and the map refuses it until then                                                            |
 
 **`released` is in the check constraint and out of the map**, and the pairing is
 deliberate rather than an oversight to tidy: the constraint is the column's
@@ -72,6 +72,41 @@ membership is revoked by stamping `expires_at`.
 **A step that reached `done` is never refunded**, and that exclusion is the most
 consequential line in the sweep: `done` means approved, and refunding it would
 take back money somebody earned. That hold is the payout's to release.
+
+**That exclusion stopped being free in slice 6.** `escrow-reconcile.ts` recorded
+it as "free today and load-bearing the moment `escrow_funded → in_progress` has a
+producer", because nothing could reach `done` while holding escrow. It has a
+producer now.
+
+### `held → refunded` gained a second producer (slice 6)
+
+`public.reassign_engagement` refunds a hold for a different reason: the expert who
+took the step missed the agreed date, so the work goes back to the market and the
+money goes back to the owner. Three things separate it from the reconcile sweep
+and all three are stated in [ADR-0023](../40-adr/0023-a-breached-deadline-reassigns.md):
+
+- **It is one transaction rather than four condition-idempotent steps**, because
+  one of the actors in the window is a live human doing work, and every partial
+  state is unsafe. A moved task with a stale hold makes `accept_offer` refuse the
+  replacement for money already spoken for; a moved task with a live engagement
+  makes the replacement collide on `engagements_one_live_idx` and unwind
+  permanently on every retry.
+- **The engagement ends as `'reassigned'`, not `'cancelled'`**, which gives that
+  value its first producer and finally justifies the partial
+  `engagements_one_live_idx`: a second engagement on the same task is exactly what
+  the next acceptance creates.
+- **It never touches a step that was handed over.** `proof_submitted`,
+  `in_review` and everything after are refused by the transition map and excluded
+  by the sweep's selection. A deadline that passes after delivery is the owner's
+  failure to review, and reassigning there would take a finished person's fee and
+  give it to a stranger.
+
+**Nothing is refunded at a provider, because nothing was ever charged.** The
+argument is `escrow-reconcile.ts`' and it transfers unchanged: routing an internal
+correction through a `provider.refund()` that the only registered implementation
+would answer trivially would dress it up as money movement, in the one domain
+where that distinction is the whole regulatory posture. The counsel gate below is
+unmoved.
 
 ## Double-entry ledger
 

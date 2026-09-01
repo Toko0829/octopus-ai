@@ -239,6 +239,38 @@ const EnvSchema = z.object({
   ESCROW_RECONCILE_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
 
   /**
+   * The no-show sweep: an expert took a step, missed the agreed date, and the
+   * work goes back to the marketplace with the money released to the owner.
+   *
+   * **On by default**, the polarity every sweep here has except `CRAWL_ENABLED`:
+   * off-by-default is for the one that reaches a stranger's server, and this
+   * reaches nobody outside the system. Turning it off is a deployment-shaped kill
+   * switch, and the cost of it being off is stated rather than implied: an
+   * abandoned step stays `escrow_funded` forever and its hold keeps committing
+   * the owner's ceiling, which is exactly the dead end slice 6 exists to close.
+   *
+   * **Doubly inert until somebody misses a deadline**, since it selects only live
+   * engagements whose `deadline_at` has passed and whose task is still
+   * `escrow_funded` or `in_progress`.
+   */
+  NO_SHOW_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
+  /**
+   * How many engagements one pass may reassign.
+   *
+   * Three, matching its siblings, and it bounds reassignments PERFORMED rather
+   * than engagements examined: the warnings this sweep sends are free and are
+   * deliberately not counted against it, so a batch of nodes approaching their
+   * deadline cannot starve the one that passed it. Small on purpose for a second
+   * reason the money sweeps do not have: each reassignment produces a task at
+   * `matching` that the matcher picks up in the same pass, so a large number here
+   * would push a burst of offers at a cold-start pool.
+   */
+  NO_SHOW_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
+
+  /**
    * Signing key for the OAuth `state` parameter.
    *
    * **Optional in this schema and required at the point of use**, which is a

@@ -25,14 +25,52 @@ async function proxy(request: NextRequest, path: string[]) {
   const target = new URL(`${API_URL}/api/${path.join('/')}`);
   request.nextUrl.searchParams.forEach((v, k) => target.searchParams.set(k, v));
 
+  const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+
+  /**
+   * **The caller's own `Content-Type` is forwarded, not replaced.**
+   *
+   * This hardcoded `application/json` until slice 6, which was right while every
+   * payload was JSON and became a silent corruption the moment one was not: a
+   * multipart body carries its boundary **in the header**, so overwriting it
+   * hands Fastify a body it cannot parse and a node's proof upload fails with a
+   * parser error that names nothing about uploads. Defaulting to JSON when the
+   * header is absent keeps every existing caller identical.
+   */
+  const contentType = request.headers.get('content-type');
+
+  // Buffered rather than streamed: streaming needs `duplex: 'half'` and the caps
+  // that make buffering safe are enforced upstream, where the refusal can be a
+  // sentence (`MAX_PROOF_FILE_BYTES` in `apps/api/src/lib/proof.ts`).
+  // `arrayBuffer` rather than `text` so bytes survive exactly, which is what a
+  // multipart boundary needs and what `text` would have mangled.
+  const raw = hasBody ? await request.arrayBuffer() : undefined;
+
+  /**
+   * **A verb that permits a body is not the same as a request that has one**, and
+   * conflating them is what made every bodyless POST in this app fail.
+   *
+   * Deciding from the method alone forwards a zero-length body with a
+   * `Content-Type` header, and Fastify refuses that combination before the
+   * handler ever runs: `FST_ERR_CTP_EMPTY_JSON_BODY`. Several routes are written
+   * to take no body at all and check `request.body !== undefined` themselves;
+   * they never got the chance.
+   *
+   * Deciding from the payload means an empty POST forwards neither a body nor a
+   * content-type, the parser is skipped, and those handlers see exactly the
+   * `undefined` they were written against.
+   */
+  const hasPayload = raw !== undefined && raw.byteLength > 0;
+
   const init: RequestInit = {
     method: request.method,
     headers: {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
+      // The caller's own type, never one invented here: a multipart body carries
+      // its boundary in this header, so overwriting it corrupts the request.
+      ...(hasPayload && contentType ? { 'Content-Type': contentType } : {}),
     },
-    // Streaming a body would need duplex: 'half'; these payloads are small.
-    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text(),
+    body: hasPayload ? raw : undefined,
     cache: 'no-store',
   };
 

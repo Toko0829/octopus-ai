@@ -42,6 +42,14 @@ export interface WriteFileArtifactInput {
   bytes: Uint8Array;
   contentType: string;
   filename: string;
+  /**
+   * Who produced it. Defaults to `agent`, which is what this writer hardcoded
+   * while it had no caller at all; slice 6 gave it one and the default became
+   * wrong for it. A node's proof written as `agent` is a row that lies about its
+   * author on the one surface where authorship is the point, and `author_kind`
+   * has carried `'node'` since `20260728120000`.
+   */
+  createdBy?: 'agent' | 'user' | 'node' | 'system';
   /** Which attempt produced it, so the file ties back to a trace. */
   taskRunId?: string | null;
   citations?: unknown;
@@ -130,7 +138,7 @@ export async function writeFileArtifact(
       storage_path: storagePath,
       citations: input.citations ?? [],
       task_run_id: input.taskRunId ?? null,
-      created_by: 'agent',
+      created_by: input.createdBy ?? 'agent',
     })
     .select('id')
     .maybeSingle<{ id: string }>();

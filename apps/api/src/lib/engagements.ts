@@ -3,6 +3,7 @@ import type { NodeEngagement, TaskState } from '@octopus/contracts';
 import { checkSpendCap } from '@octopus/marketing';
 import { carriesRealMoney, escrowKey, providerFor } from '@octopus/payments';
 import { readSpendInputs } from './spend-reads';
+import { acceptanceCriteria } from './proof';
 
 /**
  * Accepting an offer, from the node's side, and reading back what they took.
@@ -306,7 +307,7 @@ async function projectEngagements(
 
   const { data: taskRows, error: taskError } = await admin
     .from('tasks')
-    .select('id, title, stage, detail, state')
+    .select('id, title, stage, detail, state, acceptance_criteria')
     .in('id', taskIds);
   if (taskError) throw taskError;
 
@@ -324,6 +325,10 @@ async function projectEngagements(
         stage: (t.stage as string | null) ?? null,
         detail: (t.detail as string | null) ?? null,
         state: t.state as TaskState,
+        // Parsed through the same guard the proof routes use, because the column
+        // is `jsonb` and had no reader at all until slice 6: nothing has ever
+        // checked that what the planner writes is the shape everybody assumed.
+        acceptanceCriteria: acceptanceCriteria(t.acceptance_criteria),
       },
     ]),
   );
@@ -350,6 +355,7 @@ async function projectEngagements(
         stage: null,
         detail: null,
         state: 'pending' as TaskState,
+        acceptanceCriteria: [],
       },
       roomId: thread?.roomId ?? null,
       threadId: thread?.threadId ?? null,

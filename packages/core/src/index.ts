@@ -22,10 +22,16 @@ export {
 export {
   review,
   nextStateAfterReview,
+  reviewProof,
+  nextStateAfterProofReview,
   type CriticFailure,
   type CriticVerdict,
   type ReviewableArtifact,
   type ReviewContext,
+  type ProofContext,
+  type ProofFailure,
+  type ProofVerdict,
+  type SubmittedProof,
 } from './critic';
 
 export {

@@ -171,6 +171,88 @@ approvals.
 clicks racing cannot both complete one step, and a step that moved underneath the
 person is reported as exactly that rather than as an error.
 
+**Two more verbs since slice 6: `approve_work` and `reject_work`**, the owner's
+verdict on what an expert handed over. They are on this route rather than on an
+action embed because this is where an owner writes `tasks.state`, and they share
+its owner check and its conditional update.
+
+They are the only action here that **walks two arcs**:
+`proof_submitted → in_review → approved | rejected`, as two conditional updates
+in one request. That is `accept_offer`'s idiom, and it keeps `in_review`
+transit-only: a submission sits at `proof_submitted`, which honestly reads
+"waiting on you", rather than at a state whose name claims somebody is currently
+looking at it.
+
+**A rejection must carry a note and an approval need not.** The node reads that
+note and works from it, and their fee sits in escrow while they guess without
+one. Both halves of that rule are in `resolveTask`, so the refusal is a sentence
+rather than a 23514.
+
+**Approving revokes the node's thread access and does not end the engagement.**
+The first discharges an obligation `accept_offer` booked by name. The second is
+deliberate: the panel reads live engagements only, so ending it would erase "who
+did this" at the moment the owner is about to pay them, and
+`private.engaged_counterparty` is time-boxed on `ended_at is null`, so it would
+close the owner's read of the node's name before the payout.
+
+### `POST /api/node/engagements/:engagementId/{start,proof}`
+
+The node's half of the same loop, and the one place in this API that reads bytes.
+
+**The authorisation is a caller-scoped read of their own `engagements` row**
+through `engagements_select_node`, and everything after it uses the service key.
+That is forced rather than chosen: a thread-scoped member is not a project member
+(`20260901122000`), so they read zero rows from `tasks`, `projects` and
+`artifacts` and zero objects from the artifacts bucket. **The projection is the
+access control**, as it is for offers and engagements, and slice 6 adds no policy
+to `artifacts` or to `storage.objects`.
+
+**These routes carry an `:engagementId` where the rest of `/api/node` carries no
+id at all.** The rule that convention states is "no request can name somebody
+else's record", and the caller-scoped read enforces it: an engagement belonging
+to another node is simply not there, and the API does not confirm the existence
+of something it will not show. `/api/node/offers/:offerId/decline` set the
+precedent.
+
+**`/proof` is multipart**, because the note and the files are one act; the
+two-phase alternative (submit JSON, then upload to a signed URL) reintroduces the
+object-with-no-row orphan `writeFileArtifact` exists to prevent. The BFF proxy
+was changed in the same push: it hardcoded `Content-Type: application/json`,
+which was right while every payload was JSON and silently corrupts a multipart
+boundary, since the boundary travels in that header.
+
+**The floor check runs before anything is written and before the task moves**, so
+a bounced submission leaves the step exactly where it was. That is what made
+`proof_submitted → in_progress` unnecessary ([ADR-0022](../40-adr/0022-proof-is-an-artifact.md)).
+
+### The BFF decides "has a body" from the payload, not from the verb
+
+Two defects, one shape, found by clicking a button on a real page rather than by
+any test.
+
+**`bff()` set `Content-Type: application/json` on every request**, including the
+ones that send nothing. Fastify refuses that combination **before the handler
+runs** (`FST_ERR_CTP_EMPTY_JSON_BODY`, "Body cannot be empty when content-type is
+set to 'application/json'"), so every bodyless POST in the browser client was
+unusable. `acceptOffer` has carried this **since slice 5**: accepting an offer
+from a browser has never worked once.
+
+**And the proxy decided whether to forward a body from the HTTP verb**, so a POST
+with nothing in it forwarded a zero-length body plus a content-type and
+reproduced the same error one layer down. It now decides from `byteLength`: an
+empty POST forwards neither a body nor a content-type, the parser is skipped, and
+the several routes written to take no body finally see the `undefined` they check
+for.
+
+**Why no test caught a bug in shipped code, which is the part worth keeping.**
+`app.inject` sends no `content-type` unless a payload is given, so the route
+suites were exercising a request shape the real client never produces. They were
+not wrong — `app.inject` with no payload is exactly what the _fixed_ BFF sends —
+they were simply blind to the header the client was adding. A route test cannot
+see a defect that lives between the browser and the route, and `apps/web` has no
+test harness (it is on the "not built" list in `README.md`). Until it does, a
+bodyless mutation is only proved by clicking it.
+
 ### `POST /api/rooms/:roomId/sources`
 
 Owner-only, membership by RLS as the caller with the 404-not-403 idiom, and exactly one of `text` or `url`. Replies **202** and does the work in a background continuation, posting the outcome into the room: what was recorded, that it was unchanged, or why it failed. Nothing is silent (rule 16).

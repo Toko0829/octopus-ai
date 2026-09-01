@@ -380,3 +380,48 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* ---------------------------------------------------- doing the work (slice 6)
+
+   The controls on a step this node holds. Two new classes and no new tokens: the
+   panel reuses `node-confirm` for the hand-over form, on the offer confirm's
+   reasoning, because handing work over is the same weight of act as accepting
+   it. What is genuinely new is a wrapper that separates the controls from the
+   thread below them, and a file input, which this product has never had. */
+.node-work {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+/* The native control, restyled rather than replaced. A custom file picker is a
+   button that lies about being an input: it loses keyboard behaviour, drag and
+   drop, and the browser's own "3 files selected" text, all of which somebody
+   relying on a screen reader gets for free here. */
+.node-file {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.node-file::file-selector-button {
+  font: inherit;
+  font-size: var(--text-sm);
+  margin-right: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.node-file::file-selector-button:hover {
+  border-color: var(--border-strong, var(--border));
+}
+
+.node-file:focus-visible::file-selector-button {
+  outline: 2px solid var(--focus, var(--text));
+  outline-offset: 1px;
+}

@@ -113,6 +113,8 @@ export {
 
 export {
   OFFER_TTL_MS,
+  WORK_TTL_HOURS,
+  WORK_WARN_BEFORE_MS,
   decideOfferSettlement,
   nextCandidate,
   offerExpiresAt,

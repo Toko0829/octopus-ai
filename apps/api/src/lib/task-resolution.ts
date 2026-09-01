@@ -11,7 +11,7 @@ import type { TaskState } from '@octopus/contracts';
  * rather than a 500 carrying a Postgres error.
  */
 
-export type TaskAction = 'answer' | 'retry' | 'find_expert';
+export type TaskAction = 'answer' | 'retry' | 'find_expert' | 'approve_work' | 'reject_work';
 
 /**
  * `answer` means the owner did the work themselves, so the step is done.
@@ -53,6 +53,28 @@ const RETRYABLE: ReadonlySet<string> = new Set<TaskState>(['escalated']);
  */
 const MATCHABLE: ReadonlySet<string> = new Set<TaskState>(['escalated']);
 
+/**
+ * `approve_work` and `reject_work` are the owner's verdict on what an expert
+ * handed over, and they are the last thing missing from the engagement loop.
+ *
+ * **Only from `proof_submitted`, and that is the honest state.** A node's
+ * submission lands there and stays there until somebody looks; `in_review` means
+ * "being reviewed", which is true for the instant the owner is deciding and is
+ * not where a step should sit for two days waiting on them. So the route walks
+ * `proof_submitted -> in_review -> approved | rejected` as two conditional
+ * updates in one request, which is `accept_offer`'s idiom
+ * (`offered -> claimed -> escrow_funded`) applied to a verdict: every guard fires
+ * and every hop writes its own audit row, and `in_review` is transit-only for the
+ * same reason `claimed` is
+ * ([ADR-0019](../../../../docs/40-adr/0019-claimed-to-matching-stays-dropped.md)).
+ *
+ * **The AI never reaches `approved` on a human step.** `reviewProof` in
+ * `packages/core` can only return the step to the node or pass it to the owner;
+ * deciding that a person's work is finished, and therefore that they are owed
+ * money, is not a verdict a deterministic floor check or a model gets to make.
+ */
+const REVIEWABLE: ReadonlySet<string> = new Set<TaskState>(['proof_submitted']);
+
 export interface Resolution {
   /** The state to move the task to. */
   to: TaskState;
@@ -85,6 +107,33 @@ export function resolveTask(state: TaskState, action: TaskAction, text: string):
       return { ok: false, reason: 'Tell me what you did, and I will record it against the step.' };
     }
     return { ok: true, resolution: { to: 'approved', writesArtifact: true } };
+  }
+
+  if (action === 'approve_work' || action === 'reject_work') {
+    if (!REVIEWABLE.has(state)) {
+      return {
+        ok: false,
+        reason:
+          state === 'in_review'
+            ? 'Somebody is already recording a verdict on that step.'
+            : 'That step has nothing waiting for your review.',
+      };
+    }
+    if (action === 'approve_work') {
+      return { ok: true, resolution: { to: 'approved', writesArtifact: false } };
+    }
+    // **A rejection must say why**, unlike an approval. Sending work back with no
+    // reason gives the node nothing to act on, and the arc they take next
+    // (`rejected -> in_progress`) is them doing it again: without a note they
+    // would be guessing at what to change while their fee sits in escrow.
+    if (!text.trim()) {
+      return {
+        ok: false,
+        reason:
+          'Say what needs to change. Sending work back with no reason gives them nothing to fix.',
+      };
+    }
+    return { ok: true, resolution: { to: 'rejected', writesArtifact: true } };
   }
 
   if (action === 'find_expert') {

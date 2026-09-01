@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import { loadServerEnv } from '@octopus/config';
 import { healthRoutes } from './routes/health';
 import { messageRoutes } from './routes/messages';
@@ -16,6 +17,7 @@ import { createAuthVerifier } from './plugins/auth';
 import { stateConfigFrom } from './lib/oauth-state';
 import { startTicker } from './lib/ticker';
 import { createServiceClient, requireSupabaseConfig } from './lib/supabase';
+import { MAX_PROOF_FILES, MAX_PROOF_FILE_BYTES } from './lib/proof';
 
 /**
  * Build the Fastify app (authoritative REST API). See docs/10-architecture/architecture.md.
@@ -34,6 +36,21 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(cors, {
     origin: env.WEB_URL,
     credentials: true,
+  });
+
+  // **One route reads bytes: a node handing over proof of finished work.** The
+  // caps are here rather than only in the handler so a body larger than the limit
+  // is refused by the parser before it is buffered, and `attachFieldsToBody` is
+  // deliberately off: `nodes.ts` iterates `request.parts()` so a file that fails
+  // the content-type allow-list is refused without being read to the end.
+  // Everything else in this API is JSON and is unaffected.
+  await app.register(multipart, {
+    limits: {
+      files: MAX_PROOF_FILES,
+      fileSize: MAX_PROOF_FILE_BYTES,
+      fields: 8,
+      fieldSize: 8192,
+    },
   });
 
   await app.register(healthRoutes);
@@ -152,6 +169,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     // Enforcing the ceilings owners typed against what those campaigns spent.
     // Doubly inert until somebody sets a ceiling, so the same kill-switch shape.
     optimize: env.OPTIMIZE_ENABLED ? { maxPerPass: env.OPTIMIZE_MAX_PER_TICK } : undefined,
+    // Returning a step to the market when the expert who took it went quiet.
+    // Inert until somebody misses a deadline, and placed before the matcher on
+    // the pass so a replacement is offered without waiting another tick.
+    noShow: env.NO_SHOW_ENABLED ? { maxPerPass: env.NO_SHOW_MAX_PER_TICK } : undefined,
     // Offering escalated steps to expert nodes. Inert until an owner clicks, so
     // the same kill-switch shape again: `false` still lets a step be dispatched
     // and still shows "Finding an expert", and no offer is ever made.

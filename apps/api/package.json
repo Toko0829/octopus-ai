@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
+    "@fastify/multipart": "^10.1.1",
     "@octopus/config": "workspace:*",
     "@octopus/contracts": "workspace:*",
     "@octopus/core": "workspace:*",

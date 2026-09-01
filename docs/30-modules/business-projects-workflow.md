@@ -238,16 +238,16 @@ The marketplace half (`MATCHING` through `PAID`) has no code behind it until the
 
 That migration rewrote `private.task_transition_allowed` from plpgsql to SQL to add one arc (`needs_user → approved`) and, in restating the map, **silently lost eight others** the original `20260813120000` had. Nothing asserted they had ever been there, which is why it went unnoticed for two weeks. Every one belongs to the marketplace half, so none was reachable and none has caused a defect — but each has to come back **with the slice that first makes it reachable**, never earlier, because an arc into a state nobody can leave is the `escalated` defect on purpose.
 
-| Arc                             | Restored in | Why not earlier                                                                                                                                                                                                                                                   |
-| ------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `matching → failed`             | slice 4     | no eligible node is a real outcome; without it the task strands mid-search                                                                                                                                                                                        |
-| `offered → failed`              | slice 4     | the cascade exhausted the pool                                                                                                                                                                                                                                    |
-| `claimed → matching`            | **never**   | ❌ slice 5 decided against it ([ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md)): accept and fund are one transaction, so `claimed` is transit-only and the arc has no producer. The no-show path leaves from `escrow_funded` or later, in slice 6 |
-| `proof_submitted → in_progress` | slice 6     | a proof withdrawn or superseded before review starts                                                                                                                                                                                                              |
-| `escrow_funded → disputed`      | slice 8     | a `disputed` task with no ops console is a state nobody can leave                                                                                                                                                                                                 |
-| `in_progress → disputed`        | slice 8     | as above                                                                                                                                                                                                                                                          |
-| `rejected → disputed`           | slice 8     | as above                                                                                                                                                                                                                                                          |
-| `payout_pending → disputed`     | slice 8     | as above                                                                                                                                                                                                                                                          |
+| Arc                             | Restored in | Why not earlier                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `matching → failed`             | slice 4     | no eligible node is a real outcome; without it the task strands mid-search                                                                                                                                                                                                                                                                                              |
+| `offered → failed`              | slice 4     | the cascade exhausted the pool                                                                                                                                                                                                                                                                                                                                          |
+| `claimed → matching`            | **never**   | ❌ slice 5 decided against it ([ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md)): accept and fund are one transaction, so `claimed` is transit-only and the arc has no producer. The no-show path leaves from `escrow_funded` or later, in slice 6                                                                                                       |
+| `proof_submitted → in_progress` | **never**   | ❌ slice 6 built the loop and decided against it ([ADR-0022](../40-adr/0022-proof-is-an-artifact.md)). Booked for two uses, and neither survives: retraction has no producer, and the floor check bouncing a bad submission does not need it, because the check runs **before anything is written and before the task moves**, so a bounce leaves the step where it was |
+| `escrow_funded → disputed`      | slice 8     | a `disputed` task with no ops console is a state nobody can leave                                                                                                                                                                                                                                                                                                       |
+| `in_progress → disputed`        | slice 8     | as above                                                                                                                                                                                                                                                                                                                                                                |
+| `rejected → disputed`           | slice 8     | as above                                                                                                                                                                                                                                                                                                                                                                |
+| `payout_pending → disputed`     | slice 8     | as above                                                                                                                                                                                                                                                                                                                                                                |
 
 **A ninth nobody had counted: `blocked → failed`.** The universal `p_to in ('cancelled', 'blocked')` rule is evaluated before the `blocked` case, so `blocked → cancelled` survived by accident and `blocked → failed` did not. Recorded here rather than fixed, since nothing writes `blocked` yet either.
 
@@ -341,6 +341,26 @@ Artifacts are inline text (`body`) when what a step produced is prose, which is 
 
 **Uploads are Node-initiated only.** The Python service has no storage keys by design ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)) and never handles bytes, so `WriteArtifactProposal` and `ArtifactEmbedPayload` are unchanged and there is **no file-producing proposal kind**. A wire shape designed before its first producer is a guess, and unknown kinds already fail loudly; that seam changes when a byte-producer exists.
 
+**`writeFileArtifact` got its first production caller in slice 6**, having been written, tested and never invoked since `20260829124000`. A node hands over proof through `POST /api/node/engagements/:id/proof`, which is the only multipart route in this API. One defect went with it: the writer hardcoded `created_by: 'agent'`, which was harmless while it had no caller and would have made every proof lie about its author; it takes a `createdBy` now.
+
+### A second maker, and a second checker for it ([ADR-0022](../40-adr/0022-proof-is-an-artifact.md))
+
+Slice 6 adds the other kind of maker: **a person**. Their proof is an `artifacts` row with `kind = 'proof'` rather than a table of its own, and the ADR records why a second deliverable table loses.
+
+`review` is the wrong checker for it. Its three real checks are about **citations**, and a node's proof cites nothing by construction: it is evidence that something happened in the world, not a claim resting on a retrieved source, so `lost_grounding` would fail every proof ever submitted and `fabricated_citation` could never fire. `reviewProof` sits beside it:
+
+| Failure                | Meaning                                                        |
+| ---------------------- | -------------------------------------------------------------- |
+| `empty_proof`          | nothing was handed over, or only files with no word about them |
+| `too_short`            | "done" rather than a hand-off                                  |
+| `unaddressed_criteria` | a thing the step asked for has no answer against it            |
+
+The third is what gives **`tasks.acceptance_criteria` its first consumer** since `20260816120000`, which named this as the cost it was accepting: "backfilling criteria for finished work is far more expensive than emitting them with the step."
+
+**It cannot approve anything**, and that is the difference from the AI path rather than a detail. `nextStateAfterProofReview` returns only `in_review` or `in_progress`: a failure returns the step to the node with its reasons, and there is no attempt counter, because a person who left a field blank fixes it in ten seconds and a limit would eventually strand somebody mid-task with money held against work they are still trying to deliver. Deciding that a person's work is finished, and therefore that they are owed money, is the owner's.
+
+**No LLM judge, and the argument is stronger than it was above.** There the risk is a flaky verdict propagating through the graph; here the gate stands between a person and being paid, and `stage-skills.ts` already refused to hand a model authority over which humans get work.
+
 ## What else lives in `packages/core`
 
 `decideIntakeTurn` sits here for the same reason the router does: it is a decision, it has no IO, and a reader should be able to check it without running anything. It answers whether a new chat message is a fresh goal or the answer to an open intake question, which is genuinely ambiguous on the wire, since both arrive as a message that starts an agent run.
@@ -401,6 +421,30 @@ interleave past each other, because the cascade only moves a task whose latest
 offer is already settled. Walked through in `match.ts`'s header and in
 `accept_offer`'s, and asserted in `match.test.ts`.
 
-**`escrow_funded` is where a funded step now stops.**
-`escrow_funded → in_progress` has no producer until slice 6, so the machine's
-marketplace half remains half-walked, deliberately and with the boundary stated.
+**`escrow_funded → in_progress` has its producer, as of slice 6**, and so does
+every other arc between it and `approved`. A node starts the step, hands it over
+with a note and optional files, and the owner approves it or sends it back.
+
+**The core loop needed no migration**, which is worth stating plainly because it
+is what this table exists to make possible: every arc it walks
+(`escrow_funded → in_progress`, `rejected → in_progress`,
+`in_progress → proof_submitted`, `proof_submitted → in_review`,
+`in_review → approved | rejected`) has been in the map since `20260813120000`
+with nothing able to walk it. Slice 6 supplied walkers and changed no arc.
+
+**`in_review` is transit-only.** A submission lands at `proof_submitted` and
+stays there until somebody looks, because that is the honest state; the owner's
+action walks `proof_submitted → in_review → approved | rejected` as two
+conditional updates in one request, which is `accept_offer`'s idiom and makes
+`in_review` unobservable for the same reason `claimed` is
+([ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md)).
+
+**The AI cannot reach `approved` on a human step.** `reviewProof` in
+`packages/core` returns only `in_review` or `in_progress`: deciding that a
+person's work is finished, and therefore that they are owed money, is not a
+verdict a deterministic floor check or a model gets to make. It is also the first
+consumer `tasks.acceptance_criteria` has ever had.
+
+**`payout_pending` is where an approved human step now stops**, because
+`approved → payout_pending` has no producer until slice 7 and `held → released`
+is still refused by the escrow map.

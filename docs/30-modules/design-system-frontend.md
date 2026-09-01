@@ -448,6 +448,53 @@ cannot bring one in yet, so these are paused rather than under way."
 expert"); the `stuck` set stays `needs_user | escalated`. There is nothing useful
 to offer the owner while a stranger is deciding.
 
+## The marketplace surfaces (slice 6)
+
+**The node's engagement card gained its first controls.** Since slice 5 it showed
+a state line and a thread and offered nothing to do; `WorkPanel` adds "Start
+work", "Hand this over", and the resumed-after-rejection case, which reuses the
+same button with different copy because it is the same act.
+
+**Which control appears is driven by `task.state` and nothing else.**
+[ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md) says
+`tasks.state` is the only state an engagement has, so a local idea of where the
+work has got to would drift the moment the owner acted in another tab.
+`WORK_STATE_COPY` needed no change: it was written when the machine was declared
+in full, which is what that table exists for.
+
+**The hand-over form reuses `node-confirm`**, the offer confirm's own class,
+because handing work over is the same weight of act as accepting it. Two new
+classes and no new tokens: a wrapper that separates the controls from the thread
+below them, and a file input, which this product has never had. **The file input
+is the native control restyled rather than replaced**: a custom picker is a button
+that lies about being an input, and it loses keyboard behaviour, drag and drop,
+and the browser's own "3 files selected" text, all of which somebody using a
+screen reader gets for free from the real thing.
+
+**A bounced submission keeps everything on screen.** The floor check refuses
+before anything is written, so the step has not moved and the form is what they
+need to fix; clearing it would be the fastest way to lose their trust in the
+button, which is the trade `ResolveStep` already makes. A criterion that was left
+blank is marked with **a word** ("still blank"), never a tint (rule 15).
+
+**`ProjectPanel` gained `ReviewWork`**, a separate control from `ResolveStep`
+rather than a third arm of it. The two ask different questions: `stuck` means the
+plan cannot continue without you, `reviewable` means somebody has finished work
+and is waiting to be paid. Sharing a component would have meant a
+`stuck || reviewable` predicate and four buttons whose meaning depends on which
+arm matched.
+
+**The proof is already on screen and this control does not repeat it.** A node's
+proof is an `artifacts` row on the same task ([ADR-0022](../40-adr/0022-proof-is-an-artifact.md)),
+and the owner is a project member, so it renders in the deliverables disclosure
+that has been there since the artifact card landed. `ReviewWork` sits directly
+above the thing it is a verdict on, and fetches nothing.
+
+**Sending back needs a note; approving does not.** The asymmetry is enforced in
+two places and the panel is the readable one: the expert works from that note,
+and sending work back with no reason leaves them guessing while their fee sits in
+escrow.
+
 ## The marketplace surfaces (slice 5)
 
 **Accepting is two steps, on declining's exact shape and for a stronger reason.**
@@ -464,11 +511,18 @@ add one. `STATE_COPY` for the node is written from the expert's side rather than
 the owner's ("Funded and ready to start" rather than "Funded"), because the same
 row means different things to the two people looking at it.
 
-**The panel polls, and the doc says so rather than implying live updates.** Thread
-realtime topics are not built, so it re-reads the since-cursor `GET` every ten
-seconds. That call runs as the caller, so RLS returns exactly their thread: the
-failure mode is a delay of up to one interval, never a disclosure. The panel says
-"New messages appear within a few seconds" rather than pretending to be live.
+**The panel subscribes, as of slice 6.** `20260906120000` gave a thread its own
+realtime topic, so `ThreadPanel` opens a private channel on `chat:thread:<id>`
+and the ten-second poll is gone. Three things carried over from `ChatApp` rather
+than being invented: the since-cursor `GET` stays as **catch-up on `SUBSCRIBED`**,
+because a live subscription says nothing about what arrived while the tab was
+shut; a missing client session is a **banner rather than silence**, which is the
+exact bug `ChatApp` records (the page renders because the server holds the
+session, live updates never start, and nothing says so); and `CHANNEL_ERROR` /
+`TIMED_OUT` say they are disconnected, since messages quietly ceasing to arrive is
+the one failure the write path cannot detect on its own. The copy dropped its
+"New messages appear within a few seconds" hedge, because that sentence existed to
+be honest about the poll.
 
 **The owner's stream now interleaves two conversations, and the rows are marked
 rather than hidden.** A node admitted to a task thread posts into the same room,
@@ -479,14 +533,34 @@ quiet "in a task thread" marker: a word, not a tint or an indent, so somebody wh
 cannot distinguish the shades reads the same page (rule 15). The mirror image is
 RLS rather than anything in the UI: the node sees only their own thread.
 
-**A node's messages are badged "Human node" by role, not by name.** The roster
-cannot name them and that is by design: `room_members_select_member` gives a
-room-scoped member the room-scoped roster plus their own row, so a thread-scoped
-membership is invisible to the owner. The owner **can** read the node's `profiles`
-row, through the counterparty policy, and where that name belongs is the project
-panel's engagement line, beside the price and the date it was agreed. So the
-stream labels the role rather than inventing a name, which is honest and is also
-the rule-15 requirement: the badge is a word.
+**A node's messages are badged "Human node" by role, not by name.** The owner
+**can** read the node's `profiles` row, through the counterparty policy, and
+where that name belongs is the project panel's engagement line, beside the price
+and the date it was agreed. So the stream labels the role rather than inventing a
+name, which is honest and is also the rule-15 requirement: the badge is a word.
+
+> **This paragraph used to give a reason that was false, and the correction is
+> `20260906125000`.** It said `room_members_select_member` "gives a room-scoped
+> member the room-scoped roster plus their own row, so a thread-scoped membership
+> is invisible to the owner". Measured against the live database as the owner the
+> first time a node was actually in a room: **two rows visible, one of them
+> thread-scoped**, and the node rendered in "in this room" as a member of a room
+> it cannot read.
+>
+> The misreading is the same one `20260901123000` was written to fix, surviving on
+> the other side of the same predicate: `private.member_scope_covers(room_id,
+null)` asks whether the **caller** is room-scoped and does not filter which
+> **rows** come back, so a room-scoped caller passed once and then saw every
+> membership row in the room. On `room_members` the rows are themselves the
+> scopes, which is exactly why a predicate about the caller reads as though it
+> were about the row.
+>
+> The policy is narrowed rather than the paragraph rewritten, because the roster
+> was making a false claim about somebody's access and the owner loses nothing:
+> the engagement line and the counterparty policy are untouched and are the
+> designed channel for the node's identity. **Nothing caught it because
+> `thread_scope.sql` had never asserted what the owner sees on that table** — only
+> what a thread-scoped member sees. Both directions are asserted now (54).
 
 **`ProjectPanel` gains an engagement line on a taken step**, showing who took it,
 the agreed price in tabular numerics (rule 14), and the date. This is the only

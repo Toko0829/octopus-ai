@@ -3,6 +3,7 @@ import {
   decideOfferSettlement,
   nextCandidate,
   offerExpiresAt,
+  WORK_TTL_HOURS,
   rankCandidates,
   skillsForStage,
   type CandidateNode,
@@ -411,6 +412,12 @@ async function offerOne(
       node_id: candidate.nodeId,
       round,
       expires_at: expiresAt.toISOString(),
+      // **Frozen onto the offer so the node sees it before they agree**, and so
+      // that changing the constant later cannot shorten a deadline on work
+      // already taken. `accept_offer` reads this column and stamps
+      // `engagements.deadline_at`; it never takes the number as an argument,
+      // because the caller of the accept route is the node.
+      work_deadline_hours: WORK_TTL_HOURS,
     })
     .select('id')
     .maybeSingle();
@@ -650,8 +657,30 @@ async function cascadeRound(deps: MatcherSweepDeps, taskId: string): Promise<num
     .eq('verb', 'task.transitioned')
     .eq('subject_type', 'task')
     .eq('subject_id', taskId)
-    .eq('payload->>from', 'offered')
-    .eq('payload->>to', 'matching');
+    .eq('payload->>to', 'matching')
+    // **Every return from dispatch, not only an expired or declined offer.**
+    //
+    // This counted `from = 'offered'` alone until slice 6, which was complete
+    // while the only way back to `matching` was a settled offer. `20260906123000`
+    // adds `escrow_funded -> matching` and `in_progress -> matching` for a node
+    // who took work and abandoned it, and those do not pass through `offered`.
+    //
+    // Left as it was, a reassigned task would have re-derived **the round its
+    // no-show already holds**: the insert below collides on
+    // `offers_task_round_idx`, the `23505` arm reads the existing row back, and
+    // that row is the no-show's **accepted** offer. The sweep would then move the
+    // task to `offered` against it and write `offer.created` naming a third node
+    // and an offer id that is not theirs. That is the second, independent
+    // objection ADR-0019:54-62 raised against reintroducing an arc into
+    // `matching`, arriving exactly as predicted.
+    //
+    // Excluding `escalated` rather than listing the states that count is the
+    // safer shape: `escalated -> matching` is the owner's **first** dispatch, so
+    // it must not be counted, and anything else that ever reaches `matching` is
+    // by definition a return and should be. Arithmetically identical to the old
+    // predicate today, since `settleOffered` and the owner's dispatch were the
+    // only two producers, so **no live task renumbers**.
+    .neq('payload->>from', 'escalated');
   if (error) throw error;
   return count ?? 0;
 }

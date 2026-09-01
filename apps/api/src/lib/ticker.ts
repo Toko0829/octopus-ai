@@ -8,6 +8,7 @@ import { metricsSweep } from './metrics';
 import { optimizeSweep } from './optimize';
 import { matcherSweep } from './match';
 import { escrowReconcileSweep } from './escrow-reconcile';
+import { noShowSweep } from './no-show';
 import { notifyWaiting } from './waiting';
 import { produceCampaignCards } from './campaign-cards';
 import type { ExecutorDeps } from './executor';
@@ -86,6 +87,14 @@ export interface TickerOptions {
    * `ESCROW_RECONCILE_ENABLED`).
    */
   escrow?: { maxPerPass: number };
+  /**
+   * Return a step to the marketplace when the expert who took it missed the
+   * agreed date, giving the owner their money back. Absent means this deployment
+   * does not reassign, which is supported and is not the default: an abandoned
+   * step then stays `escrow_funded` forever with its hold committing the ceiling,
+   * which is precisely the dead end this slice closed (see `NO_SHOW_ENABLED`).
+   */
+  noShow?: { maxPerPass: number };
   log: {
     info: (obj: unknown, msg: string) => void;
     warn: (obj: unknown, msg: string) => void;
@@ -322,6 +331,27 @@ export function startTicker(opts: TickerOptions): () => void {
           });
         } catch (err) {
           opts.log.error({ err, worker }, 'escrow reconcile sweep failed');
+        }
+      }
+
+      // Steps somebody took and did not deliver, immediately after the refund
+      // sweep and immediately before the matcher. The adjacency is the point, the
+      // way optimize-after-metrics is: this sweep **produces** tasks at
+      // `matching`, and the matcher picks them up in the same pass rather than a
+      // tick later, so a person waiting on a replacement expert waits one
+      // interval less for no extra work. It sits after the escrow reconcile
+      // because both give money back and that one is unwinding work the owner has
+      // already cancelled, which is the less ambiguous case. Its own try/catch,
+      // like every sweep here.
+      if (opts.noShow) {
+        try {
+          await noShowSweep({
+            admin: opts.admin,
+            maxPerPass: opts.noShow.maxPerPass,
+            log: opts.log,
+          });
+        } catch (err) {
+          opts.log.error({ err, worker }, 'no-show sweep failed');
         }
       }
 

@@ -1,6 +1,16 @@
--- Thread-scoped membership tests — covers 20260901120000 … 20260901123000.
+-- Thread-scoped membership tests — covers 20260901120000 … 20260901123000,
+-- and 20260906120000, which gave a thread its own realtime topic.
 --
--- Verified green against the live database: 46/46. Two of those assertions found
+-- Verified green against the live database: 46/46 at slice 2. Slice 6 widened it
+-- to 54, and **14 of those have been re-run against the applied migrations and
+-- are green**: the eleven realtime and deliberate-absence assertions, and the
+-- three owner-side `room_members` ones added with `20260906125000`. The other 40
+-- are untouched by either change and were last run at slice 5, so a full-file run
+-- still wants a `DATABASE_URL`. Four of the eleven are
+-- new and one flipped, which is the shape this file was written for: it pinned
+-- "there is no thread topic branch" with a message naming the slice that would
+-- add one, so the addition reads as a dated decision rather than as drift. Two
+-- assertions found
 -- something rather than confirming it: the room_members count caught
 -- 20260901122000 reusing a predicate that asks a different question on the one
 -- table whose rows are themselves scopes (corrected in 20260901123000), and the
@@ -38,7 +48,7 @@
 
 begin;
 
-select extensions.plan(46);
+select extensions.plan(54);
 
 -- ---------------------------------------------------------------- fixtures
 
@@ -248,6 +258,42 @@ select extensions.is(
   1::bigint,
   'a thread-scoped member sees only their own membership row: not the room roster, and '
   'not the other node admitted to the same thread'
+);
+
+-- ------------------------- and the side nobody was asserting (3)
+--
+-- **The assertion that was missing, and its absence is why the drift survived.**
+-- Every room_members case above asks what a thread-scoped member sees. None asked
+-- what the OWNER sees, so a predicate too generous to room-scoped callers had
+-- nothing watching it, and `20260901123000` corrected one direction of this
+-- policy while leaving the other wrong.
+--
+-- Measured on the live database before `20260906125000`: the owner saw all four
+-- rows, both thread-scoped ones included, while design-system-frontend.md said a
+-- thread-scoped membership was invisible to them. The same misreading as the
+-- correction above, on the other side of the same predicate:
+-- `member_scope_covers` asks about the CALLER, not about the row.
+
+select extensions.is(
+  pg_temp.tscount_as(pg_temp.tsid('owner'), 'select count(*) from public.room_members'),
+  2::bigint,
+  'the owner sees the room-scoped roster and neither thread-scoped row: a node is admitted '
+  'to a thread, not to the room, and listing them in it claims access they do not have'
+);
+
+select extensions.is(
+  pg_temp.tscount_as(pg_temp.tsid('member'),
+    'select count(*) from public.room_members where scope = ''thread'''),
+  0::bigint,
+  'and so does every other room-scoped member, because the grant was to that whole '
+  'population rather than to the owner and is narrowed for all of them together'
+);
+
+select extensions.is(
+  pg_temp.tscount_as(pg_temp.tsid('owner'), 'select count(*) from public.rooms'),
+  1::bigint,
+  'while the owner still reads their own room, which is the regression half: a narrowing '
+  'one conjunct too far presents as nothing loading rather than as a security change'
 );
 
 select extensions.is(
@@ -518,12 +564,17 @@ select extensions.ok(
   'anon holds no SELECT on threads'
 );
 
--- ------------------------------------------------------------- realtime (4)
+-- ------------------------------------------------------------- realtime (8)
 --
--- The socket half of the narrowing. Without these two policies changing, a future
--- thread-scoped node would keep receiving the broadcast payload of every message
--- in the room, which carries the whole row, while correctly seeing none of the
--- table rows.
+-- The socket half of the narrowing. Without these two policies changing, a
+-- thread-scoped node would receive the broadcast payload of every message in the
+-- room, which carries the whole row, while correctly seeing none of the table
+-- rows.
+--
+-- `20260906120000` gave a thread its own topic, so the question these assertions
+-- answer changed shape: it is no longer "does a thread-scoped member have any
+-- realtime" but "does each member reach exactly one topic family". The room half
+-- below is unchanged in verdict and re-dated in wording.
 
 select extensions.is(
   pg_temp.tspresence_as(pg_temp.tsid('owner'), 'chat:room:' || pg_temp.tsid('room')::text),
@@ -534,14 +585,42 @@ select extensions.is(
 select extensions.is(
   pg_temp.tspresence_as(pg_temp.tsid('tnode'), 'chat:room:' || pg_temp.tsid('room')::text),
   '42501',
-  'a thread-scoped member cannot: there are no thread topics yet, so they have no realtime '
-  'at all and read through the since-cursor GET instead'
+  'a thread-scoped member cannot reach the room topic, which is the whole narrowing: the '
+  'room stream is the owner''s conversation with the AI, and the broadcast carries the row'
 );
 
 select extensions.is(
   pg_temp.tspresence_as(pg_temp.tsid('texpired'), 'chat:room:' || pg_temp.tsid('room')::text),
   '42501',
   'and an expired one certainly cannot'
+);
+
+select extensions.is(
+  pg_temp.tspresence_as(pg_temp.tsid('tnode'), 'chat:thread:' || pg_temp.tsid('t1')::text),
+  null::text,
+  'a thread-scoped member reaches their OWN thread topic, which is what 20260906120000 '
+  'added and what replaces the ten-second poll slice 5 shipped'
+);
+
+select extensions.is(
+  pg_temp.tspresence_as(pg_temp.tsid('tnode'), 'chat:thread:' || pg_temp.tsid('t2')::text),
+  '42501',
+  'and not another thread''s, so the disjunct narrows to the one thread rather than to '
+  'threads in general'
+);
+
+select extensions.is(
+  pg_temp.tspresence_as(pg_temp.tsid('texpired'), 'chat:thread:' || pg_temp.tsid('t1')::text),
+  '42501',
+  'an expired member reaches their own thread topic no more than the room topic: the '
+  'disjunct was added INSIDE the existing predicate, so there is still one expires_at check'
+);
+
+select extensions.is(
+  pg_temp.tspresence_as(pg_temp.tsid('owner'), 'chat:thread:' || pg_temp.tsid('t1')::text),
+  '42501',
+  'and the owner does not reach a thread topic either. They read thread messages, and they '
+  'read them on the room topic, because 20260906120000 broadcasts to both rather than moving'
 );
 
 select extensions.is(
@@ -554,7 +633,7 @@ select extensions.is(
   'calling a helper, so neither picks up a narrowing for free and both must be altered by hand'
 );
 
--- ------------------------------------------ deliberate absences, pinned (2)
+-- ------------------------------------------ deliberate absences, pinned (3)
 --
 -- `20260815220000` silently dropped eight state arcs with nothing asserting they
 -- had been there. Pinning what is deliberately missing is what makes a later
@@ -572,10 +651,17 @@ select extensions.is(
   (select count(*) from pg_policies
     where schemaname = 'realtime' and tablename = 'messages'
       and coalesce(qual, '') || coalesce(with_check, '') like '%chat:thread:%'),
-  0::bigint,
-  'and there is still no thread topic branch. Slice 5 admits a node and deliberately accepts '
-  'polling instead: the since-cursor GET runs as the caller, so the failure mode is a delay '
-  'rather than a disclosure. Topics move to slice 6, as an OR inside these same two policies'
+  2::bigint,
+  'the thread topic branch landed in BOTH existing policies (20260906120000) and not as a '
+  'third one, so there is still exactly one copy of the expires_at time-box per policy'
+);
+
+select extensions.is(
+  (select count(*) from pg_policies where schemaname = 'realtime' and tablename = 'messages'),
+  2::bigint,
+  'and realtime.messages still carries exactly two policies. A separate additive policy '
+  'would union to the same rows and leave a second expires_at check to keep in step, which '
+  'is how an expired node keeps a live socket while correctly losing the rows'
 );
 
 select * from extensions.finish();

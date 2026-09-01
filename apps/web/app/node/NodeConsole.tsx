@@ -1,13 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type {
-  Message,
-  NodeCredential,
-  NodeEngagement,
-  NodeOffer,
-  NodeProfile,
-} from '@octopus/contracts';
+import type { RealtimeChannel } from '@supabase/supabase-js';
+import type { NodeCredential, NodeEngagement, NodeOffer, NodeProfile } from '@octopus/contracts';
+import type { UiMessage } from '../../lib/types';
+import { fromBroadcastRecord, mergeMessages, toMessage } from '../../lib/adapt';
+import { createClient } from '../../lib/supabase/client';
 import {
   NO_OPEN_OFFERS,
   SKILL_TAXONOMY,
@@ -24,6 +22,8 @@ import {
   getMessages,
   getNodeEngagements,
   getNodeOffers,
+  startEngagementWork,
+  submitProof,
   patchNode,
   postMessage,
   removeNodeSkill,
@@ -123,7 +123,13 @@ export function NodeConsole({ initial, initialOffers, initialEngagements, email 
 
       <Status node={node} eligible={eligible} reason={reason} offers={offers} />
 
-      <Engagements engagements={engagements} />
+      <Engagements
+        engagements={engagements}
+        onChanged={async () => {
+          const { engagements: fresh } = await getNodeEngagements();
+          setEngagements(fresh);
+        }}
+      />
 
       <Offers
         offers={offers}
@@ -488,6 +494,211 @@ const WORK_STATE_COPY: Record<string, string> = {
   blocked: 'On hold',
 };
 
+/**
+ * The controls on a step a node holds: start it, hand it over, look at what they
+ * already handed over.
+ *
+ * **Which control appears is driven by `task.state` and nothing else.** There is
+ * no local idea of where the work has got to, because
+ * [ADR-0016](../../../../docs/40-adr/0016-an-engagement-has-no-state-of-its-own.md)
+ * says `tasks.state` is the only state an engagement has, and a second one here
+ * would drift the moment the owner acted in another tab.
+ *
+ * **Nothing here can approve anything.** The node hands over; the owner decides.
+ * The only states this surface can produce are `in_progress` and
+ * `proof_submitted`.
+ */
+function WorkPanel({
+  engagement,
+  onChanged,
+}: {
+  engagement: NodeEngagement;
+  onChanged: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const [responses, setResponses] = useState<string[]>(() =>
+    engagement.task.acceptanceCriteria.map(() => ''),
+  );
+  const [files, setFiles] = useState<File[]>([]);
+  const [bounced, setBounced] = useState<{ reasons: string[]; unaddressed: number[] } | null>(null);
+  const [open, setOpen] = useState(false);
+
+  const state = engagement.task.state;
+  const startable = state === 'escrow_funded' || state === 'rejected';
+  const submittable = state === 'in_progress';
+
+  async function start() {
+    setBusy(true);
+    setError(null);
+    try {
+      await startEngagementWork(engagement.id);
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start that.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await submitProof(engagement.id, { note, responses, files });
+      if (result.bounced) {
+        // **Kept on screen rather than cleared.** The step did not move and the
+        // form is what they need to fix, which is the same trade `ResolveStep`
+        // makes: discarding somebody's writing is the fastest way to lose their
+        // trust in the button.
+        setBounced(result.bounced);
+        return;
+      }
+      setBounced(null);
+      setNote('');
+      setResponses(engagement.task.acceptanceCriteria.map(() => ''));
+      setFiles([]);
+      setOpen(false);
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not hand that over.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!startable && !submittable) {
+    // Handed over, or finished, or stopped. The state line above the panel
+    // already says which, so this adds nothing rather than repeating it.
+    return null;
+  }
+
+  return (
+    <div className="node-work">
+      {error && (
+        <p className="node-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      {startable && (
+        <div className="node-row">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => void start()}
+          >
+            {busy ? 'Starting' : state === 'rejected' ? 'Pick this back up' : 'Start work'}
+          </button>
+        </div>
+      )}
+
+      {submittable && !open && (
+        <div className="node-row">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => setOpen(true)}
+          >
+            Hand this over
+          </button>
+        </div>
+      )}
+
+      {submittable && open && (
+        <div className="node-confirm">
+          <p className="node-note">
+            The owner reads this and either approves it or sends it back with a note. Nothing is
+            paid out in this build.
+          </p>
+
+          {bounced && (
+            <div className="node-error" role="alert">
+              {bounced.reasons.map((reason) => (
+                <p key={reason}>{reason}</p>
+              ))}
+            </div>
+          )}
+
+          <label className="node-label" htmlFor={`note-${engagement.id}`}>
+            What did you do?
+          </label>
+          <textarea
+            id={`note-${engagement.id}`}
+            className="node-textarea"
+            value={note}
+            maxLength={8000}
+            rows={4}
+            placeholder="What you did, where it is, and anything the owner should know"
+            onChange={(e) => setNote(e.target.value)}
+          />
+
+          {engagement.task.acceptanceCriteria.length > 0 && (
+            <>
+              <p className="node-note">This step asked for the following. Answer each one.</p>
+              {engagement.task.acceptanceCriteria.map((criterion, i) => (
+                <div key={criterion}>
+                  <label className="node-label" htmlFor={`crit-${engagement.id}-${i}`}>
+                    {criterion}
+                    {/* Word, never colour alone (rule 15). */}
+                    {bounced?.unaddressed.includes(i) ? ' — still blank' : ''}
+                  </label>
+                  <textarea
+                    id={`crit-${engagement.id}-${i}`}
+                    className="node-textarea"
+                    value={responses[i] ?? ''}
+                    maxLength={2000}
+                    rows={2}
+                    onChange={(e) =>
+                      setResponses((cur) => cur.map((r, j) => (j === i ? e.target.value : r)))
+                    }
+                  />
+                </div>
+              ))}
+            </>
+          )}
+
+          <label className="node-label" htmlFor={`files-${engagement.id}`}>
+            Files, if there are any
+          </label>
+          <input
+            id={`files-${engagement.id}`}
+            className="node-file"
+            type="file"
+            multiple
+            onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+          />
+          <p className="node-note">
+            Up to five files, 25MB each. Images, video, PDF and plain text.
+          </p>
+
+          <div className="node-row">
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={busy}
+              onClick={() => setOpen(false)}
+            >
+              Not yet
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || note.trim().length === 0}
+              onClick={() => void submit()}
+            >
+              {busy ? 'Handing over' : 'Hand it over'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const OUTCOME_COPY: Record<string, string> = {
   completed: 'Finished',
   reassigned: 'Passed to somebody else',
@@ -503,15 +714,26 @@ const OUTCOME_COPY: Record<string, string> = {
  * thread, its messages, and nothing else. Not the project, not the plan, not the
  * other steps, not the owner's conversation with the AI.
  *
- * **The panel polls rather than subscribing, and that is a stated limit rather
- * than an oversight.** Thread realtime topics are not built: a `chat:thread:`
- * branch would have no broadcaster and no subscriber, and both `realtime.messages`
- * policies are scoped to room membership, so a thread-scoped member has no live
- * socket at all. The since-cursor GET runs as the caller and RLS returns exactly
- * their thread, so the failure mode here is a delay of up to one interval and
- * never a disclosure.
+ * **The panel subscribes now, and the poll is gone.** `20260906120000` gave a
+ * thread its own realtime topic: `broadcast_message` emits `chat:thread:<id>`
+ * beside the room topic, and both `realtime.messages` policies gained one
+ * disjunct so a thread-scoped member may join exactly their own thread's topic
+ * and nothing else. This node had been reading through a ten-second poll since
+ * slice 5, which was correct and slow; the obligation to replace it was re-dated
+ * twice and is discharged here.
+ *
+ * **The since-cursor GET stays, as catch-up rather than as the transport.** A
+ * live subscription is not durable catch-up: it says nothing about what arrived
+ * while the tab was closed. `ChatApp` resolves that the same way, by fetching on
+ * `SUBSCRIBED` and merging.
  */
-function Engagements({ engagements }: { engagements: NodeEngagement[] }) {
+function Engagements({
+  engagements,
+  onChanged,
+}: {
+  engagements: NodeEngagement[];
+  onChanged: () => Promise<void>;
+}) {
   if (engagements.length === 0) return null;
 
   const live = engagements.filter((e) => e.endedAt === null);
@@ -535,6 +757,7 @@ function Engagements({ engagements }: { engagements: NodeEngagement[] }) {
             {WORK_STATE_COPY[engagement.task.state] ?? engagement.task.state}.
           </p>
           {engagement.task.detail && <p className="node-body">{engagement.task.detail}</p>}
+          <WorkPanel engagement={engagement} onChanged={onChanged} />
           {engagement.roomId && engagement.threadId ? (
             <ThreadPanel roomId={engagement.roomId} threadId={engagement.threadId} />
           ) : (
@@ -562,37 +785,92 @@ function Engagements({ engagements }: { engagements: NodeEngagement[] }) {
   );
 }
 
-/** How often the thread is re-read. See `Engagements` on why this is a poll. */
-const THREAD_POLL_MS = 10_000;
-
 function ThreadPanel({ roomId, threadId }: { roomId: string; threadId: string }) {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [cursor, setCursor] = useState<number | undefined>(undefined);
+  const [messages, setMessages] = useState<UiMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
 
-  const poll = useCallback(async () => {
+  /**
+   * Catch-up, not transport. Runs on subscribe and after a reconnect, because a
+   * live subscription says nothing about what arrived while this tab was shut.
+   *
+   * **Filtered here as well as by RLS**, and the duplication is deliberate. The
+   * policy is what makes the room stream unreadable to this person; this is what
+   * keeps a system message addressed to the whole room out of a panel that is
+   * about one step. The cursor is derived from what is already held rather than
+   * kept in state, so this callback does not change identity on every message
+   * and re-run the effect that owns the socket.
+   */
+  const catchUp = useCallback(async () => {
     try {
-      const { messages: fresh, nextCursor } = await getMessages(roomId, cursor);
-      // **Filtered here as well as by RLS**, and the duplication is deliberate.
-      // The policy is what makes the room stream unreadable to this person; this
-      // is what keeps a system message addressed to the whole room out of a
-      // panel that is about one step.
-      const mine = fresh.filter((m) => m.threadId === threadId);
-      if (mine.length > 0) setMessages((prev) => [...prev, ...mine]);
-      if (nextCursor !== null) setCursor(nextCursor);
+      const { messages: fresh } = await getMessages(roomId);
+      const mine = fresh.filter((m) => m.threadId === threadId).map(toMessage);
+      if (mine.length > 0) setMessages((prev) => mergeMessages(prev, mine));
     } catch {
-      // A failed poll is the next poll's problem. Surfacing it would put an
-      // error banner on a panel that is working.
+      // The socket is the live path and it is up; a failed catch-up means older
+      // messages may be missing, which the banner below would overstate.
     }
-  }, [roomId, threadId, cursor]);
+  }, [roomId, threadId]);
 
   useEffect(() => {
-    void poll();
-    const handle = setInterval(() => void poll(), THREAD_POLL_MS);
-    return () => clearInterval(handle);
-  }, [poll]);
+    const supabase = createClient();
+    let channel: RealtimeChannel | null = null;
+    let cancelled = false;
+
+    void (async () => {
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+      if (cancelled) return;
+
+      // Never silent. `ChatApp` records this exact bug: the page renders fine
+      // because the server holds the session, live updates never start, and
+      // nothing anywhere says so.
+      if (sessionError || !session) {
+        console.error('[node] no client session; live updates disabled', sessionError);
+        setBanner('Live updates are off because this session could not be read. Try reloading.');
+        await catchUp();
+        return;
+      }
+
+      await supabase.realtime.setAuth(session.access_token);
+      // **The thread topic, never the room topic.** A thread-scoped member is
+      // refused the room topic by the policy, and asking for it would fail the
+      // join rather than degrade.
+      channel = supabase.channel(`chat:thread:${threadId}`, { config: { private: true } });
+
+      channel.on('broadcast', { event: 'INSERT' }, (payload) => {
+        const record = (payload as { payload?: { record?: unknown } }).payload?.record;
+        const msg = fromBroadcastRecord(record);
+        // The topic already narrows this to one thread. The check is the same
+        // defense in depth the fetch path applies, and it costs nothing.
+        if (!msg || msg.threadId !== threadId) return;
+        setMessages((cur) => mergeMessages(cur, [msg]));
+      });
+
+      channel.subscribe(async (status, err) => {
+        if (cancelled) return;
+        if (status === 'SUBSCRIBED') {
+          setBanner(null);
+          await catchUp();
+        }
+        // Silence would mean messages quietly stop arriving, which is the exact
+        // failure the write path cannot detect on its own (rule 16).
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.error('[node] thread realtime status', status, err?.message ?? '');
+          setBanner('Live updates are disconnected. Reload to catch up.');
+        }
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [threadId, catchUp]);
 
   async function send() {
     const body = draft.trim();
@@ -602,13 +880,16 @@ function ThreadPanel({ roomId, threadId }: { roomId: string; threadId: string })
     try {
       // `authorKind` is not sent and cannot be: the server reads this person's
       // own membership row and decides, and RLS re-checks it independently.
-      await postMessage(roomId, {
+      const sent = await postMessage(roomId, {
         body,
         threadId,
         idempotencyKey: `thread-${threadId}-${Date.now()}`,
       });
       setDraft('');
-      await poll();
+      // Merged rather than re-fetched. The broadcast delivers the same row and
+      // `mergeMessages` dedupes on id, so whichever arrives first wins and the
+      // other is a no-op.
+      setMessages((cur) => mergeMessages(cur, [toMessage(sent)]));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not send that.');
     } finally {
@@ -630,6 +911,12 @@ function ThreadPanel({ roomId, threadId }: { roomId: string; threadId: string })
             </li>
           ))}
         </ul>
+      )}
+
+      {banner && (
+        <p className="node-error" role="status">
+          {banner}
+        </p>
       )}
 
       {error && (
@@ -656,9 +943,7 @@ function ThreadPanel({ roomId, threadId }: { roomId: string; threadId: string })
           {busy ? 'Sending' : 'Send'}
         </button>
       </div>
-      <p className="node-note">
-        New messages appear within a few seconds. This thread is private to this step.
-      </p>
+      <p className="node-note">This thread is private to this step.</p>
     </div>
   );
 }

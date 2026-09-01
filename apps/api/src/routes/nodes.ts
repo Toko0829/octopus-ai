@@ -38,6 +38,26 @@ import {
   readNodeEngagements,
   readOwnOffer,
 } from '../lib/engagements';
+import {
+  MAX_PROOF_FILES,
+  MAX_PROOF_FILE_BYTES,
+  PROOF_CONTENT_TYPES,
+  acceptanceCriteria,
+  auditProofEvent,
+  checkProof,
+  checkStartable,
+  checkSubmittable,
+  composeProofBody,
+  moveTask,
+  readEngagedTask,
+  readNodeProof,
+  readOwnEngagement,
+  readProofStoragePath,
+  writeProofArtifacts,
+  type ProofFile,
+} from '../lib/proof';
+import { ARTIFACTS_BUCKET } from '../lib/artifact-files';
+import { SIGNED_URL_TTL_SECONDS, signedUrlExpiresAt } from './projects';
 import { postSystemMessage } from '../lib/system-message';
 import { roomForProject } from '../lib/room-for-project';
 
@@ -765,4 +785,397 @@ export async function nodeRoutes(app: FastifyInstance, opts: NodeRoutesOptions):
       return fail(reply, 500, 'internal_error', 'Could not load your accepted work.');
     }
   });
+
+  /* --------------------------------------------------- doing the work (slice 6)
+   *
+   * Four routes, and every one of them opens the same way: read the node's own
+   * engagement **as the caller** through `engagements_select_node`, then use the
+   * service key for everything after. A thread-scoped member has no grant on
+   * `tasks`, `projects` or `artifacts` (`20260901122000` requires room scope of
+   * `is_project_member`), so the projection is the access control here exactly as
+   * it is for offers and engagements.
+   *
+   * **These carry an `:engagementId` and the header above says this family does
+   * not carry ids.** The rule that header states is "no request can name somebody
+   * else's record", and the caller-scoped read is what enforces it: an
+   * engagement belonging to another node is simply not there, and the API does
+   * not confirm the existence of something it will not show.
+   * `/api/node/offers/:offerId/decline` set the precedent; this amends the
+   * paragraph rather than quietly contradicting it.
+   */
+
+  /**
+   * Start, or pick a step back up after the owner sent it back.
+   *
+   * **One route and one button for two arcs**, `escrow_funded -> in_progress` and
+   * `rejected -> in_progress`, because they are the same act: the node is going
+   * to work on this now. Splitting them would put two controls on the console
+   * that differ only in the copy above them.
+   *
+   * **A repeat is not an error.** A step already at `in_progress` returns the
+   * engagement with 200 rather than a refusal, because the causes are a
+   * double-click and a stale tab, and telling somebody their work did not start
+   * when it started is worse than saying nothing.
+   */
+  app.post(
+    '/api/node/engagements/:engagementId/start',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = z.object({ engagementId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'Bad engagement id.');
+
+      // Takes no body, and a body sent anyway is refused rather than ignored:
+      // the accept route's rule, for the same reason. Nothing about starting is
+      // the caller's to name.
+      if (request.body !== undefined && request.body !== null) {
+        const empty = z.object({}).strict().safeParse(request.body);
+        if (!empty.success) {
+          return fail(reply, 400, 'bad_request', 'Starting takes no body.');
+        }
+      }
+
+      const found = await requireNode(request, reply);
+      if (!found) return reply;
+
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+      const admin = createServiceClient(opts.supabase);
+
+      try {
+        const engagement = await readOwnEngagement(db, params.data.engagementId, found.userId);
+        if (!engagement) return fail(reply, 404, 'not_found', 'Engagement not found.');
+
+        const task = await readEngagedTask(admin, engagement.task_id);
+        const refusal = checkStartable(engagement, task);
+        if (refusal) return fail(reply, 409, refusal.rule, refusal.reason);
+
+        // `checkStartable` returns null for an already-started step, so this is
+        // the replay arm rather than a second check.
+        if (task && task.state !== 'in_progress') {
+          const moved = await moveTask(admin, task.id, task.state, 'in_progress');
+          if (!moved) {
+            // Somebody else moved it between the read and here: the owner
+            // cancelled, or the no-show sweep took it. Refused rather than
+            // retried, because what to do next depends on where it went.
+            return fail(
+              reply,
+              409,
+              'moved',
+              'That step moved while you were clicking. Reload to see where it is.',
+            );
+          }
+          await auditProofEvent(
+            admin,
+            {
+              projectId: engagement.project_id,
+              nodeId: found.userId,
+              taskId: task.id,
+              engagementId: engagement.id,
+              verb: 'work.started',
+              payload: { from: task.state },
+            },
+            request.log,
+          );
+
+          const roomId = await roomForProject(admin, engagement.project_id);
+          if (roomId) {
+            // The owner learns from their room, because nothing notifies anybody
+            // in this build. Keyed on the engagement so a retry says it once.
+            await postSystemMessage(
+              admin,
+              request.log,
+              roomId,
+              `work-started:${engagement.id}`,
+              `An expert has started work on "${task.title}".`,
+            );
+          }
+        }
+
+        const engagementRow = await readEngagement(admin, engagement.id);
+        return reply.code(200).send({ engagement: engagementRow });
+      } catch (err) {
+        request.log.error({ err, engagementId: params.data.engagementId }, 'starting work failed');
+        return fail(reply, 500, 'internal_error', 'Could not start that step.');
+      }
+    },
+  );
+
+  /**
+   * Hand the work over.
+   *
+   * **Multipart**, because the note and the files are one act. The two-phase
+   * alternative (submit JSON, then upload to a signed URL) reintroduces the
+   * object-with-no-row orphan `artifact-files.ts` was written to prevent.
+   *
+   * **The floor check runs before anything is written and before the task
+   * moves**, which is `task-actions.ts`' and `match.ts`' standing idiom and is
+   * why `proof_submitted -> in_progress` turned out not to be needed: a bounced
+   * submission leaves the step exactly where it was, with nothing in the audit
+   * trail but the bounce itself. `packages/core` owns the judgement and it is
+   * deliberately small: it cannot tell whether the work is good, and the owner
+   * is the checker.
+   */
+  app.post(
+    '/api/node/engagements/:engagementId/proof',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = z.object({ engagementId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'Bad engagement id.');
+
+      if (!request.isMultipart()) {
+        return fail(reply, 400, 'bad_request', 'Send the proof as a multipart form.');
+      }
+
+      const found = await requireNode(request, reply);
+      if (!found) return reply;
+
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+      const admin = createServiceClient(opts.supabase);
+
+      try {
+        const engagement = await readOwnEngagement(db, params.data.engagementId, found.userId);
+        if (!engagement) return fail(reply, 404, 'not_found', 'Engagement not found.');
+
+        const task = await readEngagedTask(admin, engagement.task_id);
+        const refusal = checkSubmittable(engagement, task);
+        if (refusal) return fail(reply, 409, refusal.rule, refusal.reason);
+        if (!task) return fail(reply, 404, 'not_found', 'That step no longer exists.');
+
+        // Read the parts before anything else. The bytes are buffered rather
+        // than streamed to storage, because `writeFileArtifact` writes the object
+        // and the row together and cannot do that against a stream it has already
+        // consumed; the size cap is what makes buffering safe.
+        let note = '';
+        let rawResponses = '[]';
+        const files: ProofFile[] = [];
+
+        for await (const part of request.parts()) {
+          if (part.type === 'file') {
+            if (files.length >= MAX_PROOF_FILES) {
+              return fail(
+                reply,
+                400,
+                'too_many_files',
+                `Attach at most ${MAX_PROOF_FILES} files. Say the rest in the thread.`,
+              );
+            }
+            if (!PROOF_CONTENT_TYPES.has(part.mimetype)) {
+              return fail(
+                reply,
+                415,
+                'unsupported_type',
+                `${part.mimetype} is not a file type this accepts.`,
+              );
+            }
+            const bytes = await part.toBuffer();
+            if (bytes.byteLength > MAX_PROOF_FILE_BYTES) {
+              return fail(
+                reply,
+                413,
+                'file_too_large',
+                `"${part.filename}" is larger than the ${Math.round(
+                  MAX_PROOF_FILE_BYTES / (1024 * 1024),
+                )}MB limit.`,
+              );
+            }
+            files.push({
+              bytes: new Uint8Array(bytes),
+              filename: part.filename,
+              contentType: part.mimetype,
+            });
+          } else if (part.fieldname === 'note') {
+            note = String(part.value ?? '');
+          } else if (part.fieldname === 'responses') {
+            rawResponses = String(part.value ?? '[]');
+          }
+        }
+
+        let responses: string[];
+        try {
+          const parsed = z.array(z.string().max(2000)).max(8).safeParse(JSON.parse(rawResponses));
+          if (!parsed.success) throw new Error('shape');
+          responses = parsed.data;
+        } catch {
+          return fail(reply, 400, 'bad_request', 'Could not read the answers on this form.');
+        }
+
+        // **The task row is authoritative, not the form.** A replan can add or
+        // remove a criterion while somebody has the form open, and silently
+        // answering a question nobody asked is worse than asking them to reload.
+        const criteria = acceptanceCriteria(task.acceptance_criteria);
+        if (criteria.length > 0 && responses.length !== criteria.length) {
+          return fail(
+            reply,
+            409,
+            'criteria_changed',
+            'What this step asks for has changed since you opened the form. Reload and check.',
+          );
+        }
+
+        const { verdict, next } = checkProof(note, responses, files.length, criteria);
+
+        if (next === 'in_progress') {
+          // Nothing written, nothing moved. The step is where it was and the
+          // node is told exactly what to fix.
+          await auditProofEvent(
+            admin,
+            {
+              projectId: engagement.project_id,
+              nodeId: found.userId,
+              taskId: task.id,
+              engagementId: engagement.id,
+              verb: 'proof.bounced',
+              payload: { failures: verdict.failures },
+            },
+            request.log,
+          );
+          const engagementRow = await readEngagement(admin, engagement.id);
+          return reply.code(200).send({
+            engagement: engagementRow,
+            bounced: { reasons: verdict.reasons, unaddressed: verdict.unaddressed },
+          });
+        }
+
+        const written = await writeProofArtifacts(admin, {
+          taskId: task.id,
+          projectId: engagement.project_id,
+          title: `Proof: ${task.title}`,
+          body: composeProofBody(note, criteria, responses),
+          files,
+        });
+
+        // **The move comes after the write.** An artifact with no transition is a
+        // deliverable the owner can still read; a transition with no artifact is
+        // a step that claims to have been handed over and shows nothing, which is
+        // the silent failure this repository has recorded twice.
+        const moved = await moveTask(admin, task.id, 'in_progress', 'proof_submitted');
+        if (!moved) {
+          return fail(
+            reply,
+            409,
+            'moved',
+            'That step moved while you were submitting. Your work is saved against it. Reload.',
+          );
+        }
+
+        await auditProofEvent(
+          admin,
+          {
+            projectId: engagement.project_id,
+            nodeId: found.userId,
+            taskId: task.id,
+            engagementId: engagement.id,
+            verb: 'proof.submitted',
+            payload: { artifact_id: written.noteId, files: written.fileIds.length },
+          },
+          request.log,
+        );
+
+        const roomId = await roomForProject(admin, engagement.project_id);
+        if (roomId) {
+          await postSystemMessage(
+            admin,
+            request.log,
+            roomId,
+            `proof-submitted:${engagement.id}:${written.noteId}`,
+            `An expert has handed over "${task.title}". It is waiting for you to approve it or send it back.`,
+          );
+        }
+
+        const engagementRow = await readEngagement(admin, engagement.id);
+        return reply.code(201).send({ engagement: engagementRow });
+      } catch (err) {
+        request.log.error(
+          { err, engagementId: params.data.engagementId },
+          'proof submission failed',
+        );
+        return fail(reply, 500, 'internal_error', 'Could not record that hand-over.');
+      }
+    },
+  );
+
+  /** What this node has already handed over on this step. `kind = 'proof'` only. */
+  app.get(
+    '/api/node/engagements/:engagementId/proof',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = z.object({ engagementId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'Bad engagement id.');
+
+      const found = await requireNode(request, reply);
+      if (!found) return reply;
+
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+      const admin = createServiceClient(opts.supabase);
+
+      try {
+        const engagement = await readOwnEngagement(db, params.data.engagementId, found.userId);
+        if (!engagement) return fail(reply, 404, 'not_found', 'Engagement not found.');
+        const proof = await readNodeProof(admin, engagement.task_id);
+        return reply.code(200).send({ proof });
+      } catch (err) {
+        request.log.error({ err, engagementId: params.data.engagementId }, 'proof read failed');
+        return fail(reply, 500, 'internal_error', 'Could not load what you handed over.');
+      }
+    },
+  );
+
+  /**
+   * A short-lived link to one proof file the node submitted.
+   *
+   * The owner's equivalent (`projects.ts`) can read the artifact row **as the
+   * caller** and let RLS be the authorisation. This one cannot, because a
+   * thread-scoped member reads no artifact rows at all, so the authorisation is
+   * the caller-scoped engagement read and the query is then constrained on
+   * `task_id` **and** `kind = 'proof'`: an artifact id from anywhere else cannot
+   * be redeemed here.
+   *
+   * **The URL is never logged.** It is a bearer capability good for ten minutes
+   * without a token, so it belongs in the response body and nowhere else.
+   */
+  app.get(
+    '/api/node/engagements/:engagementId/proof/:artifactId/file-url',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = z
+        .object({ engagementId: z.string().uuid(), artifactId: z.string().uuid() })
+        .safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'Bad id.');
+
+      const found = await requireNode(request, reply);
+      if (!found) return reply;
+
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+      const admin = createServiceClient(opts.supabase);
+
+      try {
+        const engagement = await readOwnEngagement(db, params.data.engagementId, found.userId);
+        if (!engagement) return fail(reply, 404, 'not_found', 'Engagement not found.');
+
+        const storagePath = await readProofStoragePath(
+          admin,
+          engagement.task_id,
+          params.data.artifactId,
+        );
+        // One answer for "not yours", "not there" and "not a file", because
+        // telling them apart would confirm what exists to somebody who may not
+        // read it.
+        if (!storagePath) return fail(reply, 404, 'not_found', 'No file there.');
+
+        const { data: signed, error: signErr } = await admin.storage
+          .from(ARTIFACTS_BUCKET)
+          .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS);
+        if (signErr || !signed?.signedUrl) {
+          request.log.error({ err: signErr }, 'storage returned no signed url for proof');
+          return fail(reply, 500, 'internal_error', 'Could not make a link for that file.');
+        }
+
+        return reply
+          .code(200)
+          .send({ url: signed.signedUrl, expiresAt: signedUrlExpiresAt(Date.now()) });
+      } catch (err) {
+        request.log.error({ err, artifactId: params.data.artifactId }, 'proof file url failed');
+        return fail(reply, 500, 'internal_error', 'Could not make a link for that file.');
+      }
+    },
+  );
 }

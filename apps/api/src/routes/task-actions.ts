@@ -9,6 +9,7 @@ import { createSchedulerPorts } from '../lib/scheduler';
 import { resolveProjectOwner } from '../lib/project-owner';
 import { resolveTask, type TaskAction } from '../lib/task-resolution';
 import { readEligiblePool } from '../lib/match';
+import { revokeThreadAccess } from '../lib/proof';
 import { skillsForStage } from '@octopus/marketplace';
 
 /**
@@ -52,8 +53,13 @@ const Params = z.object({
 });
 
 const Body = z.object({
-  action: z.enum(['answer', 'retry', 'find_expert']),
-  /** What the owner did. Required for `answer`, ignored for the other two. */
+  action: z.enum(['answer', 'retry', 'find_expert', 'approve_work', 'reject_work']),
+  /**
+   * What the owner did, or what needs to change. Required for `answer` and for
+   * `reject_work`, ignored for the rest. `resolveTask` decides which, so the two
+   * rules live in one readable function rather than in this schema and again in
+   * the handler.
+   */
   text: z.string().trim().max(8000).optional(),
 });
 
@@ -219,6 +225,90 @@ export async function taskActionRoutes(
           // this returns. Approving a plan runs a tick inline because a person is
           // watching a card commit; nobody is watching a stranger decide.
           request.log.info({ taskId, userId, skills }, 'owner sent a step to the marketplace');
+          return reply.code(200).send({ state: outcome.resolution.to, ranExecutor: false });
+        }
+
+        // **The owner's verdict on an expert's work**, and the only action here
+        // that walks two arcs. `proof_submitted -> in_review -> approved | rejected`,
+        // as two conditional updates in one request, which is `accept_offer`'s
+        // idiom: every guard fires, every hop writes its own `task.transitioned`
+        // row, and `in_review` is transit-only rather than a state a step sits in
+        // while nobody is looking at it.
+        if (action === 'approve_work' || action === 'reject_work') {
+          const opened = await admin
+            .from('tasks')
+            .update({ state: 'in_review' })
+            .eq('id', task.id)
+            .eq('state', 'proof_submitted')
+            .select('id');
+          if (opened.error) throw opened.error;
+          if ((opened.data ?? []).length === 0) {
+            return fail(reply, 409, 'conflict', 'That step moved while you were deciding.');
+          }
+
+          if (action === 'reject_work') {
+            // Their note is the deliverable of the rejection: it is what the node
+            // reads and works from, so it is stored rather than only logged.
+            const { error: noteErr } = await admin.from('artifacts').insert({
+              task_id: task.id,
+              project_id: task.project_id,
+              kind: 'answer',
+              title: `Sent back: ${task.title}`,
+              body: text,
+              citations: [],
+              created_by: 'user',
+            });
+            if (noteErr) throw noteErr;
+          }
+
+          const settled = await admin
+            .from('tasks')
+            .update({ state: outcome.resolution.to })
+            .eq('id', task.id)
+            .eq('state', 'in_review')
+            .select('id');
+          if (settled.error) throw settled.error;
+          if ((settled.data ?? []).length === 0) {
+            return fail(reply, 409, 'conflict', 'That step moved while you were deciding.');
+          }
+
+          const { error: eventErr } = await admin.from('events').insert({
+            project_id: task.project_id,
+            actor_id: userId,
+            actor_kind: 'user',
+            verb: action === 'approve_work' ? 'work.approved' : 'work.rejected',
+            subject_type: 'task',
+            subject_id: task.id,
+            payload: { note: action === 'reject_work' ? text : null },
+          });
+          if (eventErr) {
+            request.log.error({ err: eventErr, taskId }, 'review verdict event was not written');
+          }
+
+          if (action === 'approve_work') {
+            // **Discharges the obligation `accept_offer` booked** (`20260904125000:373-379`):
+            // it admits a node with `expires_at` null because there is no deadline
+            // to box access with, and says revocation is explicit, done by the
+            // reconcile sweep when an engagement ends "and the approval path in
+            // slice 6 does the same".
+            //
+            // **The engagement is deliberately NOT ended here.** The panel reads
+            // live engagements only, so ending it would erase "who did this" at
+            // the moment the owner is about to pay them, and
+            // `private.engaged_counterparty` is time-boxed on `ended_at is null`,
+            // so it would close the owner's read of the node's name before the
+            // payout. `outcome = 'completed'` belongs to the payout slice,
+            // alongside `held -> released`.
+            //
+            // Conditional on `expires_at is null` and scoped to this task's
+            // thread, so it cannot touch a membership the node holds elsewhere,
+            // and a replay is a no-op. A failure is logged and never thrown: the
+            // verdict is committed, and refusing to report an approval that
+            // happened would be the worse lie.
+            await revokeThreadAccess(admin, task.id, request.log);
+          }
+
+          request.log.info({ taskId, userId, action }, 'owner recorded a verdict on expert work');
           return reply.code(200).send({ state: outcome.resolution.to, ranExecutor: false });
         }
 

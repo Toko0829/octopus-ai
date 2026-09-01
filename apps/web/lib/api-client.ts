@@ -10,8 +10,10 @@ import type {
   Message,
   NodeCredential,
   NodeEngagement,
+  NodeEngagementResponse,
   NodeOffer,
   NodeProfile,
+  NodeProofArtifact,
   NodeSkill,
   ProjectDetail,
   ProjectSummary,
@@ -31,7 +33,22 @@ import type {
 async function bff<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/bff${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: {
+      // **Only when there is actually a body.** This was unconditional, which is
+      // a lie on a bodyless POST: it declares JSON and sends none, and Fastify
+      // refuses that before the handler with `FST_ERR_CTP_EMPTY_JSON_BODY`
+      // ("Body cannot be empty when content-type is set to 'application/json'").
+      //
+      // It made every bodyless POST in this client unusable from a browser.
+      // `acceptOffer` has carried it since slice 5 and nothing caught it: the
+      // route tests use `app.inject`, which sends no content-type unless asked,
+      // and every acceptance until now was driven through the rpc directly. Found
+      // by clicking "Start work" on a real page.
+      ...(init?.body !== undefined && init?.body !== null
+        ? { 'Content-Type': 'application/json' }
+        : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => null);
@@ -102,7 +119,13 @@ export function getProjects(roomId: string) {
 export function resolveStep(
   projectId: string,
   taskId: string,
-  input: { action: 'answer'; text: string } | { action: 'retry' } | { action: 'find_expert' },
+  input:
+    | { action: 'answer'; text: string }
+    | { action: 'retry' }
+    | { action: 'find_expert' }
+    | { action: 'approve_work' }
+    /** A rejection must say why: the node works from this note, so the API refuses an empty one. */
+    | { action: 'reject_work'; text: string },
 ) {
   return bff<{ state: string; ranExecutor: boolean }>(
     `/projects/${projectId}/tasks/${taskId}/resolution`,
@@ -419,4 +442,66 @@ export function acceptOffer(offerId: string) {
 /** The work this node took, with the room and thread each one lives in. */
 export function getNodeEngagements() {
   return bff<{ engagements: NodeEngagement[] }>('/node/engagements');
+}
+
+/**
+ * Start a step, or pick one back up after the owner sent it back.
+ *
+ * One call for both arcs (`escrow_funded -> in_progress` and
+ * `rejected -> in_progress`) because they are the same act; the console changes
+ * the label, not the request.
+ */
+export function startEngagementWork(engagementId: string) {
+  return bff<NodeEngagementResponse>(`/node/engagements/${engagementId}/start`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * Hand the work over.
+ *
+ * **Not through `bff`**, because that helper sets `Content-Type: application/json`
+ * and a multipart body carries its boundary in that header. `fetch` is called
+ * directly with **no** `Content-Type` at all so the browser writes the boundary
+ * itself; the BFF proxy forwards whatever it is given.
+ *
+ * A `200` means the floor check bounced it and `bounced` says why; a `201` means
+ * the owner has it. Both carry the engagement, so the console re-renders from the
+ * state rather than inferring it from the status code.
+ */
+export async function submitProof(
+  engagementId: string,
+  input: { note: string; responses: string[]; files: File[] },
+): Promise<NodeEngagementResponse> {
+  const form = new FormData();
+  form.set('note', input.note);
+  form.set('responses', JSON.stringify(input.responses));
+  for (const file of input.files) form.append('file', file, file.name);
+
+  const res = await fetch(`/api/bff/node/engagements/${engagementId}/proof`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.message ?? `Could not hand that over (${res.status})`);
+  }
+  return (await res.json()) as NodeEngagementResponse;
+}
+
+/** What this node has already handed over on a step. */
+export function getNodeProof(engagementId: string) {
+  return bff<{ proof: NodeProofArtifact[] }>(`/node/engagements/${engagementId}/proof`);
+}
+
+/**
+ * A short-lived link to one proof file the node submitted.
+ *
+ * Fetched on click, never with the list, for the reason the owner's panel does
+ * the same: a signed URL is a bearer capability good for ten minutes without
+ * signing in, so shipping one with every list would mint a download credential
+ * for every file the moment the page opened.
+ */
+export function getNodeProofFileUrl(engagementId: string, artifactId: string) {
+  return bff<ArtifactFileUrl>(`/node/engagements/${engagementId}/proof/${artifactId}/file-url`);
 }

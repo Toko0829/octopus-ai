@@ -797,6 +797,11 @@ function TaskRow({
   const state = describeState(task.state);
   const delivered = task.artifacts.length > 0;
   const stuck = task.state === 'needs_user' || task.state === 'escalated';
+  // An expert handed something over and it is waiting on this person. A separate
+  // predicate from `stuck` rather than a third member of it, because the two ask
+  // different questions: `stuck` means the plan cannot continue without you,
+  // this means somebody is waiting to be paid.
+  const reviewable = task.state === 'proof_submitted';
 
   return (
     <li className="work-task">
@@ -846,6 +851,9 @@ function TaskRow({
       )}
 
       {canAct && stuck && <ResolveStep task={task} projectId={projectId} onResolved={onResolved} />}
+      {canAct && reviewable && (
+        <ReviewWork task={task} projectId={projectId} onResolved={onResolved} />
+      )}
 
       {delivered && (
         <>
@@ -983,6 +991,121 @@ function ArtifactFile({
  * stranger is deciding, and the cascade returns it within 48 hours per candidate
  * if nobody takes it.
  */
+/**
+ * The owner's verdict on what an expert handed over.
+ *
+ * **A separate control from `ResolveStep`, deliberately.** That one is about a
+ * step the plan cannot continue without you; this one is about work somebody has
+ * already done and is waiting to be paid for, and the two read differently
+ * because they are different asks. Sharing a component would mean a `stuck ||
+ * reviewable` predicate and four buttons whose meaning depends on which arm
+ * matched.
+ *
+ * **The proof is already on screen.** It renders in the deliverables disclosure
+ * below this, because a node's proof is an `artifacts` row on the same task and
+ * the owner is a project member ([ADR-0022](../../../docs/40-adr/0022-proof-is-an-artifact.md)).
+ * So this control does not fetch or repeat it: it sits above the thing it is a
+ * verdict on.
+ *
+ * **Sending back requires a note and approving does not.** The node reads that
+ * note and works from it; sending work back with no reason leaves them guessing
+ * while their fee sits in escrow. The API refuses an empty one too, so this is
+ * the readable half of a rule enforced in both places.
+ */
+function ReviewWork({
+  task,
+  projectId,
+  onResolved,
+}: {
+  task: Task;
+  projectId: string;
+  onResolved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState<null | 'approve_work' | 'reject_work'>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(action: 'approve_work' | 'reject_work') {
+    setBusy(action);
+    setError(null);
+    try {
+      await resolveStep(
+        projectId,
+        task.id,
+        action === 'reject_work' ? { action, text } : { action },
+      );
+      onResolved();
+    } catch (err) {
+      // Their writing stays on screen, for `ResolveStep`'s reason.
+      setError(err instanceof Error ? err.message : 'That did not go through.');
+      setBusy(null);
+    }
+  }
+
+  if (!open) {
+    return (
+      <div className="work-resolve">
+        <button
+          type="button"
+          className="work-action"
+          disabled={busy !== null}
+          onClick={() => void run('approve_work')}
+        >
+          {busy === 'approve_work' ? 'Approving' : 'Approve this work'}
+        </button>
+        <button type="button" className="work-action quiet" onClick={() => setOpen(true)}>
+          Send it back
+        </button>
+        {error && (
+          <p className="work-resolve-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="work-resolve">
+      <label className="work-resolve-label" htmlFor={`review-${task.id}`}>
+        What needs to change? The expert reads this and picks the step back up.
+      </label>
+      <textarea
+        id={`review-${task.id}`}
+        className="work-resolve-input"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={4}
+        disabled={busy !== null}
+      />
+      {error && (
+        <p className="work-resolve-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="work-resolve-actions">
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={() => setOpen(false)}
+          disabled={busy !== null}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => void run('reject_work')}
+          disabled={busy !== null || text.trim().length === 0}
+        >
+          {busy === 'reject_work' ? 'Sending back' : 'Send it back'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ResolveStep({
   task,
   projectId,
