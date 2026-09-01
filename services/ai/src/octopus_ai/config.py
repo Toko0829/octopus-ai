@@ -236,6 +236,20 @@ class Settings:
     # decomposition's tier with it.
     groundedness_model: str = ""
 
+    # The labelled ungrounded tier ([ADR-0021](../../../docs/40-adr/
+    # 0021-a-labelled-ungrounded-tier.md)), which runs ONLY where the groundedness
+    # gate returned `unsupported` on a retrieval that produced chunks: domain yes,
+    # coverage no. See `ungrounded.py` for why that boundary is the safety
+    # argument rather than a convenience.
+    #
+    # DEFAULT ON, because refusing every uncovered marketing question is what this
+    # exists to stop and a tier nobody switches on does nothing. Turning it OFF
+    # restores the strict grounded-or-refuse posture and is a legitimate choice for
+    # a deployment that would rather say nothing; it is not a safety fix, since the
+    # tier cannot propose a plan, cannot cite, and declines regulated topics in
+    # code. Both states are logged at startup, the same way `groundedness_check` is.
+    ungrounded_fallback: bool = True
+
     # Intake (full-funnel-creator.md step 1), which runs BEFORE retrieval and does
     # not use it. Both numbers are product decisions rather than measured ones,
     # and are settings precisely so they can be moved once there is something to
@@ -462,6 +476,7 @@ def get_settings() -> Settings:
         query_decomposition=_bool("QUERY_DECOMPOSITION", True),
         groundedness_check=_bool("GROUNDEDNESS_CHECK", True),
         groundedness_model=os.environ.get("GROUNDEDNESS_MODEL", ""),
+        ungrounded_fallback=_bool("UNGROUNDED_FALLBACK", True),
         intake_min_completeness=_float("INTAKE_MIN_COMPLETENESS", 0.75),
         intake_max_rounds=_int("INTAKE_MAX_ROUNDS", 2),
         retrieval_candidates=_int("RETRIEVAL_CANDIDATES", 25),

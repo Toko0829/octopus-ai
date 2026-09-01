@@ -49,6 +49,7 @@ from .schemas import (
     SourceRequest,
     SourceResponse,
 )
+from .ungrounded import UNGROUNDED_CORE, answer_ungrounded
 
 logger = logging.getLogger("octopus.ai")
 
@@ -224,6 +225,7 @@ async def lifespan(_: FastAPI):
             "generation_model": settings.generation_model,
             "groundedness_check": settings.groundedness_check,
             "groundedness_model": settings.active_groundedness_model,
+            "ungrounded_fallback": settings.ungrounded_fallback,
         },
     )
     try:
@@ -386,6 +388,33 @@ async def plan(request: PlanRequest) -> PlanResponse:
             reason: RefusalReason = (
                 "unsupported" if verdict.outcome == "unsupported" else "unverified"
             )
+
+            # The labelled ungrounded tier (ADR-0021), attempted only on
+            # `unsupported`. Retrieval returning chunks already established that
+            # the question is inside the domain, since the threshold clears
+            # nothing for an out-of-domain goal; `unsupported` establishes that
+            # the corpus does not cover it. Domain yes, coverage no, which is the
+            # only place a general answer is the right product.
+            #
+            # `unverified` is deliberately excluded. That means the gate could not
+            # run, and letting a provider outage change the product's posture
+            # would make the strict mode fail open on the days nobody is watching.
+            if reason == "unsupported" and state.settings.ungrounded_fallback:
+                answer = await answer_ungrounded(request.goal, state.providers)
+                if answer is not None:
+                    # Recorded in the same ledger as a refusal, because it is the
+                    # same signal: a question the corpus could not support. The
+                    # rate is a corpus-health number that should fall as documents
+                    # are added, not a feature whose usage should grow.
+                    _record_gap(request, UNGROUNDED_CORE, retrieval, detail=verdict.reason)
+                    logger.info(
+                        "answered ungrounded",
+                        extra={
+                            "agent_run_id": request.trace.agent_run_id,
+                            "chunks": len(retrieval.chunks),
+                        },
+                    )
+                    return answer
 
             # `verdict.reason` is the most useful column in the ledger: the gate
             # prompt requires a false answer to name the specific thing the sources

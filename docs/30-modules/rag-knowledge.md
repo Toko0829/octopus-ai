@@ -543,6 +543,51 @@ Five properties it depends on, each of which is a way it could quietly stop work
 - **Partial coverage is still supported.** The gate asks whether the sources address what was asked, not whether they address all of it. The plan card is built to render empty stages, so demanding total coverage would refuse the product's own north-star goal.
 - **It blocks before generation, not after.** A plan that is written and then discarded has already cost the call, and the discarded text is one refactor away from being shown.
 
+### The labelled ungrounded tier, for when the gate says no
+
+[ADR-0021](../40-adr/0021-a-labelled-ungrounded-tier.md). The gate's verdict is
+unchanged; what happens after an `unsupported` verdict is not. Where the tier is
+on, the question is answered from general practice, labelled, uncited, and unable
+to propose a plan. Where it declines, the refusal is exactly what it was.
+
+**The boundary is the safety argument**, and it works because the two checks
+answer different questions. The rerank threshold is a **domain** check: it ranks
+within the corpus, so an out-of-domain question clears nothing, which is why
+`refusing-v0` stays a refusal and why the golden negatives are still defended. The
+gate is a **coverage** check: `unsupported` means the corpus talked and missed.
+The tier fires only where domain is yes and coverage is no.
+`refusing-unverified-v1` is excluded separately, because a provider outage must
+not change the product's posture on the days nobody is watching.
+
+**It cannot propose a plan, and that is the enforcement rather than a
+convention.** It emits a `post_message` and nothing else. A `propose_plan`
+proposal is what Node materialises into a project and a task DAG, and a task DAG
+is what spends money and publishes things. Prose in a room cannot become a step,
+so rule 7 is satisfied by the shape of the return value.
+
+**Regulated topics are excluded in code**, in two families: the regulated acts
+themselves (legal, tax, permit, immigration, medical, financial advice) and the
+regulated corners _inside_ marketing, which is the half most easily missed.
+Advertising disclosure, privacy and consent law, claims substantiation and the
+sector rules are all marketing questions and all in-domain, which is exactly why a
+confident uncited answer there is the harm rule 10 describes.
+
+**The label is written by the code**, not requested from the model, for the reason
+this doc has now recorded four times about prompt-level dispositions.
+
+**Every ungrounded answer lands in `retrieval_gaps` beside the refusals**, because
+it is the same signal with a different response. Read the ingest queue as every
+core except `refusing-unverified-v1`. A rising share of `ungrounded-general-v1`
+means the tier is working and the corpus is not keeping up, which is a number to
+act on rather than to report.
+
+**What this does to `--gate`, stated rather than discovered later.** The pass
+scores block rate over `scope_negatives`, and those questions now reach the tier
+rather than a refusal. The gate itself is unchanged and still zero-tolerance: it
+decides whether the corpus supports the goal, and it still says no. What has
+changed is that the gate's verdict and the product's final answer are no longer
+the same event, and the metric measures the verdict.
+
 ### Measuring it
 
 `scope_negatives` in `golden.json` is its set: marketing questions, in marketing vocabulary, that this corpus does not answer. They are **deliberately not** ordinary negatives, because retrieval leaks on them by design and filing them under `cases` would fail the retrieval gate forever for a property retrieval does not have.

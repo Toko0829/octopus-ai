@@ -270,16 +270,24 @@ class TestEndpointWiring:
             self.generated = True
             return "text"
 
-    def _install(self, verdict: str, *, enabled: bool = True):
+    def _install(self, verdict: str, *, enabled: bool = True, ungrounded: bool = False):
         providers = self._Providers(verdict)
         main_module.state.retriever = self._Retriever(_retrieval(2))
         main_module.state.providers = providers
         main_module.state.settings = _settings(
-            groundedness_check=enabled, query_decomposition=False
+            groundedness_check=enabled,
+            query_decomposition=False,
+            # OFF by default here, and that is the point of the parameter. These
+            # tests are about the gate's own verdict, and with the ungrounded tier
+            # on, `generated` cannot distinguish "wrote a plan" from "wrote a
+            # labelled ungrounded answer": both reach the provider. The test that
+            # covers the tier turns it on explicitly (ADR-0021).
+            ungrounded_fallback=ungrounded,
         )
         return providers
 
     def test_an_unsupported_verdict_refuses_before_generating(self):
+        """With the ungrounded tier off, this is the original strict posture."""
         providers = self._install('{"supported": false, "reason": "no webinar material"}')
         body = (
             TestClient(app)
@@ -301,6 +309,71 @@ class TestEndpointWiring:
             "the gate must block before generation, not filter its output: a plan "
             "that was written and then discarded has already cost the call"
         )
+
+    def test_an_unsupported_verdict_answers_ungrounded_when_the_tier_is_on(self):
+        """ADR-0021. The gate's verdict is unchanged; what follows it is not.
+
+        `unsupported` on a retrieval that returned chunks means domain yes,
+        coverage no, which is the only place a general answer is the right
+        product. What must still hold is that no plan comes back: a
+        `propose_plan` proposal is what Node materialises into a task DAG, and a
+        task DAG is what spends money.
+        """
+        self._install('{"supported": false, "reason": "no webinar material"}', ungrounded=True)
+        body = (
+            TestClient(app)
+            .post(
+                "/plan",
+                json={
+                    "room_id": "r",
+                    "goal": "how do I build a webinar funnel",
+                    "trace": {"agent_run_id": "run-1"},
+                },
+            )
+            .json()
+        )
+
+        assert body["core"] == "ungrounded-general-v1"
+        assert body["grounded"] is False
+        assert body["citations"] == []
+        assert [p["kind"] for p in body["proposals"]] == ["post_message"]
+        assert "I do not have sources for this one" in body["proposals"][0]["body"]
+
+    def test_a_regulated_goal_still_refuses_with_the_tier_on(self):
+        """The exclusion list is what keeps rules 10, 11 and 19 intact."""
+        self._install('{"supported": false, "reason": "no VAT material"}', ungrounded=True)
+        body = (
+            TestClient(app)
+            .post(
+                "/plan",
+                json={
+                    "room_id": "r",
+                    "goal": "do I need to register for VAT when I start selling",
+                    "trace": {"agent_run_id": "run-1"},
+                },
+            )
+            .json()
+        )
+
+        assert body["core"] == "refusing-ungrounded-v1"
+
+    def test_an_unverifiable_check_never_reaches_the_ungrounded_tier(self):
+        """A provider outage must not change the product's posture.
+
+        `unverified` means the gate could not run. Answering from general practice
+        there would make the strict mode fail open on the days nobody is watching.
+        """
+        self._install("not json", ungrounded=True)
+        body = (
+            TestClient(app)
+            .post(
+                "/plan",
+                json={"room_id": "r", "goal": "grow my app", "trace": {"agent_run_id": "run-1"}},
+            )
+            .json()
+        )
+
+        assert body["core"] == "refusing-unverified-v1"
 
     def test_an_unverifiable_check_refuses_with_the_honest_reason(self):
         self._install("not json")

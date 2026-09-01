@@ -66,6 +66,44 @@ privileges came back `service_role` insert/select true, update/delete false,
 `authenticated` select false. Applied afterwards and the recorded version
 corrected to match the filename, per `supabase/README.md`'s audit.
 
+### An answered gap is still a gap (`20260905130000_retrieval_gaps_ungrounded.sql`)
+
+**A CHECK widening and nothing else.** `20260905120000` constrained `core` to the
+three refusal cores deliberately, so that a fourth value would have to arrive as a
+schema change — the point at which somebody decides what it means for the corpus.
+This is that decision, made once, for `ungrounded-general-v1`
+([ADR-0021](../40-adr/0021-a-labelled-ungrounded-tier.md)). The constraint is
+dropped and re-added with the new value; the column comment is rewritten to say
+what the set now means.
+
+**It belongs in this table rather than a new one, because it is the same signal
+wearing a different outcome.** `refusing-ungrounded-v1` and
+`ungrounded-general-v1` are produced by the identical condition: retrieval
+returned chunks and the groundedness gate judged they do not answer the goal. The
+only difference is what the product then did about it, which is a policy decision
+that can change and has. Two tables would mean that turning `UNGROUNDED_FALLBACK`
+off silently moved the corpus's backlog somewhere else, and the queue would appear
+to empty because the answer changed rather than because the gap closed.
+
+**The ingest queue is every core except the operational one** —
+`core in ('refusing-v0', 'refusing-ungrounded-v1', 'ungrounded-general-v1')`. A
+rising share of `ungrounded-general-v1` means the product is answering more
+questions from general practice, which is the tier working and the corpus not
+keeping up. It is a number that should fall, and it is not an achievement.
+
+**`retrieval_gaps_no_sources_is_empty` is untouched and still holds.** That check
+pairs `core = 'refusing-v0'` with `chunks_retrieved = 0`, and the new core is only
+ever reached on a retrieval that returned chunks, so it is never zero for it. The
+invariant is enforced upstream too: `RetrievalResult.grounded` _is_
+`len(chunks) > 0`, so both writers derive the two fields from the same fact.
+
+**Recorded rather than glossed:** the drop names `retrieval_gaps_core_check`,
+which `20260905120000` never declares — it is Postgres's generated name for the
+unnamed inline CHECK on `core`, deterministic because that column carries exactly
+one. There is no `if exists` guard. It applied cleanly against the live database,
+so it stands as written rather than being edited after the fact, but a future
+constraint on this table should be named where it is created.
+
 ### Threads, and `scope` stops being decorative (`20260901120000` … `20260901123000`)
 
 **Zero new capability, for the second slice running.** No route, no writer, no

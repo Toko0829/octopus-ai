@@ -112,6 +112,8 @@ The knowledge base has two layers on the same pgvector infrastructure:
 
 - **Mandatory citations** on legal/tax/permit output, each with an **effective date**.
 - **Groundedness gate (live):** claims not supported by retrieved, in-date sources are flagged `unverified` and **cannot gate a legal action** — they escalate to a human node. Note the parenthetical this line used to carry, "or below similarity threshold", was wrong as a definition of the gate rather than merely incomplete: a similarity threshold ranks within the corpus and cannot tell you the corpus does not cover the question. That conflation is what let an in-vocabulary uncovered question through. Retrieval step 7 is the real check.
+- **Grounded, cited, current, or refused, with one scoped exception ([ADR-0021](../40-adr/0021-a-labelled-ungrounded-tier.md)).** A **non-regulated marketing** question that the gate judges uncovered may be answered from general practice, labelled as uncited, if and only if retrieval returned chunks (so the question is in-domain) and the goal matches none of the regulated patterns in `ungrounded.is_regulated`. Such an answer is `grounded=False` with no citations and **cannot propose a plan**, so it cannot become a task DAG and cannot gate spending or publishing. Legal, tax and permit output is untouched: rule 10's citation mandate and rule 11's human escalation apply exactly as before.
+
 - **Injection quarantine:** all retrieved content is untrusted **data**, never instructions.
 - **Multi-tenant isolation:** retrieval respects RLS; no cross-tenant leakage.
 
