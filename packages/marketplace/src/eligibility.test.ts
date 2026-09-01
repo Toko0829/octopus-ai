@@ -95,13 +95,33 @@ describe('offerabilityGap', () => {
     expect(offerabilityGap({ rate: null })).toMatch(/rate/i);
   });
 
-  it('has nothing to say once a rate is set', () => {
-    expect(offerabilityGap({ rate: 120 })).toBeNull();
-    expect(offerabilityGap({ rate: 0.5 })).toBeNull();
+  it('has nothing to say once a per-step rate is set', () => {
+    expect(offerabilityGap({ rate: 120, ratePeriod: 'task' })).toBeNull();
+    expect(offerabilityGap({ rate: 0.5, ratePeriod: 'task' })).toBeNull();
+  });
+
+  it('names the rate period for an hourly node, who is otherwise invisible', () => {
+    // The second quiet dead end, and it arrived with escrow. `readEligiblePool`
+    // filters `rate_period = 'task'`, because an hourly rate is a price per hour
+    // and an escrow hold is a total with no hours field to multiply by. Such a
+    // node has done everything the page asks and is still never offered
+    // anything, which is exactly the situation the no-rate sentence exists for.
+    const gap = offerabilityGap({ rate: 120, ratePeriod: 'hour' });
+
+    expect(gap).toMatch(/per step/i);
+    expect(gap).toMatch(/escrow/i);
+  });
+
+  it('reports the missing rate first, because it is the one that blocks more', () => {
+    // A node with no rate has no period either (`node_profiles_rate_has_period`),
+    // so the two cannot both apply. Asserted anyway: the ordering is what makes
+    // the pair a single sentence rather than a list.
+    expect(offerabilityGap({ rate: null, ratePeriod: null })).toMatch(/Set your rate/);
   });
 
   it('writes no em dash, per rule 22', () => {
     expect(offerabilityGap({ rate: null }) ?? '').not.toContain('—');
+    expect(offerabilityGap({ rate: 120, ratePeriod: 'hour' }) ?? '').not.toContain('—');
     expect(NO_OPEN_OFFERS).not.toContain('—');
   });
 

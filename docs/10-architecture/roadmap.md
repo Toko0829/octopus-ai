@@ -98,6 +98,27 @@
 - Add the **business-formation / operations** verticals (the original cafe playbook: entity, permits, banking, hiring) as new archetypes + jurisdiction packs — reusing the same orchestrator, marketplace, chat, payments, and flywheel.
 - Ongoing-ops SaaS (compliance monitoring, bookkeeping) layered on top of marketing.
 
+### The digital-office feature map (owner-endorsed 2026-09-01)
+
+The north star restated as **departments**: a business is run by an office, the
+chat room is that office, and each department below is a feature family that
+lands on primitives the wedge already built. None is scheduled — the wedge and
+its exit gates come first, because a department built before department one has
+a real customer is the dead-end shape this repository keeps recording. Each row
+names its existing hooks, because the test of the office thesis is that a new
+department is mostly reuse: if one of these needs new core tables and a new
+state machine, the thesis is weaker than it looks and that finding goes in an
+ADR.
+
+| Department            | What it adds                                                                                                                                                   | Already-built hooks it lands on                                                                                                                                                   | Trigger to build                                                                      |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Sales / CRM**       | Somewhere for the customers marketing produces to live: leads inbox, follow-up, pipeline. Today the funnel ends at a measured number                           | Projects/tasks DAG (a lead is task-shaped work), chat threads, campaign outcomes as the lead source, flywheel (revenue per customer is the outcome that matters most)             | first real campaign producing real conversions with nowhere to put them               |
+| **Finance**           | Invoicing, expense tracking, per-project budgets rather than one ceiling, a tax calendar                                                                       | Double-entry `ledger_entries`, `escrow_holds`, `projects.budget_ceiling` and its two committer classes ([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md))      | first paying customer, or first jurisdictional filing deadline the office must track  |
+| **Legal / paperwork** | E-sign, a document vault, engagement letters; later the formation-pack paperwork (entity, permits)                                                             | `engagements.nda_signed_at` and `terms_hash` — columns already waiting for a writer — plus the private artifacts bucket and signed-URL path                                       | onboarding real nodes (ToS/NDA milestone above), which needs the e-sign writer anyway |
+| **Operations mode**   | Recurring work: weekly content, monthly bookkeeping, quarterly filings. Everything today is project-shaped with a finish line                                  | The ticker (already runs publish/metrics/optimize/match/crawl sweeps), the task DAG, `pg_boss` for utility jobs                                                                   | first retained customer whose engagement outlives their first campaign                |
+| **Company memory**    | RAG that knows _this_ business — brand voice, past decisions, what was tried and rejected — not just marketing in general                                      | The whole RAG pipeline and flywheel; this is a corpus-per-tenant question, not a new architecture                                                                                 | first customer whose corrections repeat because the system forgot the last one        |
+| **People**            | Relationships, not transactions: retainers with experts who know the business, teams on bigger jobs, the skill-assessment hiring filter (deferred table above) | The marketplace domain, `engagements`, ratings/trust (slice 8), the assessment idea and its constraints in [human-nodes-marketplace.md](../30-modules/human-nodes-marketplace.md) | first owner who re-requests a specific node by name                                   |
+
 ## Cross-phase compliance milestones
 
 | Milestone                                              | Must clear before                         |
@@ -111,13 +132,14 @@
 
 ## Deferred-by-design (with triggers)
 
-| Deferral                             | Trigger to build                                                                        |
-| ------------------------------------ | --------------------------------------------------------------------------------------- |
-| Fine-tuned proprietary model         | enough Phase-3 outcome/correction data                                                  |
-| Fastify WS gateway + Redis           | past ~500 concurrent / server-authoritative ordering                                    |
-| Trigger.dev / Temporal orchestration | a single locked ticker outgrown ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)) |
-| Dedicated vector DB / pgvectorscale  | tens of millions of chunks or high QPS                                                  |
-| Business-formation verticals         | marketing wedge is working + flywheel spinning                                          |
+| Deferral                                                                                                                                          | Trigger to build                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fine-tuned proprietary model                                                                                                                      | enough Phase-3 outcome/correction data                                                                                                                                                                                                                                                   |
+| Fastify WS gateway + Redis                                                                                                                        | past ~500 concurrent / server-authoritative ordering                                                                                                                                                                                                                                     |
+| Trigger.dev / Temporal orchestration                                                                                                              | a single locked ticker outgrown ([ADR-0010](../40-adr/0010-postgres-durable-runner.md))                                                                                                                                                                                                  |
+| Dedicated vector DB / pgvectorscale                                                                                                               | tens of millions of chunks or high QPS                                                                                                                                                                                                                                                   |
+| Business-formation verticals                                                                                                                      | marketing wedge is working + flywheel spinning                                                                                                                                                                                                                                           |
+| AI-administered skill assessments (recorded knowledge check, AI-scored; owner reviews each candidate's recording, score and answers, and chooses) | self-service node registration, or the first skill market where claims + ratings are not enough. Owner-proposed 2026-09-01; shape and compliance constraints in [human-nodes-marketplace.md](../30-modules/human-nodes-marketplace.md) § "Future idea: AI-administered skill assessment" |
 
 ## Definition of "production-ready" (exit gate, every phase)
 

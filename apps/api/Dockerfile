@@ -35,6 +35,15 @@ COPY packages/config/package.json packages/config/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/core/package.json packages/core/
 COPY packages/marketing/package.json packages/marketing/
+# The matcher sweep and the dispatch route import the stage-to-skill map, the
+# ranking and the eligibility sentences from here. Added late: slice 4 declared
+# the dependency and left this list alone, which is exactly the omission the
+# assertion below exists to catch.
+COPY packages/marketplace/package.json packages/marketplace/
+# The chart of accounts, the balanced ledger pairs, the derived idempotency keys
+# and the payment provider registry whose `carriesRealMoney` flag the accept path
+# refuses on.
+COPY packages/payments/package.json packages/payments/
 
 # Dev dependencies are installed on purpose. `apps/api`'s own start script runs
 # through tsx rather than a compiled bundle (see its package.json), so tsx is a
@@ -61,6 +70,29 @@ RUN node -e "const fs=require('fs'),pkg=require('/app/apps/api/package.json'),de
 
 COPY packages/ packages/
 COPY apps/api/ apps/api/
+
+# The ops scripts, and `scripts/invite-node.mjs` is the reason. A node profile
+# cannot be created by any route, policy or client grant: `public.invite_node` is
+# granted to `service_role` alone and that file is its only caller, which is the
+# cold-start decision in human-nodes-marketplace.md. So on a stack brought up
+# with `docker compose up` the marketplace is not merely empty, it is
+# *uncreatable*, and the matcher, offer, accept, escrow and ledger paths are all
+# unreachable behind that. The image can serve the feature and cannot be made to
+# hold the one row that exercises it.
+#
+# Running it on the host instead is what this replaces, and it is worse for a
+# specific reason rather than for convenience: the documented host form takes
+# `SUPABASE_SECRET_KEY=...` on the command line, so testing the marketplace means
+# putting the service key in a shell history. Compose already reads
+# `apps/api/.env` for this service, so through the container the script inherits
+# exactly the credentials the API itself runs on and nothing is retyped:
+#
+#   docker compose run --rm api node scripts/invite-node.mjs #     --email them@example.com --jurisdictions US-TX,US --languages en --confirm
+#
+# It costs one COPY of ~13 KB and adds no dependency: the scripts are zero-dep by
+# design, plain `fetch` against PostgREST and GoTrue, so nothing here has to be
+# installed or built. Last, so it never invalidates the layers above.
+COPY scripts/ scripts/
 
 # Overridden by compose. Stated here so `docker run` alone produces a service
 # that listens somewhere predictable rather than depending on the environment.

@@ -75,6 +75,24 @@ mappings:
     owner: 'docs/30-modules/human-nodes-marketplace.md'
     also_touch: ['docs/10-architecture/security-compliance.md']
 
+  # Money as arithmetic somebody can check, and no money at all: the chart of
+  # accounts, the balanced double-entry pairs, the derived idempotency keys, and
+  # the payment provider seam with its registry (whose `carriesRealMoney` flag is
+  # the enforced half of the counsel gate).
+  #
+  # **Owned by payments-billing.md rather than by business-projects-workflow.md**,
+  # and the difference is why this package exists at its own path. That doc's
+  # owner-paths line said the ledger would live in `packages/core`, which is
+  # mapped below to the workflow doc: a ledger there would have been doc-mapped to
+  # the wrong module by construction, so every change to the chart of accounts
+  # would have been obliged to edit the workflow doc and free to leave the
+  # payments doc untouched. The spec was reconciled in place instead, which is the
+  # `credentials -> node_credentials` precedent.
+  - path: 'packages/payments/**'
+    owner: 'docs/30-modules/payments-billing.md'
+    also_touch:
+      ['docs/10-architecture/data-model.md', 'docs/10-architecture/security-compliance.md']
+
   - path: 'packages/agent-tools/**'
     owner: 'docs/30-modules/ai-orchestrator.md'
 
@@ -145,7 +163,11 @@ mappings:
 
 # Domain areas without a single code root — reviewers verify these manually.
 manual_review:
-  - area: 'payments / escrow / ledger'
+  # Kept, and narrowed by slice 5. `packages/payments/**` is mapped above and is
+  # enforced; what stays manual is the money code with no single root: the escrow
+  # and ledger writes inside `supabase/migrations/**`, the accept path in
+  # `apps/api/**`, and any future Stripe webhook.
+  - area: 'payments / escrow / ledger outside packages/payments'
     owner: 'docs/30-modules/payments-billing.md'
   - area: 'notifications fan-out'
     owner: 'docs/30-modules/notifications.md'

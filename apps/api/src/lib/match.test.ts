@@ -164,9 +164,13 @@ const aTask = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const aNode = (id: string, rate: unknown) => ({
+const aNode = (id: string, rate: unknown, ratePeriod: string = 'task') => ({
   user_id: id,
   rate,
+  // Task-rated by default, because the pool filters on it since slice 5: an
+  // hourly rate is a price per hour and an escrow hold is a total, so there is
+  // no honest way to fund one.
+  rate_period: ratePeriod,
   service_jurisdictions: ['US-TX'],
   kyc_status: 'verified',
   availability: 'available',
@@ -245,6 +249,37 @@ describe('matcherSweep: offering', () => {
     const insert = written.find((w) => w.table === 'offers' && w.op === 'insert');
     // NODE_B is cheaper and is skipped, because they already said no.
     expect((insert?.values as Record<string, unknown>).node_id).toBe(NODE_A);
+  });
+
+  it('excludes an hourly node from the pool entirely', async () => {
+    // Slice 5's filter. An hourly rate is a price per hour and an escrow hold is
+    // a total, so there is no hours field to fund one against. Offering the work
+    // and then refusing the acceptance would be the dead-end shape this
+    // repository keeps recording, so the exclusion is at the pool.
+    tables.tasks.rows = [aTask()];
+    tables.node_skills.rows = [
+      { node_id: NODE_A, skill_tag: 'copywriting' },
+      { node_id: NODE_B, skill_tag: 'copywriting' },
+    ];
+    // NODE_B is cheaper and is hourly, so the more expensive task-rated node wins.
+    tables.node_profiles.rows = [aNode(NODE_A, 200), aNode(NODE_B, 90, 'hour')];
+
+    const result = await matcherSweep(deps());
+
+    expect(result.offered).toBe(1);
+    const insert = written.find((w) => w.table === 'offers' && w.op === 'insert');
+    expect((insert?.values as Record<string, unknown>).node_id).toBe(NODE_A);
+  });
+
+  it('exhausts rather than offering when every candidate is hourly', async () => {
+    tables.tasks.rows = [aTask()];
+    tables.node_skills.rows = [{ node_id: NODE_A, skill_tag: 'copywriting' }];
+    tables.node_profiles.rows = [aNode(NODE_A, 90, 'hour')];
+
+    const result = await matcherSweep(deps());
+
+    expect(result.offered).toBe(0);
+    expect(result.exhausted).toBe(1);
   });
 
   it('bounds offers created rather than tasks read', async () => {
@@ -498,5 +533,83 @@ describe('matcherSweep: replay', () => {
     expect(result.offered).toBe(0);
     expect(result.waiting).toBe(1);
     expect(eventCount).toBe(0);
+  });
+});
+
+/**
+ * The race with `accept_offer`, from this side.
+ *
+ * The sweep's header used to say it was the only writer of `tasks.state` in this
+ * domain, and slice 5 made that false: acceptance moves the task itself, twice,
+ * inside one transaction. What actually keeps the two apart is that every move
+ * on both sides is a conditional UPDATE, so a loser performs nothing. These
+ * assertions are the sweep's half of that: an accepted pair must be invisible to
+ * all three phases, or a cascade would re-offer work somebody is already doing.
+ */
+describe('matcherSweep: an accepted offer is invisible to every phase', () => {
+  const accepted = {
+    id: 'o1',
+    task_id: TASK,
+    project_id: PROJECT,
+    node_id: NODE_A,
+    round: 0,
+    status: 'accepted',
+    expires_at: '2026-09-30T12:00:00.000Z',
+  };
+
+  it('withdrawOrphans reads only open offers, so it never sees it', async () => {
+    // The task is at `escrow_funded`, which is not a market state, so an offer
+    // still `open` against it WOULD be withdrawn. It is `accepted`, and the
+    // phase filters on status before it looks at the task at all.
+    tables.tasks.rows = [aTask({ state: 'escrow_funded' })];
+    tables.offers.rows = [accepted];
+
+    const result = await matcherSweep(deps());
+
+    expect(result.withdrawn).toBe(0);
+    expect(written.filter((w) => w.table === 'offers' && w.op === 'update')).toHaveLength(0);
+  });
+
+  it('settleOffered reads only tasks at offered, so a funded step is not cascaded', async () => {
+    tables.tasks.rows = [aTask({ state: 'escrow_funded' })];
+    tables.offers.rows = [accepted];
+
+    const result = await matcherSweep(deps());
+
+    expect(result.cascaded).toBe(0);
+    expect(result.expired).toBe(0);
+    expect(written.filter((w) => w.table === 'tasks' && w.op === 'update')).toHaveLength(0);
+  });
+
+  it('offerMatching reads only tasks at matching, so nothing is re-offered', async () => {
+    tables.tasks.rows = [aTask({ state: 'claimed' })];
+    tables.offers.rows = [accepted];
+    tables.node_skills.rows = [{ node_id: NODE_B, skill_tag: 'copywriting' }];
+    tables.node_profiles.rows = [aNode(NODE_B, 90)];
+
+    const result = await matcherSweep(deps());
+
+    expect(result.offered).toBe(0);
+    expect(written.filter((w) => w.table === 'offers' && w.op === 'insert')).toHaveLength(0);
+  });
+
+  it('leaves the whole pass with nothing to say', async () => {
+    // The property behind the three above, stated once: a healthy accepted
+    // engagement costs the sweep three reads and produces no writes at all.
+    tables.tasks.rows = [aTask({ state: 'escrow_funded' })];
+    tables.offers.rows = [accepted];
+
+    const result = await matcherSweep(deps());
+
+    expect(result).toMatchObject({
+      offered: 0,
+      cascaded: 0,
+      expired: 0,
+      withdrawn: 0,
+      exhausted: 0,
+      replayed: 0,
+      waiting: 0,
+    });
+    expect(written).toHaveLength(0);
   });
 });

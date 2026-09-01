@@ -232,3 +232,151 @@
   background: var(--surface-2);
   font-size: var(--text-sm);
 }
+
+/* ---- Offers and accepted work ----
+
+   These classes were introduced by the offer slice and shipped with no rules at
+   all, so an offer card rendered as bare stacked text. Landing them here rather
+   than in a separate tidy-up is deliberate: this slice adds a second list with
+   the same shape and a money figure inside it, and half-styling one of the two
+   would be worse than the gap it started from. */
+.node-offer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.node-offer-title {
+  margin: 0;
+  font-size: var(--text-base);
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.node-offer-stage {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* An irreversible act gets a second step, and the second step gets a frame, so
+   it reads as a different moment rather than as more of the same card. Both
+   controls on an offer are irreversible: declining sends the step to the next
+   expert, and accepting locks a price in escrow. */
+.node-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.node-label {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.node-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.node-textarea:focus-visible {
+  outline: 2px solid var(--focus, var(--text));
+  outline-offset: 1px;
+}
+
+.node-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.node-history li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--text-sm);
+}
+
+.node-history-title {
+  color: var(--text-secondary);
+}
+
+/* The outcome is a word, never a tint (rule 15). */
+.node-history-status {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* ---- The engagement thread ----
+
+   Indented inside its engagement card rather than promoted to its own card,
+   because a thread belongs to exactly one step and a node holds one at a time.
+   Reading it as a separate section would imply it could be about anything. */
+.node-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.node-thread-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.node-thread-msg {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* Who said it is a word, not a colour or a side of the panel. */
+.node-thread-who {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding-top: 2px;
+}
+
+.node-thread-body {
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

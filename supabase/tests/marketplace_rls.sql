@@ -141,8 +141,9 @@ select extensions.is(
   pg_temp.npcount_as(pg_temp.npid('owner'), format(
     'select count(*) from public.node_profiles where user_id = %L', pg_temp.npid('nodeA'))),
   0::bigint,
-  'the owner shares a room with this node and still sees nothing of its profile: the '
-  'counterparty policy is deliberately absent until engagements exist to join through'
+  'the owner shares a room with this node and still sees nothing of its profile. '
+  '20260904126000 opened the counterparty pair on public.profiles and deliberately left '
+  'node_profiles closed: a rate card and a jurisdiction list are not facts about a deal'
 );
 
 select extensions.is(

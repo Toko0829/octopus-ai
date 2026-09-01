@@ -577,6 +577,22 @@ export const Message = z.object({
   seq: z.coerce.number().int(),
   createdAt: z.string(),
   /**
+   * The thread this message belongs to, or null for the channel-level stream.
+   *
+   * The column has existed since `20260901121000`, which deliberately left this
+   * schema untouched and said the reader "lands with the slice that has
+   * something to read". Slice 5 is that slice: a node is admitted to exactly one
+   * thread and posts into it, so the owner's stream now interleaves messages
+   * from two conversations and a client that could not tell them apart would
+   * render a node's work as if it were said to the whole room.
+   *
+   * **The owner reads both and the node reads one**, which is RLS rather than
+   * this field: `private.member_scope_covers` gives a thread-scoped member only
+   * messages carrying their own `thread_id`. This is what lets the owner's
+   * client mark which is which.
+   */
+  threadId: z.string().uuid().nullable().default(null),
+  /**
    * The interactive card attached to this message, when there is one. Carried
    * on the message rather than fetched separately so the stream and its cards
    * arrive together and cannot render out of step with each other.
@@ -596,6 +612,23 @@ export type Message = z.infer<typeof Message>;
 export const PostMessageBody = z.object({
   body: z.string().trim().min(1).max(4000),
   channelId: z.string().uuid().optional(),
+  /**
+   * Post into a thread rather than the room stream.
+   *
+   * **`authorKind` is deliberately still not accepted**, and this field is why
+   * it needs saying again. The server derives `author_kind` from the caller's
+   * own `room_members` row: a live `human_node` membership scoped to this thread
+   * makes it `'node'`, and everything else makes it `'user'`. A client that
+   * could name its own kind could file a message as a node's in somebody's audit
+   * trail, so the value is read from the database rather than from the request,
+   * exactly as `authorId` is. `messages_insert_own` re-checks both independently
+   * (`20260904127000`).
+   *
+   * `channelId` is derived from the thread when this is given, because a thread
+   * already knows which channel it lives in and a request naming both could name
+   * two different ones.
+   */
+  threadId: z.string().uuid().optional(),
   idempotencyKey: z.string().min(8).max(255),
 });
 export type PostMessageBody = z.infer<typeof PostMessageBody>;
@@ -770,6 +803,36 @@ export const Task = z.object({
   updatedAt: z.string(),
   /** What this step delivered. Empty while it has not run or has not passed review. */
   artifacts: z.array(Artifact).default([]),
+  /**
+   * Who took this step, at what price, when. Null unless a node accepted it and
+   * the deal is still live.
+   *
+   * **This is the counterparty opening, and it is deliberately four fields.**
+   * `offers` stays closed to the owner because an offer names every node who was
+   * *asked*, including the ones who said no; an engagement names the one who
+   * took the work and is being paid from the owner's authorised budget, which
+   * the owner is entitled to know. What is here is what answers "who took my
+   * step and what will it cost": a display name, the frozen price, the currency
+   * and the date.
+   *
+   * What is **not** here is the node's rate card, their jurisdictions, their
+   * availability or their trust score. None of those is a fact about this deal,
+   * and `node_profiles` stays closed to the owner accordingly. The projection is
+   * the access control (`20260904126000`).
+   *
+   * `agreedPrice` is frozen at acceptance and never follows the node's current
+   * rate, so a panel rendering it is showing what was agreed rather than what
+   * the node charges today.
+   */
+  engagement: z
+    .object({
+      nodeDisplayName: z.string().nullable(),
+      agreedPrice: z.number(),
+      currency: z.string(),
+      acceptedAt: z.string(),
+    })
+    .nullable()
+    .default(null),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -878,13 +941,28 @@ export const ProjectDetail = z.object({
    * documented stance and the one `checkSpendCap` enforces; a panel that read it
    * as "no limit set" would describe an open account.
    *
-   * `committedBudget` sums the caps of every non-terminal campaign, so the
-   * headroom a person sees is the same arithmetic the approval performs rather
-   * than a friendlier version of it.
+   * **`committedBudget` sums BOTH committer classes** since slice 5: the caps of
+   * every non-terminal campaign, and every escrow hold still `held`
+   * ([ADR-0020](../../../docs/40-adr/0020-the-ceiling-has-two-committer-classes.md)).
+   * The headroom a person sees is therefore the same arithmetic both the
+   * campaign approval and the offer acceptance perform, rather than a friendlier
+   * version of it. A panel counting only campaigns would show headroom that the
+   * next acceptance refuses to spend, which is the kind of wrong answer that
+   * looks like a bug in the check rather than in the display.
    */
   budgetCeiling: z.number().nullable(),
   currency: z.string(),
   committedBudget: z.number(),
+  /**
+   * How much of `committedBudget` is escrow rather than campaign budget.
+   *
+   * Broken out rather than folded away, because the two are committed for
+   * different reasons and settle on different clocks: a campaign cap frees up
+   * when the campaign ends, and a hold frees up when the step is finished or
+   * cancelled. An owner looking at a number they cannot reduce needs to know
+   * which half is which. The panel phrases it as "of which held in escrow".
+   */
+  escrowHeld: z.number(),
   tasks: z.array(Task),
   campaigns: z.array(CampaignSummary).default([]),
 });
@@ -1175,15 +1253,96 @@ export type ListNodeOffersResponse = z.infer<typeof ListNodeOffersResponse>;
  * different problems for the owner: the first is fixable now, the second says
  * the match was wrong. `.strict()` for the `PatchNodeBody` reason, so an attempt
  * to send a status or an id is a 400 rather than a silently ignored field.
- *
- * **There is no accept body**, and its absence is the slice boundary. Accepting
- * is inseparable from funding escrow, so an accept route that wrote nothing to a
- * ledger would leave a node holding a step nobody had paid for.
  */
 export const DeclineOfferBody = z
   .object({ reason: z.string().trim().min(1).max(500).optional() })
   .strict();
 export type DeclineOfferBody = z.infer<typeof DeclineOfferBody>;
+
+/* -------------------------------------------- engagements, as the node sees them */
+
+/**
+ * **Accepting takes no body at all, and that is now a decision rather than a
+ * slice boundary.** This comment replaces one that said an accept body did not
+ * exist because escrow did not; escrow exists, and the body is still empty.
+ *
+ * Everything an acceptance depends on is read from rows the caller cannot name:
+ * the price from `node_profiles.rate`, the ceiling from `projects`, the step
+ * from the offer. A node accepts the offer as it stands or declines it. There is
+ * no counter-offer, no quantity and no negotiated price, because
+ * `engagements.agreed_price` is frozen from the profile and a field here would
+ * be a caller naming what they are paid.
+ *
+ * The charge reference is not a field either: the route mints it through the
+ * payment provider before calling the rpc, so a client cannot supply one.
+ */
+
+/**
+ * One accepted deal, projected for the node.
+ *
+ * **This is the first projection in the marketplace that exposes `roomId` and
+ * `threadId`, and the change is deliberate rather than incidental.** `NodeOffer`
+ * hides every internal id, because a node who has not accepted has no grant on
+ * anything and an id would only invite the next surface to try. After acceptance
+ * the two ids ARE the admission: `room_members` carries them, RLS is written
+ * against them, and the node's own client needs both to read and post in their
+ * thread. Handing them over is what the membership already permits.
+ *
+ * Still absent: the project, the other steps, the plan, the owner's other work.
+ * A node is admitted to one thread and to nothing else.
+ */
+export const NodeEngagement = z.object({
+  id: z.string().uuid(),
+  agreedPrice: z.number(),
+  currency: z.string(),
+  acceptedAt: z.string(),
+  endedAt: z.string().nullable(),
+  outcome: z.enum(['completed', 'reassigned', 'cancelled', 'disputed_resolved']).nullable(),
+  /** The step, as the offer card showed it. Read service-side; the node has no grant on `tasks`. */
+  task: z.object({
+    title: z.string(),
+    stage: z.string().nullable(),
+    detail: z.string().nullable(),
+    /**
+     * Where the work has got to. `tasks.state` is the only state an engagement
+     * has ([ADR-0016](../../../docs/40-adr/0016-an-engagement-has-no-state-of-its-own.md)),
+     * so this is not a second machine, it is the same one read from the same row.
+     */
+    state: TaskState,
+  }),
+  /** The room and thread the node was admitted to. Null only if the thread was deleted. */
+  roomId: z.string().uuid().nullable(),
+  threadId: z.string().uuid().nullable(),
+});
+export type NodeEngagement = z.infer<typeof NodeEngagement>;
+
+export const ListNodeEngagementsResponse = z.object({
+  engagements: z.array(NodeEngagement),
+});
+export type ListNodeEngagementsResponse = z.infer<typeof ListNodeEngagementsResponse>;
+
+/**
+ * What accepting returns.
+ *
+ * The engagement rather than the offer, because the offer is now settled and the
+ * thing the node needs next is the room and thread they were just admitted to.
+ * A replayed accept returns the same row with the same ids, so a client that
+ * retried a request whose response it never saw lands in the same place.
+ */
+export const AcceptOfferResponse = z.object({ engagement: NodeEngagement });
+export type AcceptOfferResponse = z.infer<typeof AcceptOfferResponse>;
+
+/**
+ * **None of the `/api/node` routes appear in the ts-rest router below, and that
+ * is deliberate rather than an omission.** The router is partial: it covers the
+ * surfaces the browser client is generated from, and the node console calls its
+ * three endpoints through the same BFF with the schemas above as the shared
+ * shape. Adding them means deciding what the generated client should do about a
+ * group whose entire authorisation model is "the caller is always the subject",
+ * which is a decision worth taking on its own rather than as a side effect of
+ * shipping acceptance. Every route still validates against these schemas in
+ * `apps/api`, so there is one source of truth either way.
+ */
 
 const ProjectParams = z.object({ projectId: z.string().uuid() });
 

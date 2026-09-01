@@ -44,11 +44,26 @@ let offerRows: Record<string, unknown>[];
 let taskRows: Record<string, unknown>[];
 /** Rows a conditional offer update should report as moved. */
 let offerUpdateMoves: Record<string, unknown> | null;
+/** Slice 5: what the accept path reads on its way through. */
+let engagementRow: Record<string, unknown> | null;
+/** What the replay short-circuit finds, looked up by `offer_id`. */
+let replayEngagement: Record<string, unknown> | null;
+let projectRow: Record<string, unknown> | null;
+let campaignRows: Record<string, unknown>[];
+let holdRows: Record<string, unknown>[];
+let threadRows: Record<string, unknown>[];
+let embedRow: Record<string, unknown> | null;
+/** What `accept_offer` answers. Set to an error to exercise the raise path. */
+let rpcResult: { data: unknown; error: { code: string; message: string } | null };
 
 function client() {
   return {
     from(table: string) {
       const b: Record<string, unknown> = {};
+      // Per-builder as well as global. `filters` is what assertions read; this
+      // is what the stub itself branches on, because two different reads of
+      // `engagements` in one request are told apart by which column they filter.
+      const applied: Record<string, unknown> = {};
       const rowsFor = () =>
         table === 'node_skills'
           ? skillRows
@@ -58,11 +73,18 @@ function client() {
               ? offerRows
               : table === 'tasks'
                 ? taskRows
-                : [];
+                : table === 'campaigns'
+                  ? campaignRows
+                  : table === 'escrow_holds'
+                    ? holdRows
+                    : table === 'threads'
+                      ? threadRows
+                      : [];
       Object.assign(b, {
         select: () => b,
         eq: (column: string, value: unknown) => {
           filters.push({ column, value });
+          applied[column] = value;
           return b;
         },
         is: (column: string, value: unknown) => {
@@ -104,12 +126,27 @@ function client() {
           });
         },
         in: () => b,
+        not: (column: string, _op?: string, _value?: unknown) => {
+          filters.push({ column, value: 'not' });
+          return b;
+        },
         gt: (column: string, value: unknown) => {
           filters.push({ column, value });
           return b;
         },
         maybeSingle: async () => {
           if (table === 'node_profiles') return { data: profileRow, error: null };
+          if (table === 'engagements') {
+            // The replay short-circuit looks up by `offer_id`; reading back what
+            // was just accepted looks up by `id`.
+            return {
+              data: 'offer_id' in applied ? replayEngagement : engagementRow,
+              error: null,
+            };
+          }
+          if (table === 'projects') return { data: projectRow, error: null };
+          if (table === 'action_embeds') return { data: embedRow, error: null };
+          if (table === 'threads') return { data: threadRows[0] ?? null, error: null };
           if (table === 'node_skills') return { data: skillRows[0] ?? null, error: null };
           if (table === 'node_credentials') return { data: credentialRows[0] ?? null, error: null };
           if (table === 'offers') {
@@ -127,6 +164,7 @@ function client() {
     },
     async rpc(name: string, args: Record<string, unknown>) {
       rpcCalls.push({ name, args });
+      if (name === 'accept_offer') return rpcResult;
       return { data: 'verified', error: null };
     },
   };
@@ -181,6 +219,14 @@ beforeEach(() => {
   offerRows = [];
   taskRows = [];
   offerUpdateMoves = null;
+  engagementRow = null;
+  replayEngagement = null;
+  projectRow = null;
+  campaignRows = [];
+  holdRows = [];
+  threadRows = [];
+  embedRow = null;
+  rpcResult = { data: null, error: null };
 });
 
 describe('who can reach any of this', () => {
@@ -678,18 +724,287 @@ describe('POST /api/node/offers/:offerId/decline', () => {
 
     expect(res.statusCode).toBe(400);
   });
+});
 
-  it('has no accept counterpart at all', async () => {
-    // The slice boundary, asserted rather than described: accepting is
-    // inseparable from funding escrow, and a route that wrote no ledger row
-    // would leave somebody holding work nobody had paid for.
-    profileRow = aProfile({ kyc_status: 'verified', availability: 'available', rate: 120 });
+/* ------------------------------------------------------------ slice 5 */
+
+const ENGAGEMENT = '77777777-7777-4777-8777-777777777777';
+const ROOM = '88888888-8888-4888-8888-888888888888';
+const THREAD = '99999999-9999-4999-8999-999999999999';
+
+/** A node who can actually be paid: verified, available, task-rated, in USD. */
+function anAcceptingNode(over: Record<string, unknown> = {}) {
+  return aProfile({
+    kyc_status: 'verified',
+    availability: 'available',
+    rate: 500,
+    rate_period: 'task',
+    currency: 'USD',
+    ...over,
+  });
+}
+
+/** Everything the accept path reads, set up to succeed. */
+function acceptableWorld() {
+  profileRow = anAcceptingNode();
+  offerRows = [anOffer()];
+  taskRows = [
+    {
+      id: TASK_ID,
+      title: 'Write the launch emails',
+      stage: 'conversion',
+      detail: null,
+      state: 'escrow_funded',
+    },
+  ];
+  threadRows = [{ id: THREAD, room_id: ROOM, task_id: TASK_ID }];
+  projectRow = { budget_ceiling: '1000.00', currency: 'USD', source_embed_id: 'embed-1' };
+  campaignRows = [];
+  holdRows = [];
+  embedRow = { room_id: ROOM };
+  engagementRow = {
+    id: ENGAGEMENT,
+    task_id: TASK_ID,
+    project_id: PROJECT_ID,
+    node_id: NODE,
+    agreed_price: '500.00',
+    currency: 'USD',
+    accepted_at: '2026-09-04T00:00:00.000Z',
+    ended_at: null,
+    outcome: null,
+  };
+  rpcResult = { data: ENGAGEMENT, error: null };
+}
+
+const acceptUrl = `/api/node/offers/${OFFER}/accept`;
+
+describe('POST /api/node/offers/:offerId/accept', () => {
+  it('accepts, and hands the rpc the offer and a fake charge reference', async () => {
+    acceptableWorld();
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    expect(res.statusCode).toBe(200);
+
+    const rpc = rpcCalls.find((c) => c.name === 'accept_offer');
+    expect(rpc?.args.p_offer_id).toBe(OFFER);
+    // Derived from the offer, so a retry asks for the same charge and is handed
+    // the same reference. Visibly fake, in the column where that matters most.
+    expect(String(rpc?.args.p_charge_id)).toContain('ch_fake_');
+    expect(String(rpc?.args.p_charge_id)).toContain(OFFER.replace(/-/g, '_'));
+  });
+
+  it('returns the room and thread, which the offer projection deliberately hides', async () => {
+    // Before acceptance an id would only invite the next surface to try. After
+    // it, these two ARE the admission: `room_members` carries them and the
+    // node's own client cannot read or post in their thread without both.
+    acceptableWorld();
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    const body = res.json() as { engagement: Record<string, unknown> };
+    expect(body.engagement.roomId).toBe(ROOM);
+    expect(body.engagement.threadId).toBe(THREAD);
+    // numeric arrives as a string over PostgREST and must not reach a client as one.
+    expect(body.engagement.agreedPrice).toBe(500);
+  });
+
+  it('records the acceptance as the node, against the project', async () => {
+    acceptableWorld();
+    const app = await build();
+    await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    const event = written
+      .filter((w) => w.table === 'events')
+      .map((w) => w.values as Record<string, unknown>)
+      .find((v) => v.verb === 'offer.accepted');
+    expect(event?.actor_kind).toBe('node');
+    expect(event?.actor_id).toBe(NODE);
+    expect(event?.project_id).toBe(PROJECT_ID);
+  });
+
+  it('tells the owner in their room, keyed so a retry says it once', async () => {
+    acceptableWorld();
+    const app = await build();
+    await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    const message = written.find((w) => w.table === 'messages');
+    const values = message?.values as Record<string, unknown>;
+    expect(values.room_id).toBe(ROOM);
+    expect(values.idempotency_key).toBe(`offer-accepted:${OFFER}`);
+    expect(values.author_kind).toBe('system');
+    // Rule 22, on a sentence that reaches a person on a money surface.
+    expect(String(values.body)).not.toContain('\u2014');
+  });
+
+  it('is a 404 for an offer belonging to somebody else', async () => {
+    // Read as the caller under `offers_select_own`, so not-theirs and
+    // not-existing are the same answer.
+    acceptableWorld();
+    offerRows = [];
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    expect(res.statusCode).toBe(404);
+    expect(rpcCalls.some((c) => c.name === 'accept_offer')).toBe(false);
+  });
+
+  it('refuses an expired offer with its own sentence, before any rpc', async () => {
+    acceptableWorld();
+    offerRows = [anOffer({ expires_at: '2020-01-01T00:00:00.000Z' })];
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toMatch(/expired/i);
+    expect(rpcCalls.some((c) => c.name === 'accept_offer')).toBe(false);
+  });
+
+  it('refuses an hourly rate as defense in depth behind the pool filter', async () => {
+    acceptableWorld();
+    profileRow = anAcceptingNode({ rate_period: 'hour' });
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toMatch(/per step/i);
+    expect(rpcCalls.some((c) => c.name === 'accept_offer')).toBe(false);
+  });
+
+  it('refuses over the ceiling and says how much escrow already holds', async () => {
+    // ADR-0020's two classes, surfaced. Escrow does not appear in the campaign
+    // list, so a refusal quoting one number a person cannot account for reads as
+    // a broken check rather than as a full budget.
+    acceptableWorld();
+    campaignRows = [{ budget_cap: '200.00', state: 'ready' }];
+    holdRows = [{ amount: '400.00' }];
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toMatch(/escrow/i);
+    expect(res.json().message).toContain('400');
+    expect(rpcCalls.some((c) => c.name === 'accept_offer')).toBe(false);
+  });
+
+  it('refuses a project with no authorised budget, and says whose problem it is', async () => {
+    acceptableWorld();
+    projectRow = { budget_ceiling: null, currency: 'USD', source_embed_id: 'embed-1' };
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toMatch(/owner/i);
+  });
+
+  it('surfaces the raise from the database verbatim, because SQL is authoritative', async () => {
+    // The pre-checks pass and the row lock refuses anyway: two nodes accepting
+    // two steps on one project at the same instant both pass a check made in
+    // Node. The raise names what it found, and a 409 saying only "that step
+    // moved" is the one message a node cannot act on.
+    acceptableWorld();
+    rpcResult = {
+      data: null,
+      error: {
+        code: '23514',
+        message: 'step 555 is cancelled, not offered, so it cannot be claimed',
+      },
+    };
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toContain('cancelled');
+  });
+
+  it('replays into the engagement it already made, without re-checking the ceiling', async () => {
+    // A retry of a request whose response the node never saw. Short-circuited
+    // before the pre-checks, so a ceiling that has moved since cannot refuse
+    // work they already hold.
+    acceptableWorld();
+    replayEngagement = { id: ENGAGEMENT };
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(NODE) });
+
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { engagement: { id: string } }).engagement.id).toBe(ENGAGEMENT);
+    expect(rpcCalls.some((c) => c.name === 'accept_offer')).toBe(false);
+    expect(written.some((w) => w.table === 'messages')).toBe(false);
+  });
+
+  it('refuses a body, rather than ignoring one', async () => {
+    // Accepting takes no body: the price is the node's rate and the step is the
+    // one offered. A field here would be a person naming what they are paid.
+    acceptableWorld();
     const app = await build();
     const res = await app.inject({
       method: 'POST',
-      url: `/api/node/offers/${OFFER}/accept`,
+      url: acceptUrl,
       headers: as(NODE),
-      payload: {},
+      payload: { agreedPrice: 9999 },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(rpcCalls.some((c) => c.name === 'accept_offer')).toBe(false);
+  });
+
+  it('is 404 for somebody who is not a node at all', async () => {
+    acceptableWorld();
+    profileRow = null;
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url: acceptUrl, headers: as(STRANGER) });
+
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('the real-money refusal', () => {
+  it('is enforced by the registry rather than described in a paragraph', async () => {
+    // The enforced half of the counsel gate in payments-billing.md: the first
+    // person to register Stripe hits a failing write rather than a paragraph
+    // they did not read. Asserted against the registry, because the route names
+    // the only registered provider and the property under test is the registry's
+    // refusal rather than the route's string.
+    const { carriesRealMoney, registeredPaymentProviders } = await import('@octopus/payments');
+
+    expect(registeredPaymentProviders()).toEqual(['fake']);
+    expect(carriesRealMoney('fake')).toBe(false);
+    expect(() => carriesRealMoney('stripe')).toThrow(/Unknown payment provider/);
+  });
+});
+
+describe('GET /api/node/engagements', () => {
+  it('returns the work this node took', async () => {
+    profileRow = anAcceptingNode();
+    taskRows = [
+      {
+        id: TASK_ID,
+        title: 'Write the launch emails',
+        stage: 'conversion',
+        detail: null,
+        state: 'escrow_funded',
+      },
+    ];
+    threadRows = [{ id: THREAD, room_id: ROOM, task_id: TASK_ID }];
+
+    const app = await build();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/node/engagements',
+      headers: as(NODE),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toHaveProperty('engagements');
+  });
+
+  it('is 404 for somebody who is not a node', async () => {
+    profileRow = null;
+    const app = await build();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/node/engagements',
+      headers: as(STRANGER),
     });
 
     expect(res.statusCode).toBe(404);

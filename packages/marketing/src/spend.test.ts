@@ -15,6 +15,7 @@ function input(over: Partial<SpendCapInput> = {}): SpendCapInput {
   return {
     projectBudgetCeiling: 1000,
     existingCampaignCaps: [],
+    existingEscrowHolds: [],
     proposedCap: 100,
     ...over,
   };
@@ -85,6 +86,95 @@ describe('the ceiling is for the project, not for one campaign', () => {
   });
 });
 
+describe('escrow is the second committer class (ADR-0020)', () => {
+  it('counts a held hold against the ceiling', () => {
+    // The defect this exists to prevent: a project whose whole ceiling is in
+    // escrow authorising a campaign for the whole ceiling again. Escrow does not
+    // appear in the campaign list, so nothing else would have caught it.
+    const verdict = checkSpendCap(
+      input({ projectBudgetCeiling: 1000, existingEscrowHolds: [700], proposedCap: 500 }),
+    );
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.allowed === false && verdict.rule).toBe('exceeds_project_ceiling');
+  });
+
+  it('sums the two classes together rather than checking each', () => {
+    // 400 in campaigns and 400 in escrow each leave headroom for 400 on their
+    // own. Together they do not, and the two classes failing separately is
+    // exactly how a per-class limit stops being a limit.
+    const verdict = checkSpendCap(
+      input({
+        projectBudgetCeiling: 1000,
+        existingCampaignCaps: [400],
+        existingEscrowHolds: [400],
+        proposedCap: 400,
+      }),
+    );
+
+    expect(verdict.allowed).toBe(false);
+  });
+
+  it('names both classes in the refusal', () => {
+    // A person reading this is looking at a campaign list that shows the 200 and
+    // says nothing about the 700. A refusal quoting one number they cannot
+    // account for reads as a broken check rather than as a full ceiling.
+    const verdict = checkSpendCap(
+      input({
+        projectBudgetCeiling: 1000,
+        existingCampaignCaps: [200],
+        existingEscrowHolds: [700],
+        proposedCap: 500,
+      }),
+    );
+
+    expect(verdict.allowed === false && verdict.reason).toContain('200');
+    expect(verdict.allowed === false && verdict.reason).toContain('700');
+    expect(verdict.allowed === false && verdict.reason).toContain('escrow');
+  });
+
+  it('allows a proposal that exactly fills the headroom escrow left', () => {
+    expect(
+      checkSpendCap(
+        input({
+          projectBudgetCeiling: 1000,
+          existingCampaignCaps: [200],
+          existingEscrowHolds: [300],
+          proposedCap: 500,
+        }),
+      ).allowed,
+    ).toBe(true);
+  });
+
+  it('refuses one unit past the headroom escrow left', () => {
+    // The boundary in both directions with a hold present, which is the pgTAP
+    // suite's assertion restated in TypeScript. The pair is what stops the SQL
+    // and this arithmetic drifting (ADR-0011's discipline, ADR-0020's four
+    // places).
+    expect(
+      checkSpendCap(
+        input({
+          projectBudgetCeiling: 1000,
+          existingCampaignCaps: [200],
+          existingEscrowHolds: [300],
+          proposedCap: 501,
+        }),
+      ).allowed,
+    ).toBe(false);
+  });
+
+  it('lets a refunded hold contribute nothing, because the caller filtered it out', () => {
+    // Stated as a test rather than as a comment because the filtering lives in
+    // `readSpendInputs`, and a reader of this file would otherwise have to go
+    // and check that a settled hold never arrives here.
+    expect(
+      checkSpendCap(
+        input({ projectBudgetCeiling: 1000, existingEscrowHolds: [], proposedCap: 1000 }),
+      ).allowed,
+    ).toBe(true);
+  });
+});
+
 describe('the boundary', () => {
   it('allows a proposal landing exactly on the ceiling', () => {
     // The ceiling is the authorised amount, not an amount to stay under.
@@ -110,6 +200,7 @@ describe('an amount nobody can reason about is refused, never defaulted', () => 
     ['NaN proposal', { proposedCap: Number.NaN }],
     ['NaN ceiling', { projectBudgetCeiling: Number.NaN }],
     ['NaN sibling', { existingCampaignCaps: [Number.NaN] }],
+    ['NaN escrow hold', { existingEscrowHolds: [Number.NaN] }],
     ['infinite ceiling', { projectBudgetCeiling: Number.POSITIVE_INFINITY }],
     ['negative proposal', { proposedCap: -1 }],
     ['negative ceiling', { projectBudgetCeiling: -1 }],

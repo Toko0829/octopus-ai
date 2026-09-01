@@ -1,7 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import type { NodeCredential, NodeOffer, NodeProfile } from '@octopus/contracts';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type {
+  Message,
+  NodeCredential,
+  NodeEngagement,
+  NodeOffer,
+  NodeProfile,
+} from '@octopus/contracts';
 import {
   NO_OPEN_OFFERS,
   SKILL_TAXONOMY,
@@ -11,11 +17,15 @@ import {
   skillRejectionReason,
 } from '@octopus/marketplace';
 import {
+  acceptOffer,
   addNodeCredential,
   addNodeSkill,
   declineOffer,
+  getMessages,
+  getNodeEngagements,
   getNodeOffers,
   patchNode,
+  postMessage,
   removeNodeSkill,
   revokeNodeCredential,
 } from '../../lib/api-client';
@@ -72,12 +82,14 @@ const JURISDICTION = /^[A-Z]{2}(-[A-Z0-9]{1,10}){0,2}$/;
 interface Props {
   initial: NodeProfile;
   initialOffers: NodeOffer[];
+  initialEngagements: NodeEngagement[];
   email: string | null;
 }
 
-export function NodeConsole({ initial, initialOffers, email }: Props) {
+export function NodeConsole({ initial, initialOffers, initialEngagements, email }: Props) {
   const [node, setNode] = useState(initial);
   const [offers, setOffers] = useState(initialOffers);
+  const [engagements, setEngagements] = useState(initialEngagements);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -111,12 +123,22 @@ export function NodeConsole({ initial, initialOffers, email }: Props) {
 
       <Status node={node} eligible={eligible} reason={reason} offers={offers} />
 
+      <Engagements engagements={engagements} />
+
       <Offers
         offers={offers}
         eligible={eligible}
+        node={node}
         onChanged={async () => {
-          const { offers: fresh } = await getNodeOffers();
+          // Both lists move together: accepting settles an offer and creates an
+          // engagement, so refetching one and not the other would leave the page
+          // showing work in two places at once.
+          const [{ offers: fresh }, { engagements: taken }] = await Promise.all([
+            getNodeOffers(),
+            getNodeEngagements(),
+          ]);
           setOffers(fresh);
+          setEngagements(taken);
         }}
       />
 
@@ -186,10 +208,13 @@ function Status({
   reason: string | null;
   offers: NodeOffer[];
 }) {
-  // The one gap eligibility does not cover: a verified, available node with no
-  // rate passes every check on this page and is still excluded by the matcher's
-  // pool query, because an offer is measured against a rate. Without this line
-  // they wait forever with nothing on screen explaining it.
+  // The gaps eligibility does not cover. A verified, available node with **no
+  // rate** passes every check on this page and is still excluded by the
+  // matcher's pool query, because an offer is measured against a rate. Since
+  // slice 5 an **hourly** rate is the same quiet dead end: work is funded as one
+  // whole amount held in escrow and there is no hours field to multiply by, so
+  // the pool filters `rate_period = 'task'`. Without these lines such a person
+  // waits indefinitely with nothing on screen explaining it.
   const gap = offerabilityGap(node);
   const openOffers = offers.filter((o) => o.status === 'open').length;
   return (
@@ -225,28 +250,33 @@ const STAGE_COPY: Record<string, string> = {
 };
 
 /**
- * The offers waiting for this node, and the one thing they can do about one.
+ * The offers waiting for this node, and the two things they can do about one.
  *
- * **Accept is rendered and disabled, with its reason printed beside it.** The
- * alternative was to omit it, and that is worse: a node reading a list of work
- * they cannot take has no way to tell whether accepting is coming, broken, or
- * something they failed to qualify for. This console already uses the same idiom
- * for the availability control while a node is unverified.
+ * **Both controls are now two-step, and for the same reason.** Declining cannot
+ * be undone: the cascade moves to the next expert and `offers_task_node_idx`
+ * means this node is never asked about this step again. Accepting cannot be
+ * undone either, and it commits somebody else's money: the price is frozen at
+ * this instant and held in escrow against the owner's authorised budget. The
+ * confirm step states the exact figure, because "what will I be paid" is the one
+ * question a person must not have to infer from a rate card.
  *
- * Declining is two steps, because it cannot be undone: the cascade moves to the
- * next expert and `offers_task_node_idx` means this node is never asked about
- * this step again.
+ * The Accept button used to be rendered disabled with a sentence saying escrow
+ * had not shipped. It has, so both the disabled state and the sentence are gone
+ * rather than left behind as a control that lies about itself.
  */
 function Offers({
   offers,
   eligible,
+  node,
   onChanged,
 }: {
   offers: NodeOffer[];
   eligible: boolean;
+  node: NodeProfile;
   onChanged: () => Promise<void>;
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [accepting, setAccepting] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -268,6 +298,23 @@ function Offers({
       await onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not decline that offer.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function accept(offerId: string) {
+    setBusy(offerId);
+    setError(null);
+    try {
+      await acceptOffer(offerId);
+      setAccepting(null);
+      await onChanged();
+    } catch (err) {
+      // The API surfaces the database's own sentence on a 409, so a refusal
+      // names what stopped it (an expired offer, a full budget, a step that
+      // moved) rather than saying only that something went wrong.
+      setError(err instanceof Error ? err.message : 'Could not accept that offer.');
     } finally {
       setBusy(null);
     }
@@ -300,8 +347,16 @@ function Offers({
           </p>
 
           <div className="node-row">
-            <button type="button" className="btn" disabled title="Escrow is not built yet">
-              Accept
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy !== null}
+              onClick={() => {
+                setAccepting(accepting === offer.id ? null : offer.id);
+                setConfirming(null);
+              }}
+            >
+              {accepting === offer.id ? 'Not yet' : 'Accept'}
             </button>
             <button
               type="button"
@@ -309,16 +364,45 @@ function Offers({
               disabled={busy !== null}
               onClick={() => {
                 setConfirming(confirming === offer.id ? null : offer.id);
+                setAccepting(null);
                 setReason('');
               }}
             >
               {confirming === offer.id ? 'Keep it' : 'Decline'}
             </button>
           </div>
-          <p className="node-note">
-            Accepting is not on yet. Taking a step also locks its payment in escrow, and escrow
-            ships next.
-          </p>
+
+          {accepting === offer.id && (
+            <div className="node-confirm">
+              <p className="node-body">
+                {node.rate === null
+                  ? 'Set your rate before accepting: the price of a step is your rate.'
+                  : `Your rate, ${money(node.rate)} ${node.currency} for the task, is locked in escrow when you accept. It cannot be changed afterwards, and raising your rate later does not change this step.`}
+              </p>
+              <p className="node-note">
+                Accepting opens a private thread on this step. You will be able to see and talk to
+                the person whose business it is, and nothing else of theirs.
+              </p>
+              <div className="node-row">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy !== null || node.rate === null}
+                  onClick={() => void accept(offer.id)}
+                >
+                  {busy === offer.id ? 'Accepting' : 'Accept and lock the price'}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy !== null}
+                  onClick={() => setAccepting(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {confirming === offer.id && (
             <div className="node-confirm">
@@ -375,6 +459,207 @@ function Offers({
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * Money as a person reads it, with the cents that a numeric column carries.
+ *
+ * Tabular numerics are a design-system rule for money (rule 14), applied through
+ * the `mono` class wherever this is rendered.
+ */
+function money(amount: number): string {
+  return amount.toFixed(2);
+}
+
+/** How a step's state reads to the expert doing it, rather than to its owner. */
+const WORK_STATE_COPY: Record<string, string> = {
+  escrow_funded: 'Funded and ready to start',
+  in_progress: 'In progress',
+  proof_submitted: 'Waiting on review',
+  in_review: 'Being reviewed',
+  approved: 'Approved',
+  payout_pending: 'Approved, payment pending',
+  paid: 'Paid',
+  done: 'Finished',
+  rejected: 'Sent back for changes',
+  disputed: 'In dispute',
+  cancelled: 'Cancelled',
+  blocked: 'On hold',
+};
+
+const OUTCOME_COPY: Record<string, string> = {
+  completed: 'Finished',
+  reassigned: 'Passed to somebody else',
+  cancelled: 'Stopped before it was delivered',
+  disputed_resolved: 'Closed after a dispute',
+};
+
+/**
+ * The work this node took, and the private thread for each one.
+ *
+ * **The thread is the whole of what an engagement gives a node access to.** They
+ * are a thread-scoped member of one room: they see the room shell, their own
+ * thread, its messages, and nothing else. Not the project, not the plan, not the
+ * other steps, not the owner's conversation with the AI.
+ *
+ * **The panel polls rather than subscribing, and that is a stated limit rather
+ * than an oversight.** Thread realtime topics are not built: a `chat:thread:`
+ * branch would have no broadcaster and no subscriber, and both `realtime.messages`
+ * policies are scoped to room membership, so a thread-scoped member has no live
+ * socket at all. The since-cursor GET runs as the caller and RLS returns exactly
+ * their thread, so the failure mode here is a delay of up to one interval and
+ * never a disclosure.
+ */
+function Engagements({ engagements }: { engagements: NodeEngagement[] }) {
+  if (engagements.length === 0) return null;
+
+  const live = engagements.filter((e) => e.endedAt === null);
+  const past = engagements.filter((e) => e.endedAt !== null);
+
+  return (
+    <section className="node-card">
+      <h2 className="node-h2">Accepted work</h2>
+
+      {live.map((engagement) => (
+        <article key={engagement.id} className="node-offer">
+          <h3 className="node-offer-title">{engagement.task.title}</h3>
+          <p className="node-offer-stage">
+            {STAGE_COPY[engagement.task.stage ?? ''] ?? engagement.task.stage ?? 'Step'}
+          </p>
+          <p className="node-note">
+            <span className="mono">
+              {money(engagement.agreedPrice)} {engagement.currency}
+            </span>{' '}
+            agreed, held in escrow.{' '}
+            {WORK_STATE_COPY[engagement.task.state] ?? engagement.task.state}.
+          </p>
+          {engagement.task.detail && <p className="node-body">{engagement.task.detail}</p>}
+          {engagement.roomId && engagement.threadId ? (
+            <ThreadPanel roomId={engagement.roomId} threadId={engagement.threadId} />
+          ) : (
+            <p className="node-note">This step has no thread, so there is nowhere to talk yet.</p>
+          )}
+        </article>
+      ))}
+
+      {past.length > 0 && (
+        <>
+          <h3 className="node-h3">Finished</h3>
+          <ul className="node-history">
+            {past.map((engagement) => (
+              <li key={engagement.id}>
+                <span className="node-history-title">{engagement.task.title}</span>
+                <span className="node-history-status">
+                  {OUTCOME_COPY[engagement.outcome ?? ''] ?? 'Closed'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** How often the thread is re-read. See `Engagements` on why this is a poll. */
+const THREAD_POLL_MS = 10_000;
+
+function ThreadPanel({ roomId, threadId }: { roomId: string; threadId: string }) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [cursor, setCursor] = useState<number | undefined>(undefined);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const poll = useCallback(async () => {
+    try {
+      const { messages: fresh, nextCursor } = await getMessages(roomId, cursor);
+      // **Filtered here as well as by RLS**, and the duplication is deliberate.
+      // The policy is what makes the room stream unreadable to this person; this
+      // is what keeps a system message addressed to the whole room out of a
+      // panel that is about one step.
+      const mine = fresh.filter((m) => m.threadId === threadId);
+      if (mine.length > 0) setMessages((prev) => [...prev, ...mine]);
+      if (nextCursor !== null) setCursor(nextCursor);
+    } catch {
+      // A failed poll is the next poll's problem. Surfacing it would put an
+      // error banner on a panel that is working.
+    }
+  }, [roomId, threadId, cursor]);
+
+  useEffect(() => {
+    void poll();
+    const handle = setInterval(() => void poll(), THREAD_POLL_MS);
+    return () => clearInterval(handle);
+  }, [poll]);
+
+  async function send() {
+    const body = draft.trim();
+    if (body.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // `authorKind` is not sent and cannot be: the server reads this person's
+      // own membership row and decides, and RLS re-checks it independently.
+      await postMessage(roomId, {
+        body,
+        threadId,
+        idempotencyKey: `thread-${threadId}-${Date.now()}`,
+      });
+      setDraft('');
+      await poll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not send that.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="node-thread">
+      <h4 className="node-h3">Thread</h4>
+      {messages.length === 0 ? (
+        <p className="node-note">Nothing here yet. Say hello, or ask what you need to start.</p>
+      ) : (
+        <ul className="node-thread-list">
+          {messages.map((m) => (
+            <li key={m.id} className="node-thread-msg">
+              <span className="node-thread-who">{m.authorKind === 'node' ? 'You' : 'Owner'}</span>
+              <span className="node-thread-body">{m.body}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {error && (
+        <p className="node-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      <textarea
+        className="node-textarea"
+        value={draft}
+        maxLength={4000}
+        rows={3}
+        placeholder="Ask a question, or say where you have got to"
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className="node-row">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || draft.trim().length === 0}
+          onClick={() => void send()}
+        >
+          {busy ? 'Sending' : 'Send'}
+        </button>
+      </div>
+      <p className="node-note">
+        New messages appear within a few seconds. This thread is private to this step.
+      </p>
+    </div>
   );
 }
 

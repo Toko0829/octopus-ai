@@ -7,6 +7,7 @@ import { publishSweep } from './publish';
 import { metricsSweep } from './metrics';
 import { optimizeSweep } from './optimize';
 import { matcherSweep } from './match';
+import { escrowReconcileSweep } from './escrow-reconcile';
 import { notifyWaiting } from './waiting';
 import { produceCampaignCards } from './campaign-cards';
 import type { ExecutorDeps } from './executor';
@@ -77,6 +78,14 @@ export interface TickerOptions {
    * same untruth the three flags above exist to avoid (see `MATCHER_ENABLED`).
    */
   matcher?: { maxPerPass: number };
+  /**
+   * Give back escrow held against steps that stopped before they were
+   * delivered. Absent means this deployment does not reconcile, which is
+   * supported and is not the default: a hold on a cancelled step pins part of
+   * the owner's authorised budget forever and nothing else can release it (see
+   * `ESCROW_RECONCILE_ENABLED`).
+   */
+  escrow?: { maxPerPass: number };
   log: {
     info: (obj: unknown, msg: string) => void;
     warn: (obj: unknown, msg: string) => void;
@@ -294,6 +303,25 @@ export function startTicker(opts: TickerOptions): () => void {
           });
         } catch (err) {
           opts.log.error({ err, worker }, 'optimize sweep failed');
+        }
+      }
+
+      // Unwinding escrow held against steps that stopped, after optimize and
+      // before the matcher. The ordering rule on this pass is who is waiting,
+      // and this one touches modelled money: an owner whose ceiling is pinned by
+      // a cancelled step cannot authorise the campaign or the acceptance that
+      // would replace it, so it outranks making a new offer. It yields to
+      // optimize because that stops spend that is actually happening. Its own
+      // try/catch, like every sweep here.
+      if (opts.escrow) {
+        try {
+          await escrowReconcileSweep({
+            admin: opts.admin,
+            maxPerPass: opts.escrow.maxPerPass,
+            log: opts.log,
+          });
+        } catch (err) {
+          opts.log.error({ err, worker }, 'escrow reconcile sweep failed');
         }
       }
 

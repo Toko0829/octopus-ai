@@ -29,17 +29,38 @@ import { roomForProject } from './room-for-project';
  * work: a sweep that decided for itself would have pushed all twelve live
  * escalated tasks into a cold-start pool the moment it deployed.
  *
- * **The sweep is the only writer of `tasks.state` in this domain.** The decline
- * route settles the offer row and stops. Two writers racing on a task, one
- * reacting to a person and one to a clock, is how a step ends up offered to two
- * nodes at once, and the single-writer rule is what makes every task move below
- * a conditional update that a loser simply does not perform.
+ * **This sweep is the clock's side of the domain, and `accept_offer` is the
+ * person's side.** That sentence replaces the one this comment used to carry,
+ * which said the sweep was the only writer of `tasks.state` here. It was true
+ * while a node could only decline: the decline route settles the offer row and
+ * stops, and the sweep does every task move. Acceptance changed it. Accepting
+ * and funding are inseparable, so `accept_offer` moves the task itself, twice,
+ * `offered -> claimed -> escrow_funded`, inside one transaction. Leaving the old
+ * sentence in place would have shipped a comment that lies about who writes what.
  *
- * **Every task move is conditional on the state it read.** The owner can take
- * the step themselves through `task-actions.ts` at any moment, and that route is
- * equally conditional, so whoever writes first wins and the other gets zero rows
- * back rather than an overwrite. That is the same idiom `reclaimLostRuns` uses
- * against a worker that turns out to be alive.
+ * **What actually keeps the two apart is not a single writer, it is that every
+ * move on both sides is a conditional UPDATE on the row it read**, so a loser
+ * performs nothing rather than overwriting a winner. Written out, because a race
+ * described in the abstract is a race nobody checked:
+ *
+ *   * **Sweep first, accept second.** `settleOffered` expires the offer and
+ *     moves the task back to `matching`. `accept_offer`'s `status = 'open'`
+ *     conditional then matches zero rows, it raises, and the **whole transaction
+ *     unwinds**: no engagement, no hold, no ledger row, no membership.
+ *   * **Accept first, sweep second.** The offer is `accepted` and the task is
+ *     `escrow_funded`. `settleOffered` reads only tasks at `offered`;
+ *     `offerMatching` reads only tasks at `matching`; `withdrawOrphans` reads
+ *     only `open` offers and skips the two market states. All three miss it.
+ *   * **They cannot interleave past each other**, because `settleOffered` only
+ *     cascades a task whose latest offer is already settled. It cannot move a
+ *     task out from under a live offer somebody is in the middle of accepting.
+ *   * **No crash window exposes `claimed`**, because both task moves are in one
+ *     transaction. That is the premise ADR-0019 rests on, and the reason
+ *     `claimed -> matching` stays a dropped arc rather than being restored here.
+ *
+ * The owner can also take the step themselves through `task-actions.ts` at any
+ * moment, and that route is equally conditional. That is the same idiom
+ * `reclaimLostRuns` uses against a worker that turns out to be alive.
  */
 
 /** How many rows one read may consider, per state. Bounds the read, not the work. */
@@ -517,11 +538,26 @@ async function returnToOwner(
 /**
  * The eligible pool for a set of skills.
  *
- * Four filters, and every one of them is a rule stated somewhere else:
+ * Five filters, and every one of them is a rule stated somewhere else:
  * `kyc_status = 'verified'` and `availability = 'available'` mirror
  * `node_profiles_available_requires_kyc`, the one eligibility constraint with no
  * second layer; a non-null `rate` is what an offer would be measured against;
  * and the skill filter is the union the stage map produces.
+ *
+ * **`rate_period = 'task'` is the fifth, added in slice 5, and it excludes
+ * hourly nodes from the pool entirely.** An hourly rate is a price per hour and
+ * `escrow_holds.amount` is a total, so there is no honest way to fund one: there
+ * is no hours field anywhere to multiply by, and inventing an estimate at
+ * acceptance would be guessing at a number that decides what a person is paid.
+ * The alternative was to keep offering hourly nodes work they would then be
+ * refused at the last step, which is the dead-end shape this repository keeps
+ * recording, so the filter is here rather than only in the refusal.
+ *
+ * `accept_offer` re-checks it anyway, as defense in depth: a node can change
+ * their rate period between being offered a step and accepting it.
+ *
+ * `offerabilityGap` in `packages/marketplace` is where a node is told this about
+ * themselves, beside the no-rate sentence it already carried.
  *
  * **It matches claims, not verified skills.** The module doc's algorithm says
  * "verified skills cover `required_skills`", and `node_skills.verified` is false
@@ -558,6 +594,7 @@ export async function readEligiblePool(
     .eq('kyc_status', 'verified')
     .eq('availability', 'available')
     .not('rate', 'is', null)
+    .eq('rate_period', 'task')
     .limit(POOL_READ_LIMIT);
   if (nodeError) throw nodeError;
 

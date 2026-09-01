@@ -25,10 +25,19 @@
 --     `20260901122000` closed the owner-sees-node and node-sees-owner pair
 --     together. The engagement slice opens it deliberately, with a policy
 --     written for it.
---   * **Nothing reaches `accepted`.** Worded here as what it is rather than as a
---     promise about a future slice, because this repository has just spent a
---     commit correcting a test message that said "restored in slice 4" about an
---     arc slice 4 then decided not to restore.
+--   * **The project owner still reads zero offer rows, and now for a narrower
+--     reason.** Slice 5 opened the counterparty pair through `engagements`, so
+--     the owner learns who took their step. An offer names everybody who was
+--     *asked*, including the people who declined, and publishing that trail is a
+--     separate disclosure decision this slice did not need to make.
+--
+-- **`open -> accepted` is permitted from `20260904124000` on**, and the assertion
+-- below flipped with it. The wording it used to carry was deliberately
+-- descriptive rather than promissory ("slice 5 decides"), which is why the flip
+-- is a one-line edit rather than a correction: nothing here had promised
+-- anything. The producer is `public.accept_offer`, which settles the offer, moves
+-- the task twice and funds escrow in one transaction. What it can reach and what
+-- it leaves behind belong to `marketplace_engagements.sql`.
 --
 -- Everything is inside a transaction that ROLLBACKs, so it is safe against a
 -- live database.
@@ -121,13 +130,12 @@ select extensions.ok(
   'open -> withdrawn: the task left the market underneath it'
 );
 
--- Nothing reaches `accepted`. The value exists because `alter type ... add value`
--- is irreversible, and the arc does not because accepting is inseparable from
--- funding escrow. Whether that changes is a later slice's decision, taken with
--- the ledger write beside it.
+-- `accepted` gained its producer in `20260904125000`, which is what let the map
+-- gain the arc: accepting and funding escrow happen in one transaction, so an
+-- offer can now settle a fourth way.
 select extensions.ok(
-  not private.offer_transition_allowed('open', 'accepted'),
-  'open -> accepted is refused: accepting funds escrow, which has no writer here'
+  private.offer_transition_allowed('open', 'accepted'),
+  'open -> accepted: the node said yes, and accept_offer funded escrow in the same transaction'
 );
 select extensions.ok(
   not private.offer_transition_allowed('declined', 'accepted'),
@@ -174,13 +182,12 @@ update public.offers
        updated_at = now() - interval '1 day'
  where id = pg_temp.ofid('offer');
 
-select extensions.throws_ok(
-  format('update public.offers set status = %L where id = %L', 'accepted', pg_temp.ofid('offer')),
-  '23514',
-  null,
-  'the guard refuses an illegal transition even as postgres, because a trigger is not a grant'
-);
-
+-- **The legal move comes first now, and the order changed for a reason worth
+-- recording.** This block used to settle after trying `open -> accepted`, which
+-- was then illegal. `20260904124000` made it legal, so the refusal has to be
+-- attempted from a state that still has one, and every arc out of `open` is now
+-- permitted. A settled offer never reopening is the nearest refusal to the act
+-- under test, and it is what the assertion drives instead.
 select extensions.lives_ok(
   format('update public.offers set status = %L, declined_at = now() where id = %L',
          'declined', pg_temp.ofid('offer')),
@@ -191,6 +198,13 @@ select extensions.is(
   (select status::text from public.offers where id = pg_temp.ofid('offer')),
   'declined',
   'the settlement landed'
+);
+
+select extensions.throws_ok(
+  format('update public.offers set status = %L where id = %L', 'accepted', pg_temp.ofid('offer')),
+  '23514',
+  null,
+  'the guard refuses an illegal transition even as postgres, because a trigger is not a grant'
 );
 
 select extensions.is(
@@ -330,7 +344,7 @@ select extensions.is(
 select extensions.is(
   pg_temp.ofcount_as(pg_temp.ofid('owner'), 'select count(*) from public.offers'),
   0::bigint,
-  'the project owner reads zero offer rows: an offer names a node, and that pair is closed until the engagement slice'
+  'the project owner reads zero offer rows, and still does after slice 5: the engagement projection names the expert who took the step, while an offer names everybody who was asked'
 );
 
 -- ------------------------------------------------- privileges

@@ -40,6 +40,11 @@ COPY packages/contracts/package.json packages/contracts/
 # because the authorization-code format has to agree with the server that decodes
 # it and two copies of an encoding are two copies that can disagree.
 COPY packages/marketing/package.json packages/marketing/
+# The node console reads the skill taxonomy and the eligibility sentences from
+# here, so the same sentence a route refuses with is the one the page prints.
+# Added late: slice 4 declared the dependency and left this list alone, which is
+# exactly the omission the assertion below exists to catch.
+COPY packages/marketplace/package.json packages/marketplace/
 
 RUN --mount=type=cache,target=/pnpm-store \
     pnpm config set store-dir /pnpm-store && \
