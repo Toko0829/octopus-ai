@@ -833,6 +833,13 @@ function TaskRow({
           including the ones who said no. An engagement names the one who took it
           and is being paid from this project's authorised budget.
 
+          **It stays after the money moves.** The projection admits a completed
+          deal as well as a live one, so paying somebody is not what erases their
+          name — which would be the worst possible moment for it, since slice 8
+          asks the owner to rate exactly this person. Cancelled and reassigned
+          deals stay absent, so this never names somebody beside a step they are
+          not doing.
+
           Tabular numerics on the money (rule 14), and the price is the frozen
           one: an expert who raises their rate later has not re-priced work
           already agreed. */}
@@ -844,8 +851,20 @@ function TaskRow({
           <span className="work-engagement-price mono">
             {task.engagement.agreedPrice.toFixed(2)} {task.engagement.currency}
           </span>
+          {/* **Paid replaces accepted rather than joining it**, because the two
+              answer the same question at different times and a line carrying
+              both dates makes the reader work out which one matters. Once the
+              money has moved, when they took it on is history. */}
           <span className="work-engagement-when mono">
-            Accepted <AcceptedDate value={task.engagement.acceptedAt} />
+            {task.engagement.paidAt ? (
+              <>
+                Paid <AcceptedDate value={task.engagement.paidAt} />
+              </>
+            ) : (
+              <>
+                Accepted <AcceptedDate value={task.engagement.acceptedAt} />
+              </>
+            )}
           </span>
         </p>
       )}

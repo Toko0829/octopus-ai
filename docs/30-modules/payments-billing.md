@@ -50,14 +50,19 @@ Connect **Express** so Stripe handles the node's KYC/tax (1099-K / DAC7 / local 
 | From   | To         | Made by                                                                                                                        |
 | ------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `held` | `refunded` | `apps/api/src/lib/escrow-reconcile.ts` (a cancelled step) **and** `public.reassign_engagement` (a no-show), both on the ticker |
-| `held` | `released` | **nobody yet.** The payout slice, and the map refuses it until then                                                            |
+| `held` | `released` | `public.settle_payout` (slice 7), called by the payout sweep once a transfer has answered                                      |
 
-**`released` is in the check constraint and out of the map**, and the pairing is
-deliberate rather than an oversight to tidy: the constraint is the column's
-vocabulary and the map is the set of moves something can make today. Permitting an
-arc with no producer is the `task_deps` defect this repository has recorded five
-times. `marketplace_engagements.sql` pins the refusal **descriptively**, as what
-it is rather than as a promise about a later slice.
+**`released` was in the check constraint and out of the map for two slices**, and
+the wording that pinned the refusal was **descriptive** ("no producer exists")
+rather than promissory — precisely so that the day it stopped being true would be
+a change of fact rather than a promise coming due. `20260907120000` permits the
+arc and lands **in the same push** as `settle_payout`, which walks it.
+
+**Both settlements are terminal and neither reaches the other**, which is the
+property that now needs guarding rather than the absence that used to. A released
+hold that could be refunded would take back money somebody earned; a refunded one
+that could be released would pay for work that was cancelled. Reversing either is
+a **new** hold with its own key, which is what a dispute is (slice 8).
 
 **`held → refunded` has a producer in the same slice that created the arc**, and
 it exists because the alternative is a real defect. A step cancelled after its
@@ -77,6 +82,13 @@ take back money somebody earned. That hold is the payout's to release.
 it as "free today and load-bearing the moment `escrow_funded → in_progress` has a
 producer", because nothing could reach `done` while holding escrow. It has a
 producer now.
+
+**And in slice 7 it became unreachable rather than merely load-bearing**, which is
+the better outcome: `settle_payout` walks the step to `done` in the same
+transaction that releases its hold, so a `done` step never has a `held` hold for
+the sweep to find. The exclusion stays in the sweep anyway, because a rule that is
+correct and currently unexercised is cheaper than a rule somebody has to re-derive
+the day a second path reaches `done`.
 
 ### `held → refunded` gained a second producer (slice 6)
 
@@ -108,6 +120,67 @@ would answer trivially would dress it up as money movement, in the one domain
 where that distinction is the whole regulatory posture. The counsel gate below is
 unmoved.
 
+## The payout lifecycle
+
+`pending | paid | failed`, as checked text for the reason `escrow_holds` chose it:
+`alter type … add value` cannot be rolled back and this vocabulary is one slice
+old. **One arc is mapped:**
+
+| From      | To       | Made by                                                                 |
+| --------- | -------- | ----------------------------------------------------------------------- |
+| `pending` | `paid`   | `public.settle_payout`, once the provider has answered with a reference |
+| `pending` | `failed` | **nobody, and deliberately not.** See below                             |
+
+**`failed` is in the check constraint and out of the map**, which is exactly the
+shape `released` had one table over until this slice closed it — and here the
+absence is argued rather than pending. Nothing in this codebase decides that a
+payout for work an owner has already approved will never happen: every failure
+retries at tick cadence and is logged loudly. A terminal row against work somebody
+did, in a build with no ops console that could un-terminal it, is the worse
+outcome. Its producer is that console, with a person behind it
+([admin-ops.md](admin-ops.md), Phase 3).
+
+That is the one place this domain's failure map **differs from publishing**.
+[ADR-0013](../40-adr/0013-approving-a-campaign-publishes-it.md) closes a campaign
+on a policy rejection because an ad platform genuinely decides whether to accept a
+creative, and retrying it unchanged asks the same reviewer the same question. A
+transfer for approved work is not a question anybody gets to answer no to on the
+node's behalf, so `PaymentProvider.transfer` has no refusal kind and no
+`AdapterResult`-style union: every failure is transient as far as this code is
+concerned.
+
+**`transfer_id` is null until the transfer returns and write-once forever after**,
+enforced by a trigger rather than by a comment, on `ad_entities.external_id`'s
+precedent. A writer that could clear it could make a paid payout look unpaid,
+which is precisely the row the sweep reads to decide whether to transfer again.
+
+### The ordering, and why it inverts the pause
+
+A transfer **creates** something at a provider under an id the provider mints, so
+the payout takes ADR-0013's ordering — record the intent, then call — rather than
+[ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)'s inversion, where
+the platform is called first because a pause creates nothing and re-derives from
+durable rows. Four crash points, each resuming: the task moves to
+`payout_pending`; the `payouts` row is inserted under `payoutKey(engagementId)`
+and a collision reads it back; the transfer is skipped when `transfer_id` is
+already recorded; and `settle_payout` returns early when the payout is already
+`paid`.
+
+**`settle_payout` is one transaction** because every partial state here is a money
+defect somebody would reconcile by hand: a released hold under a live engagement,
+a released hold with no ledger pair, a `done` step whose hold still pins the
+ceiling, or a paid payout whose engagement never reached `'completed'` and whose
+node's `completed_engagements` is therefore short of what slice 8 ranks on.
+
+### Approving the work is the payout authorisation
+
+There is no second button. The money flow above already specifies it ("approval
+triggers a Transfer"), and ADR-0013's argument transfers unchanged: the owner
+authorised this exact figure when the escrow was funded against their ceiling at
+acceptance, has seen it on the step, and has read the proof and clicked approve. A
+confirmation carrying no new information is one people learn to click through,
+which weakens every other confirmation in the product.
+
 ## Double-entry ledger
 
 Every movement writes balanced `ledger_entries` (debit/credit) — **append-only, immutable**. The ledger is the source of truth for reconciliation, not Stripe alone.
@@ -133,8 +206,22 @@ fail to write. Both halves are pinned by suites asserting the same property, on
 
 The chart of accounts is a reviewed file rather than an enum, on
 `channel_connections.provider`'s precedent: it grows with every money feature, and
-a migration per account is a migration per bookkeeping decision. Two accounts
-exist, `owner_funds` and `escrow`.
+a migration per account is a migration per bookkeeping decision. Three accounts
+exist: `owner_funds`, `escrow` and — since slice 7 — `node_payable`.
+
+`node_payable` was **declined once by name** in `ledger.ts`, on the grounds that
+adding it before anything paid out would be "an account with no entry, which is
+the same shape as a state with no writer". `escrowReleasePair` is that entry.
+**Nothing debits it in this build**, and that too is a decision: a
+`node_payable → node_paid` pair would record money leaving the platform, and while
+the only registered provider settles synchronously and takes nothing it would say
+nothing `payouts.state` and `payouts.transfer_id` do not already say. It arrives
+with the first provider whose settlement can be pending.
+
+**The release pair carries the hold's `ref_id`, not the payout's**, mirroring
+`escrowRefundPair`. That is what keeps every entry about a hold summing to zero on
+every account once it settles, whichever way it settled, so "this hold is
+finished" stays a fact a reader derives rather than a column they trust.
 
 ## Subscriptions & fees
 
@@ -182,8 +269,16 @@ One charge can fund **multiple transfers** (a task completed by several nodes) �
 
 Holding escrow + routing payouts is likely **money-services activity**. **Before real (non-test) money moves**, clear with counsel: money-transmission / escrow-licensing per jurisdiction (US state MTL regime; EU e-money/payment-institution rules; GEL/FX for the future Georgia pack); platform-of-record determination; tax reporting. Do **not** hand-wave — see [security-compliance.md](../10-architecture/security-compliance.md).
 
-**The gate is unmoved by slice 5, and it now has an enforcer rather than only a
-paragraph.** `carriesRealMoney` on `packages/payments/src/provider-registry.ts` is
+**The gate is unmoved by slice 7, which is the slice that pays somebody.** A
+payout is the first act in this domain that would be money movement if the
+provider were real, and it is the reason `carriesRealMoney` is now checked in two
+places rather than one: `apps/api/src/lib/engagements.ts` before the accept rpc,
+and `apps/api/src/lib/payout.ts` before the transfer, **once per pass and before a
+single row is read**, so a refused pass is inert rather than half-done. It throws
+rather than returning a count, because a refusal counter would be a number with no
+reachable producer while the fake is the only registered provider.
+
+**The gate has had an enforcer rather than only a paragraph since slice 5.** `carriesRealMoney` on `packages/payments/src/provider-registry.ts` is
 the third flag of its kind, beside `carriesRealCredentials` for channel tokens and
 `carriesRealPii` for identity documents. `apps/api/src/lib/engagements.ts` refuses
 on it **before any rpc**, so the first person to register Stripe hits a failing
@@ -195,14 +290,14 @@ unreviewed integration through.
 
 ## Key entities
 
-| Entity                       | Status                                                                      |
-| ---------------------------- | --------------------------------------------------------------------------- |
-| `escrow_holds`               | ✅ live `20260904121000`, written by `accept_offer` and the reconcile sweep |
-| `ledger_entries`             | ✅ live `20260904122000`, written by the same two                           |
-| `payouts` / `transfers`      | ⏳ slice 7 of the marketplace sequence, with `held → released`              |
-| `disputes`                   | ⏳ slice 8, with the ops path                                               |
-| `subscriptions` / `invoices` | ⏳ no slice. Nothing bills anybody yet                                      |
-| `platform_fees`              | ⏳ with the first transfer, since a fee is deducted from one                |
+| Entity                       | Status                                                                                                                                                         |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `escrow_holds`               | ✅ live `20260904121000`, written by `accept_offer` and the reconcile sweep                                                                                    |
+| `ledger_entries`             | ✅ live `20260904122000`, written by the same two                                                                                                              |
+| `payouts`                    | ✅ live `20260907121000`, written by the payout sweep and `settle_payout`                                                                                      |
+| `disputes`                   | ⏳ slice 8, with the ops path                                                                                                                                  |
+| `subscriptions` / `invoices` | ⏳ no slice. Nothing bills anybody yet                                                                                                                         |
+| `platform_fees`              | ⏳ no slice. `payouts.platform_fee` is a column written from a constant `0` ([ADR-0024](../40-adr/0024-the-take-rate-is-not-deducted-from-an-agreed-price.md)) |
 
 `escrow_holds` and double-entry `ledger_entries` landed in **slice 5 of the
 marketplace sequence** ([human-nodes-marketplace.md](human-nodes-marketplace.md)),

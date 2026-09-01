@@ -26,11 +26,15 @@
 -- Three things this file pins that are **absences**, each of which somebody could
 -- reasonably "fix" later without realising:
 --
---   * **`held -> released` is refused**, and the wording is descriptive rather
---     than promissory. Release is what a payout does and its producer does not
---     exist, so permitting the arc would be a rule enforced over an empty set.
---     It is declared in the check constraint because the constraint is the
---     column's vocabulary; the map is what can be done today.
+--   * **`held -> released` was refused, and is not any more.** This file used to
+--     pin the refusal, worded descriptively rather than promissorily precisely so
+--     that the day it stopped being true would be a change of fact rather than a
+--     promise coming due. `20260907120000` permits the arc and
+--     `public.settle_payout` walks it, so the assertions here say what is true
+--     now: both settlements are permitted, both are terminal, and **neither
+--     reaches the other**, which is the property that actually needs guarding —
+--     a refunded hold that could be released would pay for cancelled work, and a
+--     released one that could be refunded would take back money somebody earned.
 --   * **A member reads no ledger row at all**, and `authenticated` has no grant
 --     on the table. The reader of raw entries is the Phase-3 ops console; a
 --     member's view of money is the projection.
@@ -51,7 +55,7 @@
 
 begin;
 
-select extensions.plan(70);
+select extensions.plan(71);
 
 -- ---------------------------------------------------------------- fixtures
 
@@ -215,7 +219,7 @@ begin
   return n;
 end $$;
 
--- ------------------------------------------- the escrow lifecycle map (5)
+-- ------------------------------------------- the escrow lifecycle map (6)
 --
 -- Asserted directly rather than only through the trigger, so a broken arc names
 -- itself instead of surfacing as a failed write several assertions later.
@@ -225,18 +229,26 @@ select extensions.ok(
   'held -> refunded: the reconcile sweep, unwinding a hold whose step stopped'
 );
 
--- **Descriptive, not promissory.** `released` is in the check constraint because
--- the constraint is the column''s vocabulary; it is out of the map because
--- release is what a payout does and no payout exists. A map permitting an arc
--- nothing can walk is the defect this repository has recorded five times.
+-- **This assertion was inverted by `20260907120000`, not deleted.** It used to
+-- read `not ... allowed`, worded descriptively ("no producer exists") rather than
+-- as a promise about a later slice. The producer exists now: `settle_payout`.
 select extensions.ok(
-  not private.escrow_transition_allowed('held', 'released'),
-  'held -> released is refused: release is a payout act and no producer exists'
+  private.escrow_transition_allowed('held', 'released'),
+  'held -> released: settle_payout, paying a node for a step the owner approved'
 );
 
 select extensions.ok(
   not private.escrow_transition_allowed('refunded', 'held'),
   'refunded -> held is refused: a settled hold never reopens'
+);
+
+-- **The two settlements do not reach each other**, which is what stops a released
+-- hold being refunded (taking back money somebody earned) and a refunded one
+-- being released (paying for work that was cancelled). Reversing either is a new
+-- hold with its own key, which is what a dispute is.
+select extensions.ok(
+  not private.escrow_transition_allowed('refunded', 'released'),
+  'refunded -> released is refused: a hold given back is not one to pay out'
 );
 select extensions.ok(
   not private.escrow_transition_allowed('released', 'refunded'),
@@ -563,18 +575,22 @@ select extensions.throws_ok(
 
 -- --------------------------------------- the escrow arcs, through the guard (4)
 
-select extensions.throws_ok(
+-- Was a `throws_ok` on `held -> released` until `20260907120000` gave the arc its
+-- producer. What is asserted through the guard now is the pairing that still
+-- matters: a hold settles once, and the second settlement is refused **even as
+-- postgres**, because a trigger is not a grant.
+select extensions.lives_ok(
   format($q$update public.escrow_holds set state = 'released' where task_id = %L$q$,
+         pg_temp.egid('t2')),
+  'held -> released is allowed, and settle_payout is its producer'
+);
+
+select extensions.throws_ok(
+  format($q$update public.escrow_holds set state = 'refunded' where task_id = %L$q$,
          pg_temp.egid('t2')),
   '23514',
   null,
-  'the guard refuses held -> released even as postgres, because a trigger is not a grant'
-);
-
-select extensions.lives_ok(
-  format($q$update public.escrow_holds set state = 'refunded' where task_id = %L$q$,
-         pg_temp.egid('t2')),
-  'held -> refunded is allowed, and the reconcile sweep is its producer'
+  'a released hold cannot then be refunded, which would take back money somebody earned'
 );
 
 select extensions.is(
@@ -590,7 +606,7 @@ select extensions.throws_ok(
          pg_temp.egid('t2')),
   '23514',
   null,
-  'and a refunded hold cannot be re-held: that would be a second hold, with its own key'
+  'and a released hold cannot be re-held: that would be a second hold, with its own key'
 );
 
 -- ------------------------------------------------- privileges (8)

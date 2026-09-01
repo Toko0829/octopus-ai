@@ -445,6 +445,44 @@ person's work is finished, and therefore that they are owed money, is not a
 verdict a deterministic floor check or a model gets to make. It is also the first
 consumer `tasks.acceptance_criteria` has ever had.
 
-**`payout_pending` is where an approved human step now stops**, because
-`approved → payout_pending` has no producer until slice 7 and `held → released`
-is still refused by the escrow map.
+**A human step now runs all the way to `done`** (marketplace slice 7,
+`20260907120000`…`123000`). The ticker's payout sweep moves it
+`approved → payout_pending`, and `public.settle_payout` walks
+`payout_pending → paid → done` in the same transaction that releases the escrow
+hold and ends the engagement. `paid` is transit-only in the sense `in_review`
+already was: a step passes through it, and one found sitting in it is one whose
+sweep died. That slice needed **no migration to this machine** — every arc it
+walks was declared by `20260813120000` and walkable by nothing — which makes two
+consecutive slices where the answer to "which migration adds the arc" is "none".
+
+### `done` has a producer on the human arm and none on the AI arm
+
+Worth stating plainly, because it is this module's gap rather than the
+marketplace's, and because somebody reading `task_state` would reasonably assume
+otherwise.
+
+Until slice 7 **nothing in this system had ever reached `done`**. AI work stops at
+`approved`, where the executor leaves it after the checker passes; owner-resolved
+work stops at `approved` too; and `task_deps_satisfied` counts `approved` as
+satisfied, so the graph never needed anything further. The panel labels `approved`
+as "Done" and `DONE_STATES` in `project-progress.ts` includes it. So `done` was
+vestigial rather than missing — until a step could be paid for, at which point
+stopping at `paid` would have left a finished, settled step non-terminal forever.
+
+`settle_payout` therefore produces `done`, **for human steps only**. The
+consequence for the AI arm is small but real and is not being glossed:
+`private.task_state_is_terminal` is `('done','failed','cancelled')`, and "anything
+non-terminal may be CANCELLED" is a universal rule in this map, so **a kill switch
+can still cancel an AI step that already produced its artifact and passed its
+check**. Nothing bad happens to money there — an AI step has no engagement and no
+hold, which is exactly why the payout sweep's join skips it without asking whose
+step it is — but the audit trail can record a finished piece of work as cancelled.
+
+It was deliberately **not** closed from a marketplace slice. `approved → done` on
+an AI step involves no money, its producer would be `executor.ts`, and closing
+another module's arc from inside one whose subject is a state machine is how a
+repository ends up with two half-owners of one map. The trigger to build it is the
+first cancellation that lands on an already-approved AI step, or the first reader
+who needs "finished" to mean one state rather than two.
+`supabase/tests/marketplace_payout.sql` asserts the absence, so the gap fails a
+test's description rather than being rediscovered.

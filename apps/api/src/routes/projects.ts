@@ -822,15 +822,24 @@ export async function projectRoutes(
       // for somebody who is actually in the project's room, and this handler
       // adds no membership logic of its own.
       //
-      // Live engagements only. An ended one is a fact about a step that stopped,
-      // and the panel line reads "who is doing this"; showing the node from a
-      // cancelled deal beside a step that went back to the market would be a
-      // stale name presented as a current one.
+      // **Live engagements, and completed ones.** Live-only was right while the
+      // only ways a deal could end were `cancelled` and `reassigned`: nothing was
+      // delivered on either, the step went back to the market, and showing that
+      // node's name beside it would have been a stale name presented as a current
+      // one. `settle_payout` adds a third ending in which the opposite is true —
+      // the work was delivered, the step is `done`, and the person who did it is
+      // exactly who the owner should still see, not least because slice 8 is
+      // going to ask them to rate them.
+      //
+      // The two other outcomes stay excluded, which is why this filters on
+      // `outcome` rather than dropping the time-box: `cancelled` and
+      // `reassigned` remain absent, and the panel line still never names somebody
+      // beside a step they are not doing.
       const { data: engagementRows, error: engagementErr } = await db
         .from('engagements')
-        .select('task_id, node_id, agreed_price, currency, accepted_at')
+        .select('task_id, node_id, agreed_price, currency, accepted_at, ended_at, outcome')
         .eq('project_id', projectId)
-        .is('ended_at', null);
+        .or('ended_at.is.null,outcome.eq.completed');
       if (engagementErr) throw engagementErr;
 
       const engagements = (engagementRows ?? []) as {
@@ -839,14 +848,18 @@ export async function projectRoutes(
         agreed_price: number | string;
         currency: string;
         accepted_at: string;
+        ended_at: string | null;
+        outcome: string | null;
       }[];
 
       // The counterparty's name, also read as the caller, through
-      // `profiles_select_counterparty` (`20260904126000`). That policy joins
-      // through `engagements` and requires `ended_at is null` on both sides, so
-      // this read and the one above agree by construction: a name that came back
-      // is a name this person is entitled to, and one that did not renders as
-      // null rather than as an error.
+      // `profiles_select_counterparty` (`20260904126000`, widened by
+      // `20260907123000`). That policy joins through `engagements` and admits a
+      // deal that is live **or** completed, which is the same predicate as the
+      // read above, so the two agree by construction: a name that came back is a
+      // name this person is entitled to, and one that did not renders as null
+      // rather than as an error. Keeping those two conditions identical is the
+      // whole reason the policy was widened in the same slice.
       //
       // **`node_profiles` is deliberately not read here.** The owner learns who
       // took their step and at what price; the node's rate card, jurisdictions
@@ -874,6 +887,11 @@ export async function projectRoutes(
             agreedPrice: Number(e.agreed_price),
             currency: e.currency,
             acceptedAt: e.accepted_at,
+            // Non-null exactly when this deal was paid, since `completed` is the
+            // only ended outcome this read admits and `settle_payout` is what
+            // writes it. Derived from the deal rather than joined from `payouts`:
+            // one fewer read, and it cannot disagree with the row it came from.
+            paidAt: e.outcome === 'completed' ? e.ended_at : null,
           },
         ]),
       );

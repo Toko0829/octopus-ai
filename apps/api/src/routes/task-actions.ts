@@ -292,13 +292,20 @@ export async function taskActionRoutes(
             // reconcile sweep when an engagement ends "and the approval path in
             // slice 6 does the same".
             //
-            // **The engagement is deliberately NOT ended here.** The panel reads
-            // live engagements only, so ending it would erase "who did this" at
-            // the moment the owner is about to pay them, and
-            // `private.engaged_counterparty` is time-boxed on `ended_at is null`,
-            // so it would close the owner's read of the node's name before the
-            // payout. `outcome = 'completed'` belongs to the payout slice,
-            // alongside `held -> released`.
+            // **The engagement is deliberately NOT ended here**, and that is
+            // still true now that the payout slice exists. Ending it is
+            // `public.settle_payout`'s, in the same transaction that releases the
+            // escrow, because the two facts are one fact: a deal is completed
+            // when the person is paid, not when the owner says the work is good.
+            // Between the two the panel still reads a live engagement and the
+            // owner still reads the node's name, which is what slice 6 protected
+            // by leaving this alone.
+            //
+            // **No payout intent is written here either.** The sweep selects on
+            // `approved` as well as `payout_pending`, so approval needs to record
+            // nothing beyond the verdict it already records, and there is no
+            // window in which a crash between two writes in this route could
+            // strand a step nobody pays for.
             //
             // Conditional on `expires_at is null` and scoped to this task's
             // thread, so it cannot touch a membership the node holds elsewhere,

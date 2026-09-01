@@ -1,4 +1,10 @@
-import type { ChargeResult, CreateChargeInput, PaymentProvider } from './provider';
+import type {
+  ChargeResult,
+  CreateChargeInput,
+  CreateTransferInput,
+  PaymentProvider,
+  TransferResult,
+} from './provider';
 
 /** The registry key. One entry today, and it is this one. */
 export const FAKE_PROVIDER = 'fake';
@@ -33,6 +39,22 @@ export function createFakeProvider(): PaymentProvider {
     async createCharge(input: CreateChargeInput): Promise<ChargeResult> {
       return { chargeId: fakeChargeId(input.idempotencyKey) };
     },
+
+    /**
+     * **Pays nobody.** No network call, no account, no rail; the `destination`
+     * is read only so that a caller passing nothing is a type error rather than
+     * a silent transfer into the void.
+     *
+     * Deterministic for `createCharge`'s reasons, and one of them is sharper
+     * here: the payout sweep records `transfer_id` on the payout row *after*
+     * this returns, so a crash in that window is resumed by calling this again
+     * with the same key. A random reference would make the retry store a second
+     * id for a transfer that, at a real idempotent provider, happened once.
+     */
+    async transfer(input: CreateTransferInput): Promise<TransferResult> {
+      void input.destination;
+      return { transferId: fakeTransferId(input.idempotencyKey) };
+    },
   };
 }
 
@@ -46,4 +68,18 @@ export function createFakeProvider(): PaymentProvider {
  */
 export function fakeChargeId(idempotencyKey: string): string {
   return `ch_fake_${idempotencyKey.replace(/[^a-zA-Z0-9]+/g, '_')}`;
+}
+
+/**
+ * The same derivation for a transfer, under its own prefix.
+ *
+ * **`tr_fake_` rather than `ch_fake_`**, and the prefixes differ for the reason
+ * they exist at all: `payouts.transfer_id` and `escrow_holds.charge_id` are
+ * different references to different acts, and a shared prefix would let somebody
+ * reconciling the two tables believe a charge and a transfer were the same
+ * event. Both stay visibly fake, in the two tables where a reader most needs to
+ * know that no money was involved.
+ */
+export function fakeTransferId(idempotencyKey: string): string {
+  return `tr_fake_${idempotencyKey.replace(/[^a-zA-Z0-9]+/g, '_')}`;
 }

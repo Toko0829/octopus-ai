@@ -32,12 +32,32 @@ export const OWNER_FUNDS = 'owner_funds';
 /**
  * Money spoken for but not yet anybody's.
  *
- * Credited on a hold, debited on a refund. It is debited again on a payout,
- * against a node-payable account that does not exist yet because nothing pays
- * out: adding it now would be an account with no entry, which is the same shape
- * as a state with no writer.
+ * Credited on a hold, debited on a refund, and debited again on a payout against
+ * `NODE_PAYABLE` below.
  */
 export const ESCROW = 'escrow';
+
+/**
+ * What the platform owes a node for work an owner approved.
+ *
+ * **This account was declined once, by name, and the reason it is here now is
+ * that the reason it was declined has gone.** The line above used to read that
+ * it "does not exist yet because nothing pays out: adding it now would be an
+ * account with no entry, which is the same shape as a state with no writer."
+ * `escrowReleasePair` is that entry.
+ *
+ * Credited on release. **Nothing debits it in this build**, and that is
+ * deliberate rather than unfinished: a `node_payable -> node_paid` movement
+ * would record money leaving the platform, and while the only registered
+ * provider settles synchronously and takes nothing, such a pair would be written
+ * in the same breath as the one above it and would say nothing the payout row
+ * does not already say. It arrives with the first provider whose settlement is
+ * asynchronous, which is the first provider that can be pending. Until then
+ * "was this actually transferred" is `payouts.state` and `payouts.transfer_id`,
+ * which is a fact about somebody else's system and belongs on a row rather than
+ * in a chart of accounts.
+ */
+export const NODE_PAYABLE = 'node_payable';
 
 /** One side of a movement, as `ledger_entries` stores it. */
 export interface LedgerEntry {
@@ -115,6 +135,46 @@ export function escrowRefundPair(hold: EscrowHoldRef): LedgerEntry[] {
     },
     {
       account: OWNER_FUNDS,
+      debit: 0,
+      credit: hold.amount,
+      currency: hold.currency,
+      refType: REF_TYPE_ESCROW_HOLD,
+      refId: hold.holdId,
+    },
+  ];
+}
+
+/**
+ * The obligation is discharged: what was held against a task becomes what is
+ * owed to the person who did it.
+ *
+ * **It carries the hold's `ref_id` rather than the payout's**, and that is the
+ * one decision in this function. `escrowRefundPair` does the same, and the
+ * property both preserve is that every entry about a hold sums to zero on every
+ * account once the hold is settled, whichever way it settled. "This hold is
+ * finished" is then a fact a reader derives from the ledger rather than a state
+ * column they have to trust — which is the whole reason a system that already
+ * has `escrow_holds.state` also keeps a ledger.
+ *
+ * Its only producer is `public.settle_payout`, which is also what lets the
+ * escrow lifecycle map permit `held -> released` at all. Unlike the hold pair
+ * this is **not** written twice: the release happens inside a database function
+ * and nothing in Node writes it, so this function exists to be the authority a
+ * reviewer reads and the shape a test pins, and `marketplace_payout.sql` asserts
+ * the result in SQL.
+ */
+export function escrowReleasePair(hold: EscrowHoldRef): LedgerEntry[] {
+  return [
+    {
+      account: ESCROW,
+      debit: hold.amount,
+      credit: 0,
+      currency: hold.currency,
+      refType: REF_TYPE_ESCROW_HOLD,
+      refId: hold.holdId,
+    },
+    {
+      account: NODE_PAYABLE,
       debit: 0,
       credit: hold.amount,
       currency: hold.currency,

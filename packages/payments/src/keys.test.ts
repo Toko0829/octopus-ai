@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { escrowKey, refundKey } from './keys';
+import { escrowKey, payoutKey, refundKey } from './keys';
 
 const OFFER = 'e0000000-0000-4000-8000-000000000001';
 const HOLD = '11111111-1111-4111-8111-111111111111';
@@ -44,5 +44,27 @@ describe('refundKey', () => {
   it('is derived from the hold, so one hold announces its refund once', () => {
     expect(refundKey(HOLD)).toBe(refundKey(HOLD));
     expect(refundKey('hold-a')).not.toBe(refundKey('hold-b'));
+  });
+});
+
+describe('payoutKey', () => {
+  const ENGAGEMENT = 'a0000000-0000-4000-8000-00000000000e';
+
+  it('is prefixed apart from every other key in the namespace', () => {
+    expect(payoutKey(ENGAGEMENT)).toBe(`payout:${ENGAGEMENT}`);
+    expect(payoutKey(ENGAGEMENT)).not.toBe(escrowKey(ENGAGEMENT));
+    expect(payoutKey(ENGAGEMENT)).not.toBe(refundKey(ENGAGEMENT));
+  });
+
+  it('is derived from the engagement, so a reassigned step pays its second node', () => {
+    // The case that decides this. A step taken, abandoned past its deadline and
+    // reassigned has TWO engagements: different node, possibly different price.
+    // A key derived from the task would collide on the second payout, read back
+    // a row belonging to somebody else, and report the wrong person paid.
+    expect(payoutKey('engagement-first')).not.toBe(payoutKey('engagement-second'));
+  });
+
+  it('is stable across calls, which is the whole mechanism', () => {
+    expect(payoutKey(ENGAGEMENT)).toBe(payoutKey(ENGAGEMENT));
   });
 });

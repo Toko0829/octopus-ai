@@ -312,17 +312,20 @@
   gap: 4px;
 }
 
+/* The row gained a third child when a finished deal started carrying what it
+   paid, so the title pushes the rest right rather than `space-between` spreading
+   three items across the row and stranding the outcome in the middle. */
 .node-history li {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  justify-content: space-between;
   gap: 8px;
   font-size: var(--text-sm);
 }
 
 .node-history-title {
   color: var(--text-secondary);
+  margin-inline-end: auto;
 }
 
 /* The outcome is a word, never a tint (rule 15). */
@@ -330,6 +333,14 @@
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text-muted);
+}
+
+/* Tabular numerics on money (rule 14), and the one thing on this row a node is
+   reading for, so it carries the primary text colour the outcome does not. */
+.node-history-amount {
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---- The engagement thread ----

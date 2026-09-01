@@ -271,6 +271,41 @@ const EnvSchema = z.object({
   NO_SHOW_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
 
   /**
+   * The payout sweep: an owner approved an expert's work, so the escrow held
+   * against that step is released to them and the step is finished.
+   *
+   * **On by default**, the polarity every sweep here has except `CRAWL_ENABLED`.
+   * The cost of turning it off is the sharpest on this list and is stated rather
+   * than implied: an approved step stops at `approved` holding its escrow, the
+   * hold keeps committing `projects.budget_ceiling`, `engagements.outcome` never
+   * reaches `'completed'`, and **somebody who did the work is not paid**. Nothing
+   * else anywhere produces `held -> released`.
+   *
+   * **Nothing is transferred whatever this is set to.** The only registered
+   * payment provider is the in-repo fake; `carriesRealMoney` refuses a real one
+   * in `apps/api/src/lib/payout.ts` before the call, and the counsel gate in
+   * payments-billing.md is unmoved.
+   *
+   * **Inert until an owner approves an expert's work**, since it selects only
+   * live engagements whose task is `approved` or `payout_pending` and which still
+   * have a `held` hold.
+   */
+  PAYOUT_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
+  /**
+   * How many payouts one pass may make.
+   *
+   * Three, matching its siblings, and it bounds payouts PERFORMED rather than
+   * engagements examined. Small for the reason every money sweep here is small
+   * rather than for the matcher's reason: each payout is four writes and an
+   * outbound call, and a pass that fell behind is a pass that ran again thirty
+   * seconds later.
+   */
+  PAYOUT_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
+
+  /**
    * Signing key for the OAuth `state` parameter.
    *
    * **Optional in this schema and required at the point of use**, which is a

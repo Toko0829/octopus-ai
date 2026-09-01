@@ -40,8 +40,10 @@
  * and none of its purpose.
  *
  * **The provider seam** (`provider.ts`), written before there is a payment so
- * the calling code faces a shape somebody chose rather than Stripe's. One
- * method, because only the hold has a caller.
+ * the calling code faces a shape somebody chose rather than Stripe's. Two
+ * methods, because the hold and the transfer each have a caller; `refund()`
+ * still does not exist, because unwinding a modelled obligation is not money
+ * movement and routing it through a provider would say it was.
  *
  * **The registry** (`provider-registry.ts`), checked in rather than stored,
  * carrying `carriesRealMoney` for the reason `carriesRealCredentials` and
@@ -53,24 +55,28 @@
 export {
   OWNER_FUNDS,
   ESCROW,
+  NODE_PAYABLE,
   REF_TYPE_ESCROW_HOLD,
   entriesBalance,
   escrowHoldPair,
   escrowRefundPair,
+  escrowReleasePair,
   type EscrowHoldRef,
   type LedgerEntry,
 } from './ledger';
 
-export { escrowKey, refundKey } from './keys';
+export { escrowKey, payoutKey, refundKey } from './keys';
 
 export {
   PaymentError,
   type ChargeResult,
   type CreateChargeInput,
+  type CreateTransferInput,
   type PaymentProvider,
+  type TransferResult,
 } from './provider';
 
-export { createFakeProvider, fakeChargeId, FAKE_PROVIDER } from './fake-provider';
+export { createFakeProvider, fakeChargeId, fakeTransferId, FAKE_PROVIDER } from './fake-provider';
 
 export {
   PAYMENT_PROVIDER_REGISTRY,

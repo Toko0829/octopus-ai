@@ -173,6 +173,12 @@ export async function buildServer(): Promise<FastifyInstance> {
     // Inert until somebody misses a deadline, and placed before the matcher on
     // the pass so a replacement is offered without waiting another tick.
     noShow: env.NO_SHOW_ENABLED ? { maxPerPass: env.NO_SHOW_MAX_PER_TICK } : undefined,
+    // Paying an expert for a step the owner approved. The only producer of
+    // `held -> released` anywhere: with this off, an approved step holds its
+    // escrow forever and somebody who did the work is never paid. Nothing is
+    // transferred whatever it is set to — the only registered provider is the
+    // in-repo fake and `carriesRealMoney` refuses a real one at the writer.
+    payout: env.PAYOUT_ENABLED ? { maxPerPass: env.PAYOUT_MAX_PER_TICK } : undefined,
     // Offering escalated steps to expert nodes. Inert until an owner clicks, so
     // the same kill-switch shape again: `false` still lets a step be dispatched
     // and still shows "Finding an expert", and no offer is ever made.

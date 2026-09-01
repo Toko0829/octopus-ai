@@ -1094,19 +1094,25 @@ payment provider is a deterministic in-repo fake, and the counsel gate in
 modelling an obligation against an already-authorised ceiling is not money
 movement.
 
-| Table                       | Status                                                                    | Key columns                                                                                                                                                     |
-| --------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `escrow_holds`              | ✅ live `20260904121000`, written by `accept_offer` + the reconcile sweep | `id`, `task_id`, `project_id`, `charge_id`, `amount numeric(12,2) > 0`, `currency`, `state` checked text (`held\|released\|refunded`), `idempotency_key` UNIQUE |
-| `ledger_entries`            | ✅ live `20260904122000`, written by the same two                         | `id`, `account`, `debit`/`credit numeric(12,2) >= 0` with `check ((debit = 0) <> (credit = 0))`, `currency`, `ref_type`, `ref_id`, `created_at`                 |
-| `payouts`                   | ⏳ slice 7, with `held → released`                                        | `id`, `node_id`, `transfer_id`, `amount`, `platform_fee`, `state`, `idempotency_key` UNIQUE                                                                     |
-| `subscriptions`             | ⏳ no slice; nothing bills anybody                                        | `id`, `user_id`, `tier`, `status`, `current_period_end`                                                                                                         |
-| `platform_fees`, `invoices` | ⏳ with the first transfer                                                | —                                                                                                                                                               |
+| Table                       | Status                                                                    | Key columns                                                                                                                                                                                                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `escrow_holds`              | ✅ live `20260904121000`, written by `accept_offer` + the reconcile sweep | `id`, `task_id`, `project_id`, `charge_id`, `amount numeric(12,2) > 0`, `currency`, `state` checked text (`held\|released\|refunded`), `idempotency_key` UNIQUE                                                                                                                            |
+| `ledger_entries`            | ✅ live `20260904122000`, written by the same two                         | `id`, `account`, `debit`/`credit numeric(12,2) >= 0` with `check ((debit = 0) <> (credit = 0))`, `currency`, `ref_type`, `ref_id`, `created_at`                                                                                                                                            |
+| `payouts`                   | ✅ live `20260907121000`, written by the payout sweep + `settle_payout`   | `id`, `engagement_id`, `node_id`, `project_id`, `task_id`, `transfer_id` (null until the transfer answers, then write-once), `amount numeric(12,2) > 0`, `platform_fee numeric(12,2) >= 0 default 0`, `currency`, `state` checked text (`pending\|paid\|failed`), `idempotency_key` UNIQUE |
+| `subscriptions`             | ⏳ no slice; nothing bills anybody                                        | `id`, `user_id`, `tier`, `status`, `current_period_end`                                                                                                                                                                                                                                    |
+| `platform_fees`, `invoices` | ⏳ no slice. `payouts.platform_fee` is written from a constant `0`        | See [ADR-0024](../40-adr/0024-the-take-rate-is-not-deducted-from-an-agreed-price.md): a take rate has to be named on the **offer** before it can be deducted                                                                                                                               |
 
-**`escrow_holds` lifecycle.** `private.escrow_transition_allowed` permits exactly
-`held → refunded`, whose producer is `apps/api/src/lib/escrow-reconcile.ts`.
-**`released` is in the check constraint and out of the map**: the constraint is
-the column's vocabulary and the map is what can be done today, and release's
-producer is the payout slice. A `security definer` trigger validates, stamps
+**`escrow_holds` lifecycle.** `private.escrow_transition_allowed` permits
+`held → refunded` (producers: `apps/api/src/lib/escrow-reconcile.ts` and
+`public.reassign_engagement`) and, since `20260907120000`, `held → released`
+(producer: `public.settle_payout`). **Both are terminal and neither reaches the
+other**: a released hold that could be refunded would take back money somebody
+earned, and a refunded one that could be released would pay for cancelled work.
+Reversing either is a new hold with its own key, which is what a dispute is.
+`released` spent two slices declared in the check constraint and refused by the
+map — the constraint being the column's vocabulary and the map what can be done
+today — and the pgTAP assertion that pinned the refusal was worded descriptively
+rather than promissorily, so permitting it was a change of fact. A `security definer` trigger validates, stamps
 `updated_at` and writes `escrow.transitioned`, with a `when (old.state is
 distinct from new.state)` clause so an ordinary edit is not read as a
 self-transition. It binds `service_role`.

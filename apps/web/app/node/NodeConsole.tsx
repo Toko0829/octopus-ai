@@ -611,8 +611,9 @@ function WorkPanel({
       {submittable && open && (
         <div className="node-confirm">
           <p className="node-note">
-            The owner reads this and either approves it or sends it back with a note. Nothing is
-            paid out in this build.
+            The owner reads this and either approves it or sends it back with a note. If they
+            approve it, the {money(engagement.agreedPrice)} {engagement.currency} held in escrow is
+            released to you on the next pass.
           </p>
 
           {bounced && (
@@ -700,7 +701,10 @@ function WorkPanel({
 }
 
 const OUTCOME_COPY: Record<string, string> = {
-  completed: 'Finished',
+  // `settle_payout` is the only writer of this outcome and it writes it in the
+  // same transaction that releases the escrow, so "completed" and "paid" are one
+  // fact and the word a node cares about is the second one.
+  completed: 'Finished and paid',
   reassigned: 'Passed to somebody else',
   cancelled: 'Stopped before it was delivered',
   disputed_resolved: 'Closed after a dispute',
@@ -776,6 +780,16 @@ function Engagements({
                 <span className="node-history-status">
                   {OUTCOME_COPY[engagement.outcome ?? ''] ?? 'Closed'}
                 </span>
+                {/* **The amount only on the deals that paid it.** `completed` is
+                    the outcome `settle_payout` writes, and it is the only one
+                    that means money moved; putting a figure beside a reassigned
+                    or cancelled step would read as a fee somebody was denied
+                    rather than one that was never owed. */}
+                {engagement.outcome === 'completed' && (
+                  <span className="node-history-amount mono">
+                    {money(engagement.agreedPrice)} {engagement.currency}
+                  </span>
+                )}
               </li>
             ))}
           </ul>

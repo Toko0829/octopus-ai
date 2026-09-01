@@ -9,8 +9,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { createFakeProvider, fakeChargeId } from './fake-provider';
-import { escrowKey } from './keys';
+import { createFakeProvider, fakeChargeId, fakeTransferId } from './fake-provider';
+import { escrowKey, payoutKey } from './keys';
 
 describe('createFakeProvider', () => {
   it('derives the reference from the idempotency key', async () => {
@@ -66,5 +66,87 @@ describe('createFakeProvider', () => {
     });
 
     expect(cheap.chargeId).toBe(dear.chargeId);
+  });
+});
+
+describe('createFakeProvider.transfer', () => {
+  const key = payoutKey('a0000000-0000-4000-8000-00000000000e');
+
+  it('derives the reference from the idempotency key', async () => {
+    // Sharper here than for a charge. The payout sweep records `transfer_id`
+    // AFTER this returns, so a crash in that window is resumed by calling again
+    // with the same key; a random reference would store a second id for a
+    // transfer that, at a real idempotent provider, happened once.
+    const provider = createFakeProvider();
+
+    const first = await provider.transfer({
+      amount: 500,
+      currency: 'USD',
+      destination: 'node-1',
+      idempotencyKey: key,
+    });
+    const second = await provider.transfer({
+      amount: 500,
+      currency: 'USD',
+      destination: 'node-1',
+      idempotencyKey: key,
+    });
+
+    expect(first.transferId).toBe(second.transferId);
+    expect(first.transferId).toBe(fakeTransferId(key));
+  });
+
+  it('is visibly fake, and visibly not a charge', async () => {
+    // `payouts.transfer_id` holds this on every row this build writes. The
+    // prefix differs from `ch_fake_` so nobody reconciling the two money tables
+    // can mistake a charge for a transfer.
+    const provider = createFakeProvider();
+    const result = await provider.transfer({
+      amount: 500,
+      currency: 'USD',
+      destination: 'node-1',
+      idempotencyKey: key,
+    });
+
+    expect(result.transferId.startsWith('tr_fake_')).toBe(true);
+    expect(result.transferId).not.toBe(fakeChargeId(key));
+  });
+
+  it('gives different keys different references', async () => {
+    const provider = createFakeProvider();
+
+    const a = await provider.transfer({
+      amount: 1,
+      currency: 'USD',
+      destination: 'n',
+      idempotencyKey: 'a',
+    });
+    const b = await provider.transfer({
+      amount: 1,
+      currency: 'USD',
+      destination: 'n',
+      idempotencyKey: 'b',
+    });
+
+    expect(a.transferId).not.toBe(b.transferId);
+  });
+
+  it('does not depend on the destination, because nobody is paid', async () => {
+    const provider = createFakeProvider();
+
+    const one = await provider.transfer({
+      amount: 500,
+      currency: 'USD',
+      destination: 'node-1',
+      idempotencyKey: key,
+    });
+    const other = await provider.transfer({
+      amount: 500,
+      currency: 'USD',
+      destination: 'node-2',
+      idempotencyKey: key,
+    });
+
+    expect(one.transferId).toBe(other.transferId);
   });
 });

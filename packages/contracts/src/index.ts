@@ -823,6 +823,13 @@ export const Task = z.object({
    * `agreedPrice` is frozen at acceptance and never follows the node's current
    * rate, so a panel rendering it is showing what was agreed rather than what
    * the node charges today.
+   *
+   * **It survives the deal ending, but only when the deal was completed.** The
+   * projection reads live engagements and completed ones, because a step that was
+   * delivered and paid for should still say who did it — otherwise paying
+   * somebody would be what erased their name, right before slice 8 asks the owner
+   * to rate them. `cancelled` and `reassigned` deals stay absent, so this line
+   * still never names somebody beside a step they are not doing.
    */
   engagement: z
     .object({
@@ -830,6 +837,17 @@ export const Task = z.object({
       agreedPrice: z.number(),
       currency: z.string(),
       acceptedAt: z.string(),
+      /**
+       * When the escrow was released to this node, or null while the deal is
+       * still running.
+       *
+       * The engagement's own `ended_at`, admitted only for `outcome =
+       * 'completed'`, so it cannot report a cancelled deal as a payment. It is
+       * **not** read from `payouts`: that would be a second read that could
+       * disagree with the row beside it, and the fact the panel needs is "this
+       * was settled", which the deal already knows.
+       */
+      paidAt: z.string().nullable().default(null),
     })
     .nullable()
     .default(null),

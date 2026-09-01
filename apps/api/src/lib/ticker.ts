@@ -9,6 +9,7 @@ import { optimizeSweep } from './optimize';
 import { matcherSweep } from './match';
 import { escrowReconcileSweep } from './escrow-reconcile';
 import { noShowSweep } from './no-show';
+import { payoutSweep } from './payout';
 import { notifyWaiting } from './waiting';
 import { produceCampaignCards } from './campaign-cards';
 import type { ExecutorDeps } from './executor';
@@ -95,6 +96,16 @@ export interface TickerOptions {
    * which is precisely the dead end this slice closed (see `NO_SHOW_ENABLED`).
    */
   noShow?: { maxPerPass: number };
+  /**
+   * Pay the expert when the owner approves their work, releasing the escrow held
+   * against that step. Absent means this deployment does not pay anybody, which
+   * is supported and is not the default, and is the sharpest absence on this
+   * list: an approved step then sits at `approved` holding its escrow forever,
+   * the hold keeps committing the owner's ceiling, and somebody who did the work
+   * is never paid. Nothing else produces `held -> released` (see
+   * `PAYOUT_ENABLED`).
+   */
+  payout?: { maxPerPass: number };
   log: {
     info: (obj: unknown, msg: string) => void;
     warn: (obj: unknown, msg: string) => void;
@@ -352,6 +363,27 @@ export function startTicker(opts: TickerOptions): () => void {
           });
         } catch (err) {
           opts.log.error({ err, worker }, 'no-show sweep failed');
+        }
+      }
+
+      // Paying the expert for a step the owner approved, immediately after the
+      // no-show sweep and before the matcher. **After** it, because both read
+      // live engagements and the no-show sweep can refund a hold this one would
+      // otherwise have paid against; running it first means this pass sees the
+      // refund rather than racing it, and `settle_payout` refuses the case under
+      // a lock either way. **Before** the matcher, on the ordering rule the whole
+      // pass follows: somebody who has finished work and is owed money outranks
+      // somebody who has not been offered any yet. Its own try/catch, like every
+      // sweep here.
+      if (opts.payout) {
+        try {
+          await payoutSweep({
+            admin: opts.admin,
+            maxPerPass: opts.payout.maxPerPass,
+            log: opts.log,
+          });
+        } catch (err) {
+          opts.log.error({ err, worker }, 'payout sweep failed');
         }
       }
 
