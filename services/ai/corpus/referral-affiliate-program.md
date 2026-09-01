@@ -35,12 +35,35 @@ retention curve that flattens rather than falling to nothing, and a moment where
 somebody is pleased enough to tell a friend. That moment is also where the ask
 belongs, rather than in a footer.
 
+## Where the ask goes
+
+Ask immediately after a good outcome: the order arriving, the result appearing,
+the problem being solved, a positive support exchange. Pleasure is short-lived and
+the ask has to reach it while it lasts.
+
+Ask in a way that costs nothing to accept. A prepared message and a link the
+person can forward gets used; a form asking for a friend's email address does
+not, because it asks the customer to hand over somebody else's details.
+
+Ask once and stop. A referral prompt on every screen reads as a demand and
+devalues the product it is attached to.
+
+Tell the referrer what happened. Somebody who never learns whether their
+recommendation arrived does not make a second one, and the notification is also
+how the reward gets delivered.
+
 ## Structuring the incentive
 
 For referrals, reward both sides. A two-sided reward lets the referrer offer
 their friend something rather than extract something from them, which turns the
 share from a sales act into a gift, and it is the largest single determinant of
 whether anybody uses it.
+
+Make the referrer's side something the product provides rather than cash where
+you can. Credit, an extension, an upgrade: it costs margin rather than money and
+it keeps the person in the product. Make the friend's side genuinely worth
+having, because a token discount reads as a coupon and undermines the
+recommendation it was supposed to carry.
 
 For affiliates, four decisions define the program. Percentage of sale or flat
 amount per customer: percentages suit variable prices, flat amounts are easier to
@@ -56,13 +79,39 @@ check it against comparable products, because partners compare. A rate you canno
 sustain is worse than a modest one, since cutting it later costs you the partners
 it attracted.
 
+## The rest of the terms, decided before the first partner joins
+
+Three more things have to be written down, and each of them is unpleasant to
+decide for the first time after somebody has already earned money.
+
+**What happens when two partners both touched a customer.** Publish the rule in
+advance. It will happen, and the argument is worse than any rule you could pick.
+
+**The minimum payout and the payment schedule.** Both save administration, and
+both have to exist before somebody earns a small amount and discovers they cannot
+collect it.
+
+**Whether you can use the partner's material yourself**, and for how long. This
+is the clause most often left out and most often wanted later.
+
 ## Recruiting the first partners
 
+A program page nobody is sent to recruits nobody, so the first cohort is
+recruited by hand.
+
 Your best customers are the first affiliates worth asking: they describe the
-product accurately and already believe it. After them, the people already talking
-about the problem you solve. A program page nobody is sent to recruits nobody.
-Recruitment is outreach and follows the same rules as any other partnership
-approach.
+product accurately, already believe it, and accept at a higher rate than anybody
+else will. After them, the people already talking about the problem you solve.
+That is ordinary partnership outreach and follows the same rules: specific,
+short, and proposing something small.
+
+Give the first partners more support than feels scalable. Assets, the claims that
+work, the objections that come up, and a person to ask. The first ten inform what
+the program needs, and the program is designed from what they struggle with.
+
+Expect a long tail. In most programs a small number of partners produce nearly
+all of the volume, so the work is finding and keeping those few rather than
+maximising how many sign up.
 
 ## Referral fraud arrives with the first commission payout
 
@@ -79,6 +128,11 @@ one affiliate earns in a period without review. And state in the affiliate terms
 which promotional methods are disallowed, so removing an affiliate is enforcement
 rather than an argument.
 
+The three that recur on that last point are bidding on your own brand terms,
+coupon-site listings, and unsolicited email. Brand bidding is the one most often
+missed: the partner buys ads against your own name, so you pay commission on
+traffic that was already searching for you.
+
 ## Measuring whether it is real
 
 The referral that would have happened anyway is the same problem attribution has
@@ -90,6 +144,10 @@ Count incremental customers rather than attributed ones. The blunt test is
 whether total new customers rose by roughly what the program claims, or whether
 the same total now arrives with commission attached to part of it. Measuring that
 properly is its own discipline and is covered separately.
+
+Watch quality separately from volume. Referred customers who churn faster than
+organic ones mean the program is growing the customer count and shrinking the
+business, and that is invisible on any report that counts acquisitions.
 
 ## When to bring in a human
 
