@@ -62,6 +62,16 @@ services:
       # Model identity, location and the offline pin all come from the image
       # (see its Dockerfile) and are deliberately not restated here.
       PYTHONUNBUFFERED: '1'
+      # Reranking is the dominant cost in a planning turn and it is pure CPU.
+      # Torch defaults to the PHYSICAL core count while the container is given
+      # the logical one, so the service was using half the machine on a number
+      # nobody chose. Measured in-container on a 16-logical-core host, one pass
+      # over 25 candidates: 69.7s at the default 8, 36.8s at 16.
+      #
+      # A fixed number rather than a share of the host, because compose has no
+      # way to say "all of them" and a wrong guess in the other direction makes
+      # it slower, not merely unbalanced. Lower it on a smaller box.
+      TORCH_NUM_THREADS: '16'
     ports:
       - '8000:8000'
     restart: unless-stopped
