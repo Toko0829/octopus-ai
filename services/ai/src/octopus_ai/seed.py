@@ -26,12 +26,16 @@ from .db import Database
 from .ingestion import Ingestor
 from .providers import Providers
 from .retrieval import Retriever
+from .runtime import configure_torch_threads
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 async def _run(probe: str | None) -> int:
     settings = get_settings()
+    # Embedding the corpus is local model work, so it takes the same thread
+    # budget the service does rather than torch's default.
+    configure_torch_threads(settings)
     db = Database(settings)
     providers = Providers(settings)
 
