@@ -28,8 +28,9 @@ import logging
 
 from .config import Settings
 from .deliverable import DeliverableKind, classify, instruction_for, requested_count
+from .gaps import GapLedger
 from .groundedness import assess
-from .planner import build_context_block, build_sources_block
+from .planner import REFUSAL_CORES, build_context_block, build_sources_block
 from .providers import Providers
 from .retrieval import RetrievalResult, Retriever
 from .schemas import (
@@ -114,8 +115,45 @@ async def execute_task(
     retriever: Retriever,
     providers: Providers,
     settings: Settings,
+    gaps: GapLedger | None = None,
 ) -> PlanResponse:
-    """Draft the deliverable for one task, or refuse."""
+    """Draft the deliverable for one task, or refuse.
+
+    `gaps` is optional and defaults to off so every existing caller and test keeps
+    working untouched. A missing ledger must never change what this function
+    returns; it only changes whether the refusal is written down.
+    """
+
+    def note(core: str, retrieval: RetrievalResult | None, reason: str = "") -> None:
+        """Record a refusal that is a statement about the corpus.
+
+        Called at two of the four refusal sites, and the two it skips are the
+        point. A retrieval that raised and a draft that came back unusable both
+        produce this same refusal and neither says anything about coverage;
+        mixing them in would make the counts unreadable. Those two have logs and
+        Sentry, which is where an exception belongs.
+
+        **A step refusal is the sharper signal of the two surfaces.** By the time
+        a step executes, the planner has already judged the ground covered and the
+        owner has approved the plan, so a refusal here says the corpus was thinner
+        than the plan assumed rather than merely thin.
+        """
+        if gaps is None:
+            return
+        gaps.record(
+            core=core,
+            surface="execute",
+            # The step's own words, which is what was actually searched for. The
+            # goal that produced the plan is not in scope here and would make the
+            # row describe a question nobody asked at this point.
+            goal=f"{request.title}. {request.detail}",
+            retrieval=retrieval,
+            reason=reason,
+            room_id=request.trace.room_id,
+            project_id=request.trace.project_id,
+            agent_run_id=request.trace.agent_run_id,
+        )
+
     # The step's own words, not the goal's. Detail is included because a title
     # alone ("Sharpen positioning") is a label, and the detail is what says which
     # positioning problem the plan actually identified.
@@ -135,6 +173,7 @@ async def execute_task(
         return _refuse(request, "Retrieval failed.", None)
 
     if not retrieval.grounded:
+        note(REFUSAL_CORES["no_sources"], retrieval)
         return _refuse(request, "Nothing in the knowledge base covers this step.", retrieval)
 
     sources = build_sources_block(retrieval)
@@ -145,6 +184,13 @@ async def execute_task(
             # Same gate as planning, applied at the more consequential moment. A
             # plan that cites loosely-related sources is a bad suggestion; a
             # deliverable that does is work someone will use.
+            note(
+                REFUSAL_CORES[
+                    "unsupported" if verdict.outcome == "unsupported" else "unverified"
+                ],
+                retrieval,
+                verdict.reason,
+            )
             return _refuse(
                 request,
                 f"The sources I found do not actually cover it ({verdict.reason}).",

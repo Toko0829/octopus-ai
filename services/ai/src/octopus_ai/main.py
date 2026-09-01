@@ -12,7 +12,6 @@ side consumes (ADR-0004).
 from __future__ import annotations
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -23,13 +22,22 @@ from .config import ConfigError, Settings, get_settings
 from .db import Database
 from .decompose import decompose
 from .executor import execute_task
+from .gaps import GapLedger
 from .groundedness import assess
 from .ingestion import Ingestor
 from .intake import run_intake
-from .planner import build_sources_block, plan_grounded, refuse
+from .planner import (
+    REFUSAL_CORES,
+    REFUSING_CORE,
+    RefusalReason,
+    build_sources_block,
+    plan_grounded,
+    refuse,
+)
 from .providers import Providers
 from .replan import replan
-from .retrieval import Retriever
+from .retrieval import RetrievalResult, Retriever
+from .runtime import configure_torch_threads
 from .schemas import (
     ExecuteRequest,
     IngestRequest,
@@ -41,6 +49,7 @@ from .schemas import (
     SourceRequest,
     SourceResponse,
 )
+from .ungrounded import UNGROUNDED_CORE, answer_ungrounded
 
 logger = logging.getLogger("octopus.ai")
 
@@ -101,32 +110,6 @@ def configure_logging(level: int = logging.INFO) -> None:
     package_logger.propagate = False
 
 
-def configure_torch_threads(settings: Settings) -> None:
-    """Give torch the whole box when a local model is doing the work.
-
-    Imported lazily and skipped entirely when neither provider is local, because
-    `local_embedder` and `local_reranker` are kept out of the import graph on
-    purpose so a deployment using hosted providers never pays for torch.
-
-    Torch defaults to the physical core count, while a container is normally
-    given the logical one, so the service was using half the machine on a number
-    nobody had chosen. Reranking is the dominant cost in a planning turn and it is
-    pure CPU, so that halving showed up directly in what a person waits for.
-    """
-    if settings.embed_provider != "local" and settings.rerank_provider != "local":
-        return
-    if settings.torch_num_threads <= 0:
-        return
-
-    import torch
-
-    torch.set_num_threads(settings.torch_num_threads)
-    logger.info(
-        "torch thread budget set",
-        extra={"threads": torch.get_num_threads(), "cpu_count": os.cpu_count()},
-    )
-
-
 class _State:
     """Process-wide singletons. Built at startup, closed at shutdown."""
 
@@ -134,9 +117,38 @@ class _State:
     db: Database | None = None
     providers: Providers | None = None
     retriever: Retriever | None = None
+    gaps: GapLedger | None = None
 
 
 state = _State()
+
+
+def _record_gap(
+    request: PlanRequest,
+    core: str,
+    retrieval: RetrievalResult | None,
+    *,
+    detail: str = "",
+) -> None:
+    """Note a refusal in the ledger, if the ledger is up.
+
+    Returns immediately; `GapLedger.record` schedules the write and swallows its
+    own failures. The `is None` guard is for the tests that call these endpoints
+    without a lifespan, where the absence of a ledger must not be the difference
+    between a passing and a failing assertion about refusal copy.
+    """
+    if state.gaps is None:
+        return
+    state.gaps.record(
+        core=core,
+        surface="plan",
+        goal=request.goal,
+        retrieval=retrieval,
+        reason=detail,
+        room_id=request.room_id,
+        project_id=request.trace.project_id,
+        agent_run_id=request.trace.agent_run_id,
+    )
 
 
 @asynccontextmanager
@@ -158,6 +170,7 @@ async def lifespan(_: FastAPI):
     state.db = Database(settings)
     state.providers = Providers(settings)
     state.retriever = Retriever(settings, state.db, state.providers)
+    state.gaps = GapLedger(state.db)
 
     # Load the local embedder now, while nothing is waiting on it. bge-m3 takes
     # seconds and a couple of GB to come up, and paying that on the first request
@@ -186,6 +199,7 @@ async def lifespan(_: FastAPI):
             "generation_model": settings.generation_model,
             "groundedness_check": settings.groundedness_check,
             "groundedness_model": settings.active_groundedness_model,
+            "ungrounded_fallback": settings.ungrounded_fallback,
         },
     )
     try:
@@ -314,6 +328,11 @@ async def plan(request: PlanRequest) -> PlanResponse:
         return refuse(request)
 
     if not retrieval.grounded:
+        # Recorded, and the exception path above deliberately is not. A retrieval
+        # that raised says nothing about coverage; a retrieval that returned
+        # nothing above the threshold says the corpus is silent here, which is the
+        # signal this table exists to accumulate. See `gaps.py`.
+        _record_gap(request, REFUSING_CORE, retrieval)
         return refuse(request, retrieval)
 
     # The groundedness gate (rule 10). Retrieval has told us which chunks rank
@@ -340,12 +359,43 @@ async def plan(request: PlanRequest) -> PlanResponse:
                     "chunks": len(retrieval.chunks),
                 },
             )
-            return refuse(
-                request,
-                retrieval,
-                reason="unsupported" if verdict.outcome == "unsupported" else "unverified",
-                detail=verdict.reason,
+            reason: RefusalReason = (
+                "unsupported" if verdict.outcome == "unsupported" else "unverified"
             )
+
+            # The labelled ungrounded tier (ADR-0021), attempted only on
+            # `unsupported`. Retrieval returning chunks already established that
+            # the question is inside the domain, since the threshold clears
+            # nothing for an out-of-domain goal; `unsupported` establishes that
+            # the corpus does not cover it. Domain yes, coverage no, which is the
+            # only place a general answer is the right product.
+            #
+            # `unverified` is deliberately excluded. That means the gate could not
+            # run, and letting a provider outage change the product's posture
+            # would make the strict mode fail open on the days nobody is watching.
+            if reason == "unsupported" and state.settings.ungrounded_fallback:
+                answer = await answer_ungrounded(request.goal, state.providers)
+                if answer is not None:
+                    # Recorded in the same ledger as a refusal, because it is the
+                    # same signal: a question the corpus could not support. The
+                    # rate is a corpus-health number that should fall as documents
+                    # are added, not a feature whose usage should grow.
+                    _record_gap(request, UNGROUNDED_CORE, retrieval, detail=verdict.reason)
+                    logger.info(
+                        "answered ungrounded",
+                        extra={
+                            "agent_run_id": request.trace.agent_run_id,
+                            "chunks": len(retrieval.chunks),
+                        },
+                    )
+                    return answer
+
+            # `verdict.reason` is the most useful column in the ledger: the gate
+            # prompt requires a false answer to name the specific thing the sources
+            # lack, so this is a model that has read the sources saying what was
+            # missing from them.
+            _record_gap(request, REFUSAL_CORES[reason], retrieval, detail=verdict.reason)
+            return refuse(request, retrieval, reason=reason, detail=verdict.reason)
 
     try:
         return await plan_grounded(request, retrieval, state.providers, state.settings)
@@ -379,7 +429,9 @@ async def execute(request: ExecuteRequest) -> PlanResponse:
 
     assert state.retriever and state.providers and state.settings  # set in lifespan
 
-    return await execute_task(request, state.retriever, state.providers, state.settings)
+    return await execute_task(
+        request, state.retriever, state.providers, state.settings, state.gaps
+    )
 
 
 @app.post("/campaign", response_model=PlanResponse, tags=["reasoning"])

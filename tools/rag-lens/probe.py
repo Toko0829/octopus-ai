@@ -31,6 +31,7 @@ from octopus_ai.db import Database
 from octopus_ai.decompose import decompose
 from octopus_ai.providers import Providers
 from octopus_ai.retrieval import Retriever
+from octopus_ai.runtime import configure_torch_threads
 
 GOLDEN = Path(__file__).resolve().parents[2] / "services" / "ai" / "eval" / "golden.json"
 
@@ -50,6 +51,8 @@ def _golden_queries(which: str) -> list[str]:
 
 async def _run(args: argparse.Namespace) -> int:
     settings = get_settings()
+    # Runs the production path, which includes the production thread budget.
+    configure_torch_threads(settings)
     db = Database(settings)
     providers = Providers(settings)
 

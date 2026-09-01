@@ -80,6 +80,8 @@ Heavy ingestion runs as background jobs (the `apps/api` ticker today, pg-boss wh
 
    **The threshold is not a scope gate**, and cannot be made into one. It ranks chunks within the corpus; it does not decide whether the corpus covers the question. An in-vocabulary but uncovered question ("how do I run a webinar funnel") therefore clears it on **both** providers. See the measured bands in [rag-knowledge.md](../30-modules/rag-knowledge.md). That question is answered by step 7 instead.
 
+   **What the gate refuses is now recorded.** `retrieval_gaps` (`20260905120000`) appends one row per refusal: the core, the surface, the scrubbed question, the gate's own sentence naming what the sources lacked, and the nearest misses with their scores. Nothing in the request path reads it and the write is fire-and-forget. It exists because the corpus is 17 documents and 17,000 words and has been grown against a golden set its own author wrote: `--gate` reports "blocked 1.00 of scope negatives" as a pass, and those six scope negatives are six reasonable founder questions, which makes the green metric the gap list. See [rag-knowledge.md](../30-modules/rag-knowledge.md).
+
 7. **Groundedness gate** — one cheap-tier model call asking whether the surviving sources actually **answer** the goal, rather than how well they rank. Fails closed, judges the same sources block the planner receives, and runs before generation. This is the check the "Guarded generation" section below has always specified; until it existed, the drop-threshold was standing in for it and could not do the job. Spec and measurement in [rag-knowledge.md](../30-modules/rag-knowledge.md).
 
 ## Two corpora: reference knowledge + real outcomes
@@ -110,6 +112,8 @@ The knowledge base has two layers on the same pgvector infrastructure:
 
 - **Mandatory citations** on legal/tax/permit output, each with an **effective date**.
 - **Groundedness gate (live):** claims not supported by retrieved, in-date sources are flagged `unverified` and **cannot gate a legal action** — they escalate to a human node. Note the parenthetical this line used to carry, "or below similarity threshold", was wrong as a definition of the gate rather than merely incomplete: a similarity threshold ranks within the corpus and cannot tell you the corpus does not cover the question. That conflation is what let an in-vocabulary uncovered question through. Retrieval step 7 is the real check.
+- **Grounded, cited, current, or refused, with one scoped exception ([ADR-0021](../40-adr/0021-a-labelled-ungrounded-tier.md)).** A **non-regulated marketing** question that the gate judges uncovered may be answered from general practice, labelled as uncited, if and only if retrieval returned chunks (so the question is in-domain) and the goal matches none of the regulated patterns in `ungrounded.is_regulated`. Such an answer is `grounded=False` with no citations and **cannot propose a plan**, so it cannot become a task DAG and cannot gate spending or publishing. Legal, tax and permit output is untouched: rule 10's citation mandate and rule 11's human escalation apply exactly as before.
+
 - **Injection quarantine:** all retrieved content is untrusted **data**, never instructions.
 - **Multi-tenant isolation:** retrieval respects RLS; no cross-tenant leakage.
 

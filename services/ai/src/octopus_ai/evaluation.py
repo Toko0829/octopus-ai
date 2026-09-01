@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .retrieval import RetrievalResult, Retriever
+from .runtime import configure_torch_threads
 
 GOLDEN_PATH = Path(__file__).resolve().parents[2] / "eval" / "golden.json"
 
@@ -581,6 +582,12 @@ async def _run(shard: int = 1, shards: int = 1, out: Path | None = None) -> int:
     from .providers import Providers
 
     settings = get_settings()
+    # The eval is the most CPU-bound thing in this repository: reranking is N
+    # forward passes per query and a run is dozens of queries. This used to be
+    # called only from the FastAPI lifespan, so every eval run ignored
+    # TORCH_NUM_THREADS and took torch's own default, including in CI, where the
+    # job runs this module directly rather than the container that sets it.
+    configure_torch_threads(settings)
     db = Database(settings)
     providers = Providers(settings)
     retriever = Retriever(settings, db, providers)
@@ -660,6 +667,12 @@ async def _run_gate() -> int:
     from .providers import Providers
 
     settings = get_settings()
+    # The eval is the most CPU-bound thing in this repository: reranking is N
+    # forward passes per query and a run is dozens of queries. This used to be
+    # called only from the FastAPI lifespan, so every eval run ignored
+    # TORCH_NUM_THREADS and took torch's own default, including in CI, where the
+    # job runs this module directly rather than the container that sets it.
+    configure_torch_threads(settings)
     db = Database(settings)
     providers = Providers(settings)
     retriever = Retriever(settings, db, providers)
@@ -747,6 +760,12 @@ async def _run_plan_eval() -> int:
     from .schemas import PlanRequest, TraceContext
 
     settings = get_settings()
+    # The eval is the most CPU-bound thing in this repository: reranking is N
+    # forward passes per query and a run is dozens of queries. This used to be
+    # called only from the FastAPI lifespan, so every eval run ignored
+    # TORCH_NUM_THREADS and took torch's own default, including in CI, where the
+    # job runs this module directly rather than the container that sets it.
+    configure_torch_threads(settings)
     db = Database(settings)
     providers = Providers(settings)
     retriever = Retriever(settings, db, providers)

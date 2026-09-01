@@ -6,6 +6,169 @@
 >
 > The full engineering spec lives in [rag.md](../10-architecture/rag.md); this module doc is the operational/domain view. Update both on any ingestion/retrieval/model/eval change.
 
+## The corpus was 17,000 words, and the refusals were it telling the truth
+
+Measured on the live corpus rather than estimated, before and after the
+deepening below:
+
+|                    | Docs | Chunks before | Chunks after |    Words before |     Words after |
+| ------------------ | ---: | ------------: | -----------: | --------------: | --------------: |
+| Internal playbooks |   13 |            64 |      **145** |       **7,443** |      **20,946** |
+| Crawled            |    4 |            35 |           35 | ~10K, unchanged | ~10K, unchanged |
+
+Seventeen thousand words was about twenty pages for the whole of full-funnel
+marketing, and the half the product actually reasons with was 7,443 of them. The
+individual documents ran 364 to 802 words. `paid-ads-cpa-control` was 492 words
+and contained no numbers, no step sequence and no worked example.
+
+**So the refusals were the system telling the truth, and every gate was working
+exactly as specified.** The dominant refusal path is not the drop threshold,
+which at 0.0013 is low enough that retrieval almost always returns something. It
+is the groundedness gate asking _"could you write concrete steps for this goal
+quoting only these sources?"_ Against a 500-word principles document, the honest
+answer is often no, **even for the document's own topic**. That is what decided
+where the fix went.
+
+### Deepening, rather than widening, and why that order
+
+Every document was taken to between 1,300 and 1,900 words. No new titles, no new
+topics, no new stages: `golden.json` is keyed on document title and every title is
+byte-identical, so the set still points at the same documents it always did.
+
+**Deepening spends less of the margin than widening does.** ADR-0009's 1.76x is
+not headroom, and this doc already records that each corpus addition consumes
+some of it. But the leaks it records were all caused by documents written in
+_general_ marketing vocabulary: Meta's 25-chunk policy hub became a magnet for
+every marketing-adjacent query, and the referral document leaked `neg-car-licence`
+by talking about incentives in general rather than about affiliates. A document
+that says more about its own subject adds specific chunks, which compete for
+their own topic and not for everything.
+
+**What was added is the shape the gate tests for.** Ordered diagnostics ("when
+the cost per acquisition is too high", worked down in the order the causes are
+actually likely), sequences with a decision calendar, arithmetic worked through
+in units, failure shapes named, and the sub-questions each topic actually
+attracts. Those are what turn "could you write concrete steps quoting only these
+sources" from a marginal true into a confident one.
+
+**The standing corpus rule was not relaxed.** No platform is named anywhere, no
+current fee level, character limit or ad format is quoted, and no benchmark is
+asserted. Worked examples are denominated in units, which is the convention the
+corpus already used. That is what keeps `scope-ga4-tracking` and `scope-ad-specs`
+valid scope negatives, and it is checked: a grep for analytics, ad-platform and
+affiliate-network vendor names across all thirteen documents returns nothing.
+
+**All five golden negatives were probed first, before the full gate**, because
+they are the zero-tolerance half and corpus growth is exactly what threatens
+them. All five still return nothing, and the closest is `neg-payroll` at 0.001007,
+which is **0.77x** the threshold. `neg-car-licence`, the one that has leaked
+before, sits at 0.74x.
+
+### The full gate on the grown corpus: PASS
+
+35 cases, five shards, merged once over the whole set:
+
+| Metric                     | Before (99 chunks) | After (180 chunks) |           |
+| -------------------------- | -----------------: | -----------------: | --------- |
+| positive recall (min 0.80) |               1.00 |           **1.00** | gate      |
+| negative leaks (max 0)     |                  0 |              **0** | gate      |
+| coverage                   |               0.97 |               0.98 | not gated |
+| MRR                        |               0.86 |               0.83 | not gated |
+
+All 30 positives hit and all 5 negatives returned nothing. **Both gate thresholds
+held**; the two numbers that moved are the two this doc already records as
+non-deterministic, and 0.83 sits at the bottom of the observed 0.83 to 0.95 band
+rather than outside it.
+
+**The MRR movement is explainable rather than merely inside the noise, and the
+explanation is the expected cost of the change.** Three cases now hit at rank 8,
+20 and 24 (`vocab-subscribers`, `meas-vanity`, `vocab-mrr`) where the corpus
+previously had less to say. With 145 internal chunks instead of 64, the expected
+document has far more competition from documents that are now genuinely about
+adjacent things, so the single best chunk sits further down a list the planner
+reads in full. That is the same trade decomposition made when it took MRR 0.95 to
+0.76 in exchange for coverage, and it is recorded here for the same reason: as a
+cost, not a free win.
+
+**Wall clock, and it contradicts the figure recorded above.** Five shards at
+**11 to 15 minutes each, 65 minutes in total** on a 16-thread developer machine,
+against the **~43 minutes per 7-case shard** this document recorded on a
+developer machine on 2026-08-28. Same harness, same shard size, a corpus that has
+since grown, and a third of the time.
+
+**No cause has been isolated and the gap is left standing rather than
+explained.** The likeliest reading is in this document's own account of that run:
+the 43-minute figure was taken while two full runs were dying on transient
+Supabase drops that `db.py` retried three times with backoff, so retry stalls
+would have been counted as compute. That is a hypothesis, not a measurement, and
+the two numbers are both kept until somebody times a clean run against a slow
+one deliberately.
+
+**CI's bound is unaffected and should not be lowered.** [infra-devops.md](infra-devops.md)
+sized `timeout-minutes` at 40 against **CI's own** measured 13m54s and 19m14s,
+not against the developer figure, and those sit alongside the 11 to 15 minutes
+here. Runner hardware varies about two-fold per call and a case's cost depends on
+how many sub-queries decomposition returns at run time, so the headroom is the
+point.
+
+**Two things about the eval follow from this, and neither is a defect in it.**
+`--gate` reports "blocked 1.00 of scope negatives" as a PASS, and those six scope
+negatives are webinar funnels, GA4 conversion tracking, app-store ranking,
+Facebook ad specs, influencer platforms and affiliate networks. Every one is a
+reasonable thing for a founder to ask. **The metric reading green is the gap
+list.** And nothing in the system measures coverage of the real question space, so
+no number gets worse when the corpus is too thin, which is how it drifted while
+every gate stayed green.
+
+### `retrieval_gaps`: the ranked queue, replacing the author's intuition
+
+`planner.py` has always split a refusal three ways, and the split is
+load-bearing. All three then went to stdout and nowhere else, so the corpus has
+been grown against a golden set its own author wrote, with a hand-written list of
+six known gaps beside it.
+
+`20260905120000_retrieval_gaps.sql` keeps them. One row per refusal: which of the
+three cores, which surface, the question, **the groundedness gate's own sentence
+naming what the sources lacked**, and the nearest misses with the scores that
+decided them. Schema and the reasoning behind each column in
+[data-model.md](../10-architecture/data-model.md); the module halves are
+`gaps.py` and `redact.py`.
+
+Four properties, each of which is a way it could have been done wrong:
+
+- **The `reason` column is the most useful thing in it.** The gate prompt already
+  requires a false verdict to name the specific thing the sources lack, and to
+  answer true if it cannot be named. So this is a model that has read the sources
+  saying what was missing from them, per refusal, for free.
+- **Only the corpus signals are recorded.** A retrieval call that raised and a
+  generation that came back unusable both produce a refusal the user sees, and
+  neither says anything about coverage; a ledger that mixes them is one whose
+  counts cannot be read. Those two have logs and Sentry. `refusing-unverified-v1`
+  **is** recorded despite not being an ingest signal, because when refusals spike
+  the first question is whether coverage collapsed or the gate went down, and
+  answering that from a table holding only one of the two means guessing. Read
+  the queue with `core <> 'refusing-unverified-v1'`.
+- **It cannot hurt the request it is recording.** The write is scheduled rather
+  than awaited and swallows its own failures. `Database._request` retries three
+  times with backoff against a 60-second timeout, so a bad minute at PostgREST
+  could otherwise add minutes to a request whose entire content is "no". A lost
+  row costs nothing: it is one sample of a signal that only means anything in
+  aggregate.
+- **The goal is scrubbed, and deliberately not stripped.** `redact.scrub` removes
+  emails, URLs, phone numbers and long digit runs (rule 8), in one place so no
+  call site can forget. It leaves the audience and product noun, which is the
+  **opposite** trade from `intake.strip_particulars` and for a reason that comes
+  from what happens when each is wrong: that function is conservative toward
+  keeping text, because an over-stripped query retrieves nothing and an empty
+  query is unrecoverable; this one is conservative toward removing it, because
+  over-redaction costs a rare word in an ops table and under-redaction stores an
+  identifier. The visible cost is accepted and pinned by tests: `Next.js` becomes
+  `[url]`, while a budget range like `1000 - 2000` survives on a nine-digit floor
+  that exists precisely to protect it.
+
+**There is no `resolved` column.** A gap is closed when the question stops being
+refused, which is measured rather than asserted.
+
 ## The corpus decides which words work, and that is now fixed from both ends
 
 Retrieval is sensitive to the exact metric word, and the margin is what makes it so. Two phrasings of one intent against the same corpus, measured before the fix:
@@ -174,7 +337,7 @@ Stored as `authority: vendor`, `doc_type: user-source`. No new authority value: 
 - Serve grounded, cited retrieval to the agent, **preferring real outcomes** ("what worked for customers like this") as they accrue.
 - Run the outcome-ingestion side of the [learning flywheel](../10-architecture/learning-flywheel.md).
 
-> **Implementation status (Phase 1):** ingestion and hybrid retrieval are live in `services/ai`. Schema in `20260728210000_rag_schema.sql`, RRF fusion in `public.hybrid_search`. A **thirteen-document** seed corpus lives in `services/ai/corpus/` for the US market, covering all six funnel stages. Seed or re-seed with `uv run --directory services/ai python -m octopus_ai.seed`; re-running is a no-op unless a document, the chunker, or the embedding model changed, so a vocabulary edit re-embeds only the documents that changed.
+> **Implementation status (Phase 1):** ingestion and hybrid retrieval are live in `services/ai`. Schema in `20260728210000_rag_schema.sql`, RRF fusion in `public.hybrid_search`. A **thirteen-document** seed corpus lives in `services/ai/corpus/` for the US market, covering all six funnel stages, at **145 chunks and ~21,000 words** since the deepening recorded above. Chunk counts per document run roughly 8 to 14, because structure-first chunking splits on headings and the sections were written to be one idea each. Seed or re-seed with `uv run --directory services/ai python -m octopus_ai.seed`; re-running is a no-op unless a document, the chunker, or the embedding model changed, so a vocabulary edit re-embeds only the documents that changed.
 >
 > Corpus coverage against the six funnel stages in [marketing-growth-engine.md](marketing-growth-engine.md). **All six are now covered**; measurement was the standing gap and is closed:
 >
@@ -379,6 +542,51 @@ Five properties it depends on, each of which is a way it could quietly stop work
 - **A refusal names its own reason.** `refusing-v0` (nothing retrieved), `refusing-ungrounded-v1` (retrieved, judged not to answer) and `refusing-unverified-v1` (check could not run) are separate cores because they mean different things: the first two are corpus signals that should drive what gets ingested next, the third is an operational signal that should page someone. Collapsing them would make a provider outage look like a coverage gap on the same dashboard. It also keeps the **copy honest**: a user whose question is covered must never be told it is out of scope because a call failed, which is the same class of defect this refusal copy already had once.
 - **Partial coverage is still supported.** The gate asks whether the sources address what was asked, not whether they address all of it. The plan card is built to render empty stages, so demanding total coverage would refuse the product's own north-star goal.
 - **It blocks before generation, not after.** A plan that is written and then discarded has already cost the call, and the discarded text is one refactor away from being shown.
+
+### The labelled ungrounded tier, for when the gate says no
+
+[ADR-0021](../40-adr/0021-a-labelled-ungrounded-tier.md). The gate's verdict is
+unchanged; what happens after an `unsupported` verdict is not. Where the tier is
+on, the question is answered from general practice, labelled, uncited, and unable
+to propose a plan. Where it declines, the refusal is exactly what it was.
+
+**The boundary is the safety argument**, and it works because the two checks
+answer different questions. The rerank threshold is a **domain** check: it ranks
+within the corpus, so an out-of-domain question clears nothing, which is why
+`refusing-v0` stays a refusal and why the golden negatives are still defended. The
+gate is a **coverage** check: `unsupported` means the corpus talked and missed.
+The tier fires only where domain is yes and coverage is no.
+`refusing-unverified-v1` is excluded separately, because a provider outage must
+not change the product's posture on the days nobody is watching.
+
+**It cannot propose a plan, and that is the enforcement rather than a
+convention.** It emits a `post_message` and nothing else. A `propose_plan`
+proposal is what Node materialises into a project and a task DAG, and a task DAG
+is what spends money and publishes things. Prose in a room cannot become a step,
+so rule 7 is satisfied by the shape of the return value.
+
+**Regulated topics are excluded in code**, in two families: the regulated acts
+themselves (legal, tax, permit, immigration, medical, financial advice) and the
+regulated corners _inside_ marketing, which is the half most easily missed.
+Advertising disclosure, privacy and consent law, claims substantiation and the
+sector rules are all marketing questions and all in-domain, which is exactly why a
+confident uncited answer there is the harm rule 10 describes.
+
+**The label is written by the code**, not requested from the model, for the reason
+this doc has now recorded four times about prompt-level dispositions.
+
+**Every ungrounded answer lands in `retrieval_gaps` beside the refusals**, because
+it is the same signal with a different response. Read the ingest queue as every
+core except `refusing-unverified-v1`. A rising share of `ungrounded-general-v1`
+means the tier is working and the corpus is not keeping up, which is a number to
+act on rather than to report.
+
+**What this does to `--gate`, stated rather than discovered later.** The pass
+scores block rate over `scope_negatives`, and those questions now reach the tier
+rather than a refusal. The gate itself is unchanged and still zero-tolerance: it
+decides whether the corpus supports the goal, and it still says no. What has
+changed is that the gate's verdict and the product's final answer are no longer
+the same event, and the metric measures the verdict.
 
 ### Measuring it
 
