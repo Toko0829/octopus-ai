@@ -268,6 +268,22 @@ class Database:
         await self._request("POST", "/rest/v1/doc_chunks", json=chunks)
         return len(chunks)
 
+    # ----------------------------------------------------------- the ledger --
+
+    async def insert_retrieval_gap(self, row: dict) -> None:
+        """Append one refusal to `retrieval_gaps`.
+
+        No `Prefer: return=representation`: nothing reads the row back, and asking
+        PostgREST to render it would make the response body larger than the
+        request for a write whose caller has already stopped waiting.
+
+        The table grants this role INSERT and SELECT and nothing else, so a bug
+        here can add a bad row and can never rewrite a good one. That is the same
+        append-only posture `campaign_outcomes` and `events` take, for the same
+        reason: evidence that can be edited after the fact is not evidence.
+        """
+        await self._request("POST", "/rest/v1/retrieval_gaps", json=row)
+
     async def count_chunks(self) -> int:
         rows = await self._request(
             "GET", "/rest/v1/doc_chunks", params={"select": "id", "limit": "1"}

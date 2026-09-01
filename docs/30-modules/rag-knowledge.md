@@ -6,6 +6,55 @@
 >
 > The full engineering spec lives in [rag.md](../10-architecture/rag.md); this module doc is the operational/domain view. Update both on any ingestion/retrieval/model/eval change.
 
+### `retrieval_gaps`: the ranked queue, replacing the author's intuition
+
+`planner.py` has always split a refusal three ways, and the split is
+load-bearing. All three then went to stdout and nowhere else, so the corpus has
+been grown against a golden set its own author wrote, with a hand-written list of
+six known gaps beside it.
+
+`20260905120000_retrieval_gaps.sql` keeps them. One row per refusal: which of the
+three cores, which surface, the question, **the groundedness gate's own sentence
+naming what the sources lacked**, and the nearest misses with the scores that
+decided them. Schema and the reasoning behind each column in
+[data-model.md](../10-architecture/data-model.md); the module halves are
+`gaps.py` and `redact.py`.
+
+Four properties, each of which is a way it could have been done wrong:
+
+- **The `reason` column is the most useful thing in it.** The gate prompt already
+  requires a false verdict to name the specific thing the sources lack, and to
+  answer true if it cannot be named. So this is a model that has read the sources
+  saying what was missing from them, per refusal, for free.
+- **Only the corpus signals are recorded.** A retrieval call that raised and a
+  generation that came back unusable both produce a refusal the user sees, and
+  neither says anything about coverage; a ledger that mixes them is one whose
+  counts cannot be read. Those two have logs and Sentry. `refusing-unverified-v1`
+  **is** recorded despite not being an ingest signal, because when refusals spike
+  the first question is whether coverage collapsed or the gate went down, and
+  answering that from a table holding only one of the two means guessing. Read
+  the queue with `core <> 'refusing-unverified-v1'`.
+- **It cannot hurt the request it is recording.** The write is scheduled rather
+  than awaited and swallows its own failures. `Database._request` retries three
+  times with backoff against a 60-second timeout, so a bad minute at PostgREST
+  could otherwise add minutes to a request whose entire content is "no". A lost
+  row costs nothing: it is one sample of a signal that only means anything in
+  aggregate.
+- **The goal is scrubbed, and deliberately not stripped.** `redact.scrub` removes
+  emails, URLs, phone numbers and long digit runs (rule 8), in one place so no
+  call site can forget. It leaves the audience and product noun, which is the
+  **opposite** trade from `intake.strip_particulars` and for a reason that comes
+  from what happens when each is wrong: that function is conservative toward
+  keeping text, because an over-stripped query retrieves nothing and an empty
+  query is unrecoverable; this one is conservative toward removing it, because
+  over-redaction costs a rare word in an ops table and under-redaction stores an
+  identifier. The visible cost is accepted and pinned by tests: `Next.js` becomes
+  `[url]`, while a budget range like `1000 - 2000` survives on a nine-digit floor
+  that exists precisely to protect it.
+
+**There is no `resolved` column.** A gap is closed when the question stops being
+refused, which is measured rather than asserted.
+
 ## The corpus decides which words work, and that is now fixed from both ends
 
 Retrieval is sensitive to the exact metric word, and the margin is what makes it so. Two phrasings of one intent against the same corpus, measured before the fix:

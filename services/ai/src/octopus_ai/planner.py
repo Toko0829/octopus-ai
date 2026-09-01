@@ -68,7 +68,11 @@ RefusalReason = Literal["no_sources", "unsupported", "unverified"]
 # signals that should drive what gets ingested next; "could not verify" is an
 # operational signal that should page someone. Collapsing them would make a
 # provider outage look like a coverage gap on the same dashboard.
-_REFUSAL_CORES: dict[str, str] = {
+#
+# Public because `gaps.py` records the core alongside the refusal and the two must
+# agree: a ledger row whose core does not match what the user was told is a row
+# that cannot be traced back to the request that produced it.
+REFUSAL_CORES: dict[str, str] = {
     "no_sources": REFUSING_CORE,
     "unsupported": REFUSING_UNGROUNDED_CORE,
     "unverified": REFUSING_UNVERIFIED_CORE,
@@ -257,7 +261,7 @@ def refuse(
         grounded=False,
         citations=[],
         reasoning_summary=summary,
-        core=_REFUSAL_CORES[reason],
+        core=REFUSAL_CORES[reason],
     )
 
 

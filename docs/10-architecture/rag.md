@@ -80,6 +80,8 @@ Heavy ingestion runs as background jobs (the `apps/api` ticker today, pg-boss wh
 
    **The threshold is not a scope gate**, and cannot be made into one. It ranks chunks within the corpus; it does not decide whether the corpus covers the question. An in-vocabulary but uncovered question ("how do I run a webinar funnel") therefore clears it on **both** providers. See the measured bands in [rag-knowledge.md](../30-modules/rag-knowledge.md). That question is answered by step 7 instead.
 
+   **What the gate refuses is now recorded.** `retrieval_gaps` (`20260905120000`) appends one row per refusal: the core, the surface, the scrubbed question, the gate's own sentence naming what the sources lacked, and the nearest misses with their scores. Nothing in the request path reads it and the write is fire-and-forget. It exists because the corpus is 17 documents and 17,000 words and has been grown against a golden set its own author wrote: `--gate` reports "blocked 1.00 of scope negatives" as a pass, and those six scope negatives are six reasonable founder questions, which makes the green metric the gap list. See [rag-knowledge.md](../30-modules/rag-knowledge.md).
+
 7. **Groundedness gate** — one cheap-tier model call asking whether the surviving sources actually **answer** the goal, rather than how well they rank. Fails closed, judges the same sources block the planner receives, and runs before generation. This is the check the "Guarded generation" section below has always specified; until it existed, the drop-threshold was standing in for it and could not do the job. Spec and measurement in [rag-knowledge.md](../30-modules/rag-knowledge.md).
 
 ## Two corpora: reference knowledge + real outcomes

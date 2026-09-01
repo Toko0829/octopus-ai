@@ -10,6 +10,62 @@
 >
 > **The same ad-hoc applies left the recorded versions drifted from the filenames**, which `supabase/README.md` warned about and which nothing checked. Six rows carried tool-generated timestamps, so `supabase db push` would have replayed five migrations that had already run. Corrected by matching on the `name` column, never on timing, and by `UPDATE` rather than delete-and-insert so `statements`, `created_by` and `idempotency_key` survive: the version was wrong, the record of what ran was not. The README now carries the two-command audit that detects it, because both halves look healthy in isolation and only the comparison shows the gap.
 
+### The refusals get written down (`20260905120000_retrieval_gaps.sql`)
+
+**One table, no new capability, and the point of it is that the corpus has been
+grown blind.** `planner.py` has split a refusal three ways since the groundedness
+gate landed, and the split is load-bearing: "nothing retrieved" and "retrieved but
+off-target" are corpus signals that should drive what gets ingested next, while
+"could not verify" is an operational signal that should page someone. All three
+then went to stdout and nowhere else. So the one artefact that would say what
+people actually ask and do not get has never existed, and every corpus decision
+so far has been the author's intuition measured against a golden set the same
+author wrote.
+
+The measurement that argues for it is in
+[rag-knowledge.md](../30-modules/rag-knowledge.md): the shared corpus is 17
+documents and 99 chunks, and `--gate` reports "blocked 1.00 of scope negatives"
+as a **pass** over six questions any founder might reasonably ask. The metric
+reading green is the gap list, and it is a gap list of six entries written by
+hand.
+
+**Not folded into `events`.** That table is the DAG's audit trail: it requires
+`subject_id uuid not null` and hangs off `project_id`. A refusal has neither,
+because it happens before any project exists and its subject is a sentence
+somebody typed. Forcing it in would mean a synthetic subject id pointing at
+nothing, which is how an audit trail stops being readable.
+
+**Append-only including for `service_role`**, following `campaign_outcomes` and
+`events` rather than `feedback_events`, which states the intent in a comment and
+grants everything anyway. `TRUNCATE` is revoked with `UPDATE` and `DELETE` for the
+reason recorded under the RLS policy model: `grant all` includes it, it is not
+row-level, and it ignores RLS.
+
+**There is deliberately no `resolved` column.** A gap is closed when the same
+question stops being refused, which is a thing to measure rather than a thing to
+assert. A boolean somebody ticks after ingesting a document records the intention
+to fix it, not the fix.
+
+**One CHECK does real work:** `(core = 'refusing-v0') = (chunks_retrieved = 0)`.
+Those two counts are what every query against this table groups by, and the
+distinction they carry — the corpus was silent, versus the corpus talked and
+missed — is the whole reason it exists. A writer that gets it wrong makes the
+table quietly lie rather than error, so the database refuses instead.
+
+**One advisor lint is added and it is the design**, the same sentence the
+marketplace slice earned: `rls_enabled_no_policy` (INFO) on `retrieval_gaps`,
+beside the standing entries for `events`, `ledger_entries`, `plan_diffs`,
+`node_verifications` and `channel_connections`. RLS on, no policy, no client
+grant **is** the control here. There is nothing in this table for a user: they
+have already been told, in the refusal itself, that their question was not
+covered, and one room's phrasing of a question is not another room's business.
+
+**Verified by a rolled-back dry run against the live database** (there is no local
+Supabase): both inserts landed, all three CHECK violations fired, and the
+privileges came back `service_role` insert/select true, update/delete false,
+`authenticated` select false. Applied afterwards and the recorded version
+corrected to match the filename, per `supabase/README.md`'s audit.
+
 ### Threads, and `scope` stops being decorative (`20260901120000` … `20260901123000`)
 
 **Zero new capability, for the second slice running.** No route, no writer, no
@@ -945,6 +1001,7 @@ campaign`). Setting it authorises the automatic pause
 | `doc_chunks`                   | `id`, `document_id`, `parent_id`, `chunk_text`, `context_prefix`, `embedding halfvec(1024)`, `fts tsvector` (generated), `metadata` JSONB, `embed_model` |
 | `suppliers`, `cost_benchmarks` | **typed rows**, not prose chunks (structured retrieval)                                                                                                  |
 | `eval_golden_set`              | `id`, `query`, `expected`, `jurisdiction`                                                                                                                |
+| `retrieval_gaps`               | `id`, `core`, `surface`, `goal` (scrubbed), `reason`, `candidates_considered`, `chunks_retrieved`, `top_sources` JSONB, `room_id`, `created_at`          |
 
 **Indexes:** HNSW on `doc_chunks.embedding` (`halfvec_cosine_ops`, `m=16`, `ef_construction=200`), GIN on `fts`, partial btree on filter columns (`market`, `business_type`, `doc_type`) and on `(valid_from, valid_to)`.
 
@@ -953,6 +1010,7 @@ Details worth knowing before touching this schema:
 - **`fts` is a generated column with a per-row language.** `to_tsvector(regconfig, text)` is `IMMUTABLE` (unlike the single-argument form), which is what allows the config to come from the row's own `lang` column. That keeps sparse retrieval multilingual with no trigger to maintain.
 - **`doc_chunks.owner_project_id` is denormalised** from `documents` by a trigger. It exists so the tenant predicate on the hot retrieval path is a plain column test rather than a join or a per-row function call. Never write it from application code.
 - **Tenant-scoped rows are denied to clients, not guessed at.** `owner_project_id is null` (the shared reference corpus) is all `authenticated` may read. There is no projects/membership table yet, so there is nothing to check ownership against, and defaulting to visible would be a leak waiting for the flywheel to populate that column. Widen the policy in the same migration that adds projects.
+- **`retrieval_gaps` is the corpus's own feedback loop and holds no vectors.** It sits in the RAG schema because it is read while deciding what to ingest, not because retrieval touches it. Nothing in the request path reads it, the AI service only ever inserts, and the write is fire-and-forget so a bad minute at PostgREST cannot slow a refusal. `goal` is scrubbed of emails, URLs, phone numbers and long digit runs (`redact.scrub`) before it is stored, because rule 8 keeps PII out of logs and the index and a new store does not get a new posture. It is deliberately **not** stripped of the audience or product noun, which is the opposite trade from `intake.strip_particulars` and for a stated reason: a ledger whose rows all read "how do I get more [redacted] for my [redacted]" records that something was refused and nothing about what.
 - **`hnsw.ef_search` and `hnsw.iterative_scan` are set at runtime** inside `hybrid_search` via `set_config(..., is_local => true)`, not in the function's `SET` clause. Postgres validates that clause at `CREATE` time and `postgres` is not superuser on Supabase, so the clause form fails with "permission denied to set parameter". `iterative_scan` matters specifically because retrieval applies hard filters: without it the HNSW scan returns its k nearest and the `WHERE` then discards most of them, silently under-filling the candidate list.
 
 ## RLS policy model

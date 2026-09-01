@@ -23,13 +23,21 @@ from .config import ConfigError, Settings, get_settings
 from .db import Database
 from .decompose import decompose
 from .executor import execute_task
+from .gaps import GapLedger
 from .groundedness import assess
 from .ingestion import Ingestor
 from .intake import run_intake
-from .planner import build_sources_block, plan_grounded, refuse
+from .planner import (
+    REFUSAL_CORES,
+    REFUSING_CORE,
+    RefusalReason,
+    build_sources_block,
+    plan_grounded,
+    refuse,
+)
 from .providers import Providers
 from .replan import replan
-from .retrieval import Retriever
+from .retrieval import RetrievalResult, Retriever
 from .schemas import (
     ExecuteRequest,
     IngestRequest,
@@ -134,9 +142,38 @@ class _State:
     db: Database | None = None
     providers: Providers | None = None
     retriever: Retriever | None = None
+    gaps: GapLedger | None = None
 
 
 state = _State()
+
+
+def _record_gap(
+    request: PlanRequest,
+    core: str,
+    retrieval: RetrievalResult | None,
+    *,
+    detail: str = "",
+) -> None:
+    """Note a refusal in the ledger, if the ledger is up.
+
+    Returns immediately; `GapLedger.record` schedules the write and swallows its
+    own failures. The `is None` guard is for the tests that call these endpoints
+    without a lifespan, where the absence of a ledger must not be the difference
+    between a passing and a failing assertion about refusal copy.
+    """
+    if state.gaps is None:
+        return
+    state.gaps.record(
+        core=core,
+        surface="plan",
+        goal=request.goal,
+        retrieval=retrieval,
+        reason=detail,
+        room_id=request.room_id,
+        project_id=request.trace.project_id,
+        agent_run_id=request.trace.agent_run_id,
+    )
 
 
 @asynccontextmanager
@@ -158,6 +195,7 @@ async def lifespan(_: FastAPI):
     state.db = Database(settings)
     state.providers = Providers(settings)
     state.retriever = Retriever(settings, state.db, state.providers)
+    state.gaps = GapLedger(state.db)
 
     # Load the local embedder now, while nothing is waiting on it. bge-m3 takes
     # seconds and a couple of GB to come up, and paying that on the first request
@@ -314,6 +352,11 @@ async def plan(request: PlanRequest) -> PlanResponse:
         return refuse(request)
 
     if not retrieval.grounded:
+        # Recorded, and the exception path above deliberately is not. A retrieval
+        # that raised says nothing about coverage; a retrieval that returned
+        # nothing above the threshold says the corpus is silent here, which is the
+        # signal this table exists to accumulate. See `gaps.py`.
+        _record_gap(request, REFUSING_CORE, retrieval)
         return refuse(request, retrieval)
 
     # The groundedness gate (rule 10). Retrieval has told us which chunks rank
@@ -340,12 +383,16 @@ async def plan(request: PlanRequest) -> PlanResponse:
                     "chunks": len(retrieval.chunks),
                 },
             )
-            return refuse(
-                request,
-                retrieval,
-                reason="unsupported" if verdict.outcome == "unsupported" else "unverified",
-                detail=verdict.reason,
+            reason: RefusalReason = (
+                "unsupported" if verdict.outcome == "unsupported" else "unverified"
             )
+
+            # `verdict.reason` is the most useful column in the ledger: the gate
+            # prompt requires a false answer to name the specific thing the sources
+            # lack, so this is a model that has read the sources saying what was
+            # missing from them.
+            _record_gap(request, REFUSAL_CORES[reason], retrieval, detail=verdict.reason)
+            return refuse(request, retrieval, reason=reason, detail=verdict.reason)
 
     try:
         return await plan_grounded(request, retrieval, state.providers, state.settings)
@@ -379,7 +426,9 @@ async def execute(request: ExecuteRequest) -> PlanResponse:
 
     assert state.retriever and state.providers and state.settings  # set in lifespan
 
-    return await execute_task(request, state.retriever, state.providers, state.settings)
+    return await execute_task(
+        request, state.retriever, state.providers, state.settings, state.gaps
+    )
 
 
 @app.post("/campaign", response_model=PlanResponse, tags=["reasoning"])
