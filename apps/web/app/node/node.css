@@ -343,6 +343,93 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- Rating the client, and contesting a rejection ----
+
+   Both are the node's half of controls the owner has on the project panel, and
+   both are deliberately quiet: rating sits inline on a finished row rather than
+   as a card, because it is a small thing asked once, and disputing sits beside
+   "pick this back up" rather than instead of it, because picking the work back
+   up is usually the right answer. */
+
+.node-history-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.node-history-rated {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.node-stars {
+  display: inline-flex;
+  gap: 3px;
+}
+
+/* Numbers rather than glyph shapes, so a screen reader announces a rating
+   instead of counting stars and the pressed state does not rely on a fill. */
+.node-star {
+  appearance: none;
+  min-width: 26px;
+  padding: 2px 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-state),
+    color var(--dur-fast) var(--ease-state);
+}
+
+.node-star:hover:not(:disabled) {
+  background: var(--state-hover);
+  color: var(--text);
+}
+
+.node-star[aria-pressed='true'] {
+  background: var(--state-selected);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.btn-small {
+  padding: 2px 10px;
+  font-size: var(--text-xs);
+}
+
+/* A dispute freezes both sides, so the consequence is stated before the click.
+   Amber is "this needs attention" and the sentence carries it alone. */
+.node-dispute {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.node-input {
+  width: 100%;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text);
+  resize: vertical;
+}
+
+.node-dispute .node-note {
+  color: var(--warn);
+}
+
 /* ---- The engagement thread ----
 
    Indented inside its engagement card rather than promoted to its own card,

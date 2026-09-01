@@ -5,6 +5,8 @@ import type {
   NodeEngagement,
   NodeOffer,
   NodeProfile,
+  OpsDisputeSummary,
+  OpsIdentity,
   Room,
   RoomMember,
 } from '@octopus/contracts';
@@ -88,4 +90,28 @@ export function fetchNodeOffers() {
  */
 export function fetchNodeEngagements() {
   return get<{ engagements: NodeEngagement[] }>('/node/engagements');
+}
+
+/**
+ * Whether the caller is an operator.
+ *
+ * **The gate for `/ops`, and it is a server round trip on purpose.** Being an
+ * operator is `profiles.role`, which the session cookie does not carry and the
+ * JWT does not either: `apps/api/src/plugins/auth.ts` maps an unrecognised claim
+ * to `'user'`, and Supabase mints `role = 'authenticated'`, so nothing reaching
+ * the browser knows this. The API reads the column with the service key behind
+ * its own check, and this asks it.
+ *
+ * Null on 403 as well as on failure, folded by `get` without logging a 403 as an
+ * incident. The page treats both the same way — a redirect rather than a
+ * message — because whether an ops surface exists is not something to confirm to
+ * somebody who may not use it.
+ */
+export function fetchOpsIdentity() {
+  return get<OpsIdentity>('/ops/me');
+}
+
+/** The operator's queue. Open disputes oldest-first; see the route for why. */
+export function fetchOpsDisputes(status: 'open' | 'resolved' = 'open') {
+  return get<{ disputes: OpsDisputeSummary[] }>(`/ops/disputes?status=${status}`);
 }

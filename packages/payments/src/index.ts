@@ -65,7 +65,7 @@ export {
   type LedgerEntry,
 } from './ledger';
 
-export { escrowKey, payoutKey, refundKey } from './keys';
+export { disputeReleaseKey, escrowKey, payoutKey, refundKey } from './keys';
 
 export {
   PaymentError,

@@ -129,16 +129,25 @@ old. **One arc is mapped:**
 | From      | To       | Made by                                                                 |
 | --------- | -------- | ----------------------------------------------------------------------- |
 | `pending` | `paid`   | `public.settle_payout`, once the provider has answered with a reference |
-| `pending` | `failed` | **nobody, and deliberately not.** See below                             |
+| `pending` | `failed` | `public.resolve_dispute`, and **only** it. See below                    |
 
-**`failed` is in the check constraint and out of the map**, which is exactly the
-shape `released` had one table over until this slice closed it — and here the
-absence is argued rather than pending. Nothing in this codebase decides that a
-payout for work an owner has already approved will never happen: every failure
-retries at tick cadence and is logged loudly. A terminal row against work somebody
-did, in a build with no ops console that could un-terminal it, is the worse
-outcome. Its producer is that console, with a person behind it
-([admin-ops.md](admin-ops.md), Phase 3).
+**`failed` was in the check constraint and out of the map for the length of slice
+7**, which is exactly the shape `released` had one table over until that slice
+closed it, and the absence was argued rather than pending: nothing in this
+codebase decides that a payout for work an owner has already approved will never
+happen, every failure retries at tick cadence and is logged loudly, and a
+terminal row against work somebody did, in a build with no ops console that could
+un-terminal it, is the worse outcome. That paragraph named its own producer: the
+console, with a person behind it.
+
+**`20260908121000` is that producer arriving, and it is narrower than the name
+suggests.** `failed` does not mean a transfer failed. It means a payout was
+**overtaken by a dispute** — the row was `pending`, an operator resolved the
+dispute some way other than paying, and the money went elsewhere in the same
+transaction. A transfer that errors still retries forever, exactly as before, so
+the retry argument above is untouched. The only writer is `resolve_dispute`, and
+there is still no route, no sweep and no operator button that can fail a payout
+on its own.
 
 That is the one place this domain's failure map **differs from publishing**.
 [ADR-0013](../40-adr/0013-approving-a-campaign-publishes-it.md) closes a campaign
@@ -244,6 +253,18 @@ rather than both reading a total the other is about to change.
 
 Freeze transfer → ops review with full audit trail → outcome: release / partial release / refund-to-user / reassignment. Driven from [admin-ops.md](admin-ops.md).
 
+**Live as of marketplace slice 8** (`20260908120000`…`128000`), with five outcomes rather than four: the fourth in that list splits into `reassigned` and `rejection_upheld`, the second of which answers a dispute only a node can raise and did not exist when this line was written.
+
+**The freeze is a task state, not a flag.** `PAYABLE_TASK_STATES` in the payout sweep is `('approved', 'payout_pending')`, so moving the step to `disputed` is what stops the transfer: the selection stops matching it. Nothing else was added, because a flag beside the state is a second thing the sweep has to remember to read.
+
+**A partial settlement is a refund plus a new hold** ([ADR-0025](../40-adr/0025-a-partial-settlement-is-a-refund-and-a-new-hold.md)), which is this doc's own "reversing either is a new hold with its own key" sentence being cashed. Eight ledger entries across two `ref_id`s, four per hold, each summing to zero; `packages/payments/src/ledger.ts` is untouched because the three pairs it exports are exactly the three the SQL composes.
+
+**`release` moves no money in the resolution itself.** It returns the step to `approved` and the existing payout sweep finishes it, reusing the recovery path built for a crash. A second money path there would be a second way to pay somebody.
+
+**`payouts pending → failed` gets its producer**, and only this one: a payout overtaken by a dispute that refunded the hold underneath it, moved in the same transaction as the refund so the two records cannot disagree. A failed _provider call_ is still not this — it retries at tick cadence, because nothing here decides that approved work will never be paid. There is no `failed → pending`, because the money went back.
+
+**Nothing is transferred, and the counsel gate is unmoved.** `carriesRealMoney` is now checked at three writers rather than two: before the accept rpc, before the payout transfer, and in the ops route before any resolution that settles escrow.
+
 ## Idempotency & event-sourcing
 
 Every money movement carries an `idempotency_key` (unique DB constraint + durable activity) so retries after a crash never double-charge or double-pay. Every movement emits an immutable event.
@@ -295,7 +316,8 @@ unreviewed integration through.
 | `escrow_holds`               | ✅ live `20260904121000`, written by `accept_offer` and the reconcile sweep                                                                                    |
 | `ledger_entries`             | ✅ live `20260904122000`, written by the same two                                                                                                              |
 | `payouts`                    | ✅ live `20260907121000`, written by the payout sweep and `settle_payout`                                                                                      |
-| `disputes`                   | ⏳ slice 8, with the ops path                                                                                                                                  |
+| `disputes`                   | ✅ live `20260908122000`. No state column (ADR-0016); open is derived as `resolved_at is null`                                                                 |
+| `ops_actions`                | ✅ live `20260908123000`. Every resolution writes one in the same transaction as the money, with a required actor and a required reason                        |
 | `subscriptions` / `invoices` | ⏳ no slice. Nothing bills anybody yet                                                                                                                         |
 | `platform_fees`              | ⏳ no slice. `payouts.platform_fee` is a column written from a constant `0` ([ADR-0024](../40-adr/0024-the-take-rate-is-not-deducted-from-an-agreed-price.md)) |
 

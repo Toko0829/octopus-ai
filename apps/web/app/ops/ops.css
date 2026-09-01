@@ -1,0 +1,516 @@
+/* The dispute console: Dark Command Deck, the skin design-system.md names for
+   "task board, agent run-log, budget ledger, **admin ops**. Dense,
+   hairline-bordered, keyboard-first."
+
+   **The subtree obligations, both met on `.ops`.** A skin applies to a subtree
+   rather than only the root, and design-system.md states the two things that
+   costs: paint your own `background` and `color`, because `body` sits outside
+   this element and still resolves from `:root`, and set `color-scheme`, because
+   scrollbars and form controls read that rather than custom properties. The
+   consent screen learned the first one from the other direction and node.css
+   records it too.
+
+   **Density is compact, and this is the first surface to want it.**
+   design-system.md lists `compact / cozy / spacious` and marks them "not
+   implemented yet"; nothing here invents the mechanism, it just sizes to the
+   compact end of the existing 4px grid. A table an operator scans for the one
+   wrong number is the case that scale was written for.
+
+   Every hairline is alpha (`--border`, `--border-strong` are already
+   `color-mix` against transparent), every money figure is tabular, and colour
+   never carries meaning alone: every badge and state pairs a hue with a word. */
+
+.ops {
+  min-height: 100dvh;
+  /* Both, and neither is optional here. See the header. */
+  background: var(--bg);
+  color: var(--text);
+  color-scheme: dark;
+
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-6) var(--sp-8);
+  font-size: var(--text-sm);
+}
+
+/* ---------- The bar ---------- */
+
+.ops-bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.ops-eyebrow {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--ls-eyebrow, 0.16em);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.ops-title {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--text-lg);
+  font-weight: var(--fw-strong, 520);
+  line-height: var(--lh-title, 1.15);
+  color: var(--text);
+}
+
+.ops-who {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.ops-who-email {
+  font-family: var(--font-mono);
+}
+
+/* ---------- Badges: a hue and a word, never a hue alone ---------- */
+
+.ops-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* `--role-admin` has existed since the token layer was written and has never
+   been used. This is the surface it was kept for. */
+.ops-badge-role {
+  color: var(--role-admin);
+  border-color: var(--border-strong);
+}
+
+/* Coral is "a person does this" and teal is "the agent". A client and an expert
+   are both people, so neither gets the accent: the word carries the difference
+   and the border weight carries the emphasis. */
+.ops-badge-owner {
+  color: var(--text-secondary);
+}
+
+.ops-badge-node {
+  color: var(--human);
+  border-color: color-mix(in oklab, var(--human) 34%, transparent);
+}
+
+/* ---------- Tabs ---------- */
+
+.ops-tabs {
+  display: flex;
+  gap: var(--sp-1);
+}
+
+.ops-tab {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: var(--sp-1) var(--sp-3);
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-state),
+    color var(--dur-fast) var(--ease-state);
+}
+
+.ops-tab:hover {
+  background: var(--state-hover);
+  color: var(--text-secondary);
+}
+
+/* Interaction state is a colour layer, never opacity. */
+.ops-tab[aria-pressed='true'] {
+  background: var(--state-selected);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.ops-tab:focus-visible,
+.ops-row:focus-visible,
+.ops-submit:focus-visible,
+.ops-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------- Layout: queue beside detail ---------- */
+
+.ops-split {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: var(--sp-4);
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .ops-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.ops-queue,
+.ops-detail {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ops-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.ops-row {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: var(--sp-2) var(--sp-3);
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-state);
+}
+
+.ops-row:hover {
+  background: var(--state-hover);
+}
+
+.ops-row[aria-current='true'] {
+  background: var(--state-selected);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.ops-row-title {
+  font-weight: var(--fw-medium, 460);
+  color: var(--text);
+}
+
+.ops-row-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.ops-row-when {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.ops-row-reason {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  /* One line in the queue: the whole grievance is on the detail, and a queue row
+     that grows with the length of somebody's complaint stops being scannable. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Cards ---------- */
+
+.ops-card-stack {
+  display: grid;
+  gap: var(--sp-3);
+  align-content: start;
+}
+
+.ops-card {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: var(--sp-3) var(--sp-4);
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.ops-card-settled {
+  background: var(--surface-2);
+}
+
+.ops-card-title {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: var(--fw-strong, 520);
+  color: var(--text);
+}
+
+.ops-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-2) var(--sp-4);
+}
+
+.ops-facts dt {
+  font-size: var(--text-xs);
+  letter-spacing: var(--ls-label, 0.02em);
+  color: var(--text-muted);
+}
+
+.ops-facts dd {
+  margin: 2px 0 0;
+  color: var(--text);
+}
+
+.ops-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* Money and every other figure in a column somebody compares. Non-negotiable. */
+.ops-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.ops-quote {
+  margin: 0;
+  padding-left: var(--sp-3);
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+  line-height: var(--lh-prose, 1.6);
+  white-space: pre-wrap;
+}
+
+.ops-quote-quiet {
+  color: var(--text-muted);
+}
+
+.ops-muted {
+  color: var(--text-faint);
+}
+
+/* ---------- Tables ---------- */
+
+.ops-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.ops-caption {
+  text-align: left;
+  padding-bottom: 4px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--ls-label, 0.02em);
+}
+
+.ops-table th {
+  text-align: left;
+  font-weight: var(--fw-medium, 460);
+  color: var(--text-muted);
+  padding: 4px var(--sp-2) 4px 0;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.ops-table td {
+  padding: 4px var(--sp-2) 4px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.ops-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* ---------- Roster ---------- */
+
+.ops-roster {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: var(--text-xs);
+}
+
+.ops-roster li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--sp-3);
+  align-items: baseline;
+  color: var(--text-secondary);
+}
+
+/* ---------- The decision form ---------- */
+
+.ops-choices {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.ops-legend {
+  padding: 0 0 var(--sp-2);
+  font-size: var(--text-xs);
+  letter-spacing: var(--ls-label, 0.02em);
+  color: var(--text-muted);
+}
+
+.ops-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2);
+  align-items: start;
+  padding: var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-state);
+}
+
+.ops-choice:hover {
+  background: var(--state-hover);
+}
+
+.ops-choice:has(input:checked) {
+  background: var(--state-selected);
+  border-color: var(--border);
+}
+
+/* Unavailable says so in words inside the row; this only stops it competing for
+   attention. Never colour alone. */
+.ops-choice[data-unavailable='true'] {
+  cursor: not-allowed;
+  color: var(--text-faint);
+}
+
+.ops-choice-label {
+  display: block;
+  color: var(--text);
+  font-weight: var(--fw-medium, 460);
+}
+
+.ops-choice[data-unavailable='true'] .ops-choice-label {
+  color: var(--text-faint);
+}
+
+.ops-choice-effect {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--lh-ui, 1.4);
+}
+
+.ops-field {
+  display: grid;
+  gap: 4px;
+}
+
+.ops-label {
+  font-size: var(--text-xs);
+  letter-spacing: var(--ls-label, 0.02em);
+  color: var(--text-muted);
+}
+
+.ops-input {
+  width: 100%;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: var(--sp-2);
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text);
+  resize: vertical;
+}
+
+.ops-input::placeholder {
+  color: var(--text-faint);
+}
+
+.ops-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: var(--lh-ui, 1.4);
+}
+
+.ops-hint-warn {
+  color: var(--warn);
+}
+
+.ops-submit {
+  justify-self: start;
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: var(--sp-2) var(--sp-4);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--fw-medium, 460);
+  background: var(--accent);
+  color: var(--on-accent);
+  cursor: pointer;
+  transition: filter var(--dur-fast) var(--ease-state);
+}
+
+.ops-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.ops-submit:disabled {
+  background: var(--surface-2);
+  color: var(--text-faint);
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
+/* ---------- Empty and error ---------- */
+
+.ops-empty {
+  margin: 0;
+  padding: var(--sp-4);
+  color: var(--text-muted);
+  line-height: var(--lh-prose, 1.6);
+}
+
+.ops-error {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid color-mix(in oklab, var(--warn) 40%, transparent);
+  border-radius: 4px;
+  background: var(--warn-quiet);
+  color: var(--text);
+}
+
+/* Command-deck motion is near-instant, and none of it is ambient. */
+@media (prefers-reduced-motion: reduce) {
+  .ops-tab,
+  .ops-row,
+  .ops-choice,
+  .ops-submit {
+    transition: none;
+  }
+}

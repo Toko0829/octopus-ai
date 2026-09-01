@@ -831,18 +831,32 @@ export async function projectRoutes(
       // exactly who the owner should still see, not least because slice 8 is
       // going to ask them to rate them.
       //
+      // **And ones a dispute resolved**, added by slice 8 alongside
+      // `20260908126000`. That migration widened `private.engaged_counterparty`
+      // to admit `disputed_resolved`, and its stated reason is about **this
+      // surface**: closing the pair at resolution "would mean the panel renders
+      // 'somebody' beside the outcome of the most consequential thing that
+      // happened between them". Widening the policy and not this read was worse
+      // than the shape it argued against — the panel rendered **nothing at all**,
+      // so an owner whose dispute had just been decided could not see who it had
+      // been decided against, while the node kept reading the same deal at
+      // `/node`, which filters on nothing. Found by resolving a real dispute
+      // against the running stack; no test could see it, because the two
+      // predicates live in a migration and a query string that nothing compares.
+      //
       // The two other outcomes stay excluded, which is why this filters on
       // `outcome` rather than dropping the time-box: `cancelled` and
       // `reassigned` remain absent, and the panel line still never names somebody
       // beside a step they are not doing.
       const { data: engagementRows, error: engagementErr } = await db
         .from('engagements')
-        .select('task_id, node_id, agreed_price, currency, accepted_at, ended_at, outcome')
+        .select('id, task_id, node_id, agreed_price, currency, accepted_at, ended_at, outcome')
         .eq('project_id', projectId)
-        .or('ended_at.is.null,outcome.eq.completed');
+        .or('ended_at.is.null,outcome.eq.completed,outcome.eq.disputed_resolved');
       if (engagementErr) throw engagementErr;
 
       const engagements = (engagementRows ?? []) as {
+        id: string;
         task_id: string;
         node_id: string;
         agreed_price: number | string;
@@ -859,7 +873,9 @@ export async function projectRoutes(
       // read above, so the two agree by construction: a name that came back is a
       // name this person is entitled to, and one that did not renders as null
       // rather than as an error. Keeping those two conditions identical is the
-      // whole reason the policy was widened in the same slice.
+      // whole reason the policy was widened in the same slice — and slice 8
+      // proved the cost of letting them drift, by widening the policy alone and
+      // leaving this query a slice behind.
       //
       // **`node_profiles` is deliberately not read here.** The owner learns who
       // took their step and at what price; the node's rate card, jurisdictions
@@ -882,6 +898,9 @@ export async function projectRoutes(
           e.task_id,
           {
             nodeDisplayName: nameByNode.get(e.node_id) ?? null,
+            // The deal, not the step: a reassigned task has two engagements and
+            // a rating belongs to the one it is about.
+            engagementId: e.id,
             // numeric(12,2) arrives as a string over PostgREST. Converted so the
             // panel renders a number rather than sorting money as text.
             agreedPrice: Number(e.agreed_price),

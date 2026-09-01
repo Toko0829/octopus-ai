@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { resolveTask } from './task-resolution';
+import type { TaskState } from '@octopus/contracts';
+import { DISPUTABLE_BY_NODE, resolveTask } from './task-resolution';
 
 describe('resolveTask · answer', () => {
   it('completes a step that was waiting on the person', () => {
@@ -169,6 +170,107 @@ describe('resolveTask · the owner verdict on expert work', () => {
     ];
     for (const out of refusals) {
       expect(out.ok === false && out.reason).not.toContain('\u2014');
+    }
+  });
+});
+
+/**
+ * Slice 8: the dispute decision, pinned.
+ *
+ * Appended to the four blocks above rather than replacing them. `resolveTask`
+ * is pure and separate from the route because rules 7 and 11 put authorisation
+ * in code that can be read in one screen. These two blocks exist for the same
+ * reason one level up: the sets they encode are duplicated in SQL
+ * (`public.raise_dispute` holds the same lists), and ADR-0011's two-layer rule
+ * only pays off while the two layers agree. When they disagree the person sees
+ * a readable refusal from one and a raise from the other, which is the failure
+ * these blocks are meant to catch first.
+ */
+
+const DISPUTABLE: TaskState[] = ['escrow_funded', 'in_progress', 'payout_pending'];
+
+const NOT_DISPUTABLE_BY_OWNER: TaskState[] = [
+  'proof_submitted',
+  'in_review',
+  'approved',
+  'rejected',
+  'paid',
+  'done',
+  'cancelled',
+  'escalated',
+  'needs_user',
+];
+
+describe('resolveTask, dispute', () => {
+  it('allows the three states that sit before the transfer', () => {
+    // All three are before the money leaves, which is what makes disputing them
+    // mean anything: `payouts.transfer_id` is write-once and money that has left
+    // cannot be recalled by a state change.
+    for (const state of DISPUTABLE) {
+      const outcome = resolveTask(state, 'dispute', 'The work never arrived');
+      expect(outcome.ok, `${state} should be disputable`).toBe(true);
+      if (outcome.ok) {
+        expect(outcome.resolution.to).toBe('disputed');
+        // The grievance is a column on `disputes`, not a deliverable on the step.
+        expect(outcome.resolution.writesArtifact).toBe(false);
+      }
+    }
+  });
+
+  it('refuses every other state, and names the review path from proof_submitted', () => {
+    for (const state of NOT_DISPUTABLE_BY_OWNER) {
+      const outcome = resolveTask(state, 'dispute', 'Something is wrong');
+      expect(outcome.ok, `${state} should not be disputable`).toBe(false);
+    }
+
+    // The one refusal worth wording specifically. Work handed over and not yet
+    // judged is a review rather than a dispute, and the owner already has
+    // `reject_work` with a required note: a cheaper, more informative act that
+    // returns the step to the node with something to fix.
+    const handedOver = resolveTask('proof_submitted', 'dispute', 'Not good enough');
+    expect(handedOver.ok).toBe(false);
+    if (!handedOver.ok) {
+      expect(handedOver.reason).toContain('Send it back');
+    }
+  });
+
+  it('requires a stated grievance', () => {
+    // Stronger than `reject_work`'s version of this rule: the text freezes
+    // somebody's fee, an operator reads it to decide, and the other party has to
+    // be able to answer it.
+    for (const text of ['', '   ', '\n\t ']) {
+      const outcome = resolveTask('in_progress', 'dispute', text);
+      expect(outcome.ok).toBe(false);
+    }
+  });
+
+  it('does not disturb the actions that were already there', () => {
+    // Adding a member to the action union is the kind of change that silently
+    // re-routes an existing branch, so the four that existed are re-pinned here.
+    expect(resolveTask('escalated', 'find_expert', '')).toMatchObject({ ok: true });
+    expect(resolveTask('escalated', 'retry', '')).toMatchObject({ ok: true });
+    expect(resolveTask('needs_user', 'answer', 'I did it')).toMatchObject({ ok: true });
+    expect(resolveTask('proof_submitted', 'approve_work', '')).toMatchObject({ ok: true });
+    // And the states that were never disputable are still not answerable either.
+    expect(resolveTask('in_progress', 'answer', 'anything')).toMatchObject({ ok: false });
+  });
+});
+
+describe('DISPUTABLE_BY_NODE', () => {
+  it('is exactly rejected, and nothing else', () => {
+    // The only act in this system a node takes against the owner, and it is one
+    // state because `rejected` is the only point where a person has told them
+    // no. Widening it would let a node freeze work nobody has judged yet.
+    expect([...DISPUTABLE_BY_NODE]).toEqual(['rejected']);
+  });
+
+  it('shares no state with the three the owner can dispute from', () => {
+    // Not a tidiness property. If the two sets overlapped, one state would admit
+    // a dispute from either party and `raise_dispute` would have to decide which
+    // grievance it was recording from the role argument alone, which the caller
+    // supplies.
+    for (const state of DISPUTABLE) {
+      expect(DISPUTABLE_BY_NODE.has(state)).toBe(false);
     }
   });
 });

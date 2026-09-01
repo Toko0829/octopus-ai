@@ -15,9 +15,13 @@ import type {
   NodeProfile,
   NodeProofArtifact,
   NodeSkill,
+  OpsDisputeDetail,
+  OpsDisputeSummary,
   ProjectDetail,
   ProjectSummary,
+  ResolveDisputeBody,
   RoomMember,
+  SubmitRatingBody,
 } from '@octopus/contracts';
 
 /**
@@ -504,4 +508,84 @@ export function getNodeProof(engagementId: string) {
  */
 export function getNodeProofFileUrl(engagementId: string, artifactId: string) {
   return bff<ArtifactFileUrl>(`/node/engagements/${engagementId}/proof/${artifactId}/file-url`);
+}
+
+/* ------------------------------------------------------------------------- *
+ * Disputes and ratings
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The owner freezes a step.
+ *
+ * Goes through the resolution endpoint like every other owner action on a step,
+ * because it *is* one: `resolveStep` returns the step's new state and this
+ * returns `disputed`. What happens behind it is not like the others at all -
+ * `public.raise_dispute` moves the task and writes the grievance in one
+ * transaction, since a frozen step with no dispute row is a step nobody can
+ * explain.
+ */
+export function disputeStep(projectId: string, taskId: string, reason: string) {
+  return bff<{ state: string; ranExecutor: boolean }>(
+    `/projects/${projectId}/tasks/${taskId}/resolution`,
+    { method: 'POST', body: JSON.stringify({ action: 'dispute', text: reason }) },
+  );
+}
+
+/** The owner rates the expert, once the deal has finished cleanly. */
+export function rateExpert(projectId: string, engagementId: string, body: SubmitRatingBody) {
+  return bff<{ ratingId: string }>(`/projects/${projectId}/engagements/${engagementId}/rating`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * The node contests a rejection.
+ *
+ * Keyed on the engagement rather than the task, like every other node route: a
+ * node reads their own deals and has no grant on `tasks` at all.
+ */
+export function disputeRejection(engagementId: string, reason: string) {
+  return bff<{ disputeId: string }>(`/node/engagements/${engagementId}/dispute`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+}
+
+/** The node rates the client, once the deal has finished cleanly. */
+export function rateClient(engagementId: string, body: SubmitRatingBody) {
+  return bff<{ ratingId: string }>(`/node/engagements/${engagementId}/rating`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/* ------------------------------------------------------------------------- *
+ * The ops console
+ *
+ * These four reach `/api/ops`, which is gated on `profiles.role` read from the
+ * database by `apps/api/src/plugins/require-ops.ts`. A non-operator gets a 403
+ * from every one of them, so nothing here needs its own idea of who may call it.
+ * ------------------------------------------------------------------------- */
+
+export function listOpsDisputes(status: 'open' | 'resolved' = 'open') {
+  return bff<{ disputes: OpsDisputeSummary[] }>(`/ops/disputes?status=${status}`);
+}
+
+export function fetchOpsDispute(disputeId: string) {
+  return bff<OpsDisputeDetail>(`/ops/disputes/${disputeId}`);
+}
+
+/**
+ * The decision.
+ *
+ * Everything consequential happens inside one Postgres transaction; this is the
+ * request that starts it. A 409 carries the raise's own sentence, so the message
+ * shown to an operator is the one the database wrote.
+ */
+export function resolveOpsDispute(disputeId: string, body: ResolveDisputeBody) {
+  return bff<{ dispute: { id: string; resolution: string | null }; replayed: boolean }>(
+    `/ops/disputes/${disputeId}/resolve`,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
 }

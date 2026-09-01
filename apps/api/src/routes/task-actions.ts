@@ -11,6 +11,8 @@ import { resolveTask, type TaskAction } from '../lib/task-resolution';
 import { readEligiblePool } from '../lib/match';
 import { revokeThreadAccess } from '../lib/proof';
 import { skillsForStage } from '@octopus/marketplace';
+import { postSystemMessage } from '../lib/system-message';
+import { roomForProject } from '../lib/room-for-project';
 
 /**
  * Unsticking a step from the project panel.
@@ -53,7 +55,7 @@ const Params = z.object({
 });
 
 const Body = z.object({
-  action: z.enum(['answer', 'retry', 'find_expert', 'approve_work', 'reject_work']),
+  action: z.enum(['answer', 'retry', 'find_expert', 'approve_work', 'reject_work', 'dispute']),
   /**
    * What the owner did, or what needs to change. Required for `answer` and for
    * `reject_work`, ignored for the rest. `resolveTask` decides which, so the two
@@ -65,6 +67,15 @@ const Body = z.object({
 
 function fail(reply: FastifyReply, status: number, error: string, message: string) {
   return reply.code(status).send({ error, message });
+}
+
+/** Postgres raises every deliberate refusal in this domain as a check violation. */
+const PG_CHECK_VIOLATION = '23514';
+
+function pgCode(err: unknown): string | undefined {
+  return typeof err === 'object' && err !== null && 'code' in err
+    ? String((err as { code: unknown }).code)
+    : undefined;
 }
 
 export interface TaskActionRoutesOptions {
@@ -88,7 +99,12 @@ export async function taskActionRoutes(
       if (!params.success) return fail(reply, 400, 'bad_request', 'Bad project or task id.');
       const body = Body.safeParse(request.body);
       if (!body.success) {
-        return fail(reply, 400, 'bad_request', 'Say whether to answer, retry, or find an expert.');
+        return fail(
+          reply,
+          400,
+          'bad_request',
+          'Say whether to answer, retry, find an expert, decide on the work, or dispute it.',
+        );
       }
 
       const { projectId, taskId } = params.data;
@@ -225,6 +241,58 @@ export async function taskActionRoutes(
           // this returns. Approving a plan runs a tick inline because a person is
           // watching a card commit; nobody is watching a stranger decide.
           request.log.info({ taskId, userId, skills }, 'owner sent a step to the marketplace');
+          return reply.code(200).send({ state: outcome.resolution.to, ranExecutor: false });
+        }
+
+        // **The owner says the deal has gone wrong, and the money stops.**
+        //
+        // The route does not move the task itself, unlike every other action
+        // here: `public.raise_dispute` moves it and writes the grievance in one
+        // transaction, because a frozen step with no dispute row is a step
+        // nobody can explain and a dispute row over an unfrozen step is a freeze
+        // that is not freezing anything. The two facts have to land together.
+        //
+        // Moving the task to `disputed` **is** the freeze. `PAYABLE_TASK_STATES`
+        // in `lib/payout.ts` is `('approved','payout_pending')`, so the sweep
+        // stops selecting the step the moment the transaction commits. Nothing
+        // here calls a provider, and nothing here decides where the money goes:
+        // that is an operator's, through `/api/ops/disputes/:id/resolve`.
+        if (action === 'dispute') {
+          const { data: disputeId, error: rpcError } = await admin.rpc('raise_dispute', {
+            p_task_id: task.id,
+            p_raised_by: userId,
+            p_raised_role: 'owner',
+            p_reason: text,
+            p_evidence: null,
+          });
+          if (rpcError) {
+            // The raise's own sentence, verbatim. `raise_dispute` refuses the
+            // same states this route's `resolveTask` already refused, so
+            // reaching here means the step moved in between, and the SQL names
+            // what it moved to.
+            if (pgCode(rpcError) === PG_CHECK_VIOLATION) {
+              return fail(reply, 409, 'conflict', rpcError.message);
+            }
+            throw rpcError;
+          }
+
+          // Announced in the room, keyed so a crash between the freeze and the
+          // announcement cannot produce two lines. The expert is not named: the
+          // owner already knows who they engaged, and a system line that names
+          // somebody beside the word "dispute" reads as a verdict before anybody
+          // has made one.
+          const roomId = await roomForProject(admin, task.project_id);
+          if (roomId) {
+            await postSystemMessage(
+              admin,
+              request.log,
+              roomId,
+              `dispute-raised:${disputeId as string}`,
+              'You raised a dispute on this step. Payment is on hold while an operator reviews it.',
+            );
+          }
+
+          request.log.info({ taskId, userId, disputeId }, 'owner raised a dispute');
           return reply.code(200).send({ state: outcome.resolution.to, ranExecutor: false });
         }
 
@@ -374,6 +442,83 @@ export async function taskActionRoutes(
       } catch (err) {
         request.log.error({ err, taskId, userId, action }, 'resolveStep failed');
         return fail(reply, 500, 'internal_error', 'Could not update that step.');
+      }
+    },
+  );
+
+  /**
+   * **The owner rates the expert**, on a deal that finished cleanly.
+   *
+   * A route of its own rather than another `action` on the resolution endpoint,
+   * because it is not a resolution: the step is already `done` and nothing here
+   * moves it. Filing it beside `answer` and `retry` would put an act with no
+   * state change into an endpoint whose entire contract is "return the step's
+   * new state".
+   *
+   * Keyed on the **engagement** rather than the task, matching the node's half.
+   * A step that was taken, abandoned and reassigned has two engagements with two
+   * different experts, and a rating belongs to the deal it is about.
+   *
+   * Every rule that matters is in `public.submit_rating`: the direction and the
+   * ratee are derived there, so this route cannot mislabel a score, and the
+   * `outcome = 'completed'` gate is enforced there — which is what keeps a
+   * `disputed_resolved` deal readable but unrateable.
+   */
+  app.post(
+    '/api/projects/:projectId/engagements/:engagementId/rating',
+    { preHandler: requireAuth },
+    async (request, reply): Promise<FastifyReply> => {
+      const params = z
+        .object({ projectId: z.string().uuid(), engagementId: z.string().uuid() })
+        .safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'Bad project or engagement id.');
+
+      const body = z
+        .object({
+          score: z.number().int().min(1).max(5),
+          comment: z.string().trim().max(2000).optional(),
+        })
+        .safeParse(request.body ?? {});
+      if (!body.success) return fail(reply, 400, 'bad_request', 'Give a rating from 1 to 5.');
+
+      const userId = (request.user as NonNullable<typeof request.user>).sub;
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+
+      try {
+        // Owner only, resolved through the plan card as everywhere else in this
+        // file. `submit_rating` re-derives the owner from the room and refuses
+        // anybody who is neither party, so this is the readable layer over a
+        // check that also binds `service_role`.
+        const { ownerId } = await resolveProjectOwner(db, params.data.projectId);
+        if (!ownerId || ownerId !== userId) {
+          return fail(reply, 403, 'forbidden', 'Only the workspace owner can rate an expert.');
+        }
+
+        const admin = createServiceClient(opts.supabase);
+        const { data: ratingId, error: rpcError } = await admin.rpc('submit_rating', {
+          p_engagement_id: params.data.engagementId,
+          p_rater: userId,
+          p_score: body.data.score,
+          p_comment: body.data.comment ?? null,
+        });
+        if (rpcError) {
+          if (pgCode(rpcError) === PG_CHECK_VIOLATION) {
+            return fail(reply, 409, 'conflict', rpcError.message);
+          }
+          throw rpcError;
+        }
+
+        request.log.info(
+          { engagementId: params.data.engagementId, userId, score: body.data.score },
+          'owner rated an expert',
+        );
+        return reply.code(200).send({ ratingId });
+      } catch (err) {
+        request.log.error(
+          { err, engagementId: params.data.engagementId, userId },
+          'could not record an owner rating',
+        );
+        return fail(reply, 500, 'internal_error', 'Could not record that rating.');
       }
     },
   );

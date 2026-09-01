@@ -13,6 +13,7 @@ import { embedRoutes } from './routes/embeds';
 import { sourceRoutes } from './routes/sources';
 import { connectionRoutes } from './routes/connections';
 import { nodeRoutes } from './routes/nodes';
+import { opsRoutes } from './routes/ops';
 import { createAuthVerifier } from './plugins/auth';
 import { stateConfigFrom } from './lib/oauth-state';
 import { startTicker } from './lib/ticker';
@@ -130,6 +131,15 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Creating a node is deliberately absent from this route group and from every
   // other one, since onboarding is ops-invited through `invite_node`.
   await app.register(nodeRoutes, { verify, supabase });
+
+  // The dispute console, and the first ops surface in this system. Registered
+  // like any other route group rather than behind a flag: `disputed` is
+  // reachable from four states as of `20260908120000`, and nothing else can move
+  // a task out of it, so a deployment without this is a deployment where a
+  // dispute is a dead end. Access is `profiles.role`, read from the database by
+  // `requireOps` because the JWT does not carry it, and granted only by
+  // `scripts/grant-ops.mjs`.
+  await app.register(opsRoutes, { verify, supabase });
 
   // The durable backbone (ADR-0010). Started here rather than as a separate
   // process because there is nothing to separate yet: a run's state is rows, so

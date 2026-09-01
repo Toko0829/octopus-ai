@@ -90,3 +90,44 @@ export function refundKey(holdId: string): string {
 export function payoutKey(engagementId: string): string {
   return `payout:${engagementId}`;
 }
+
+/**
+ * The key for the hold that carries a node's share out of a partial settlement.
+ *
+ * **Derived from the dispute row, and that is what makes it epoch-safe.** A
+ * partial settlement cannot edit the hold it splits, because `held -> released`
+ * and `held -> refunded` are both terminal and neither reaches the other
+ * ([ADR-0025](../../../docs/40-adr/0025-a-partial-settlement-is-a-refund-and-a-new-hold.md)):
+ * the original is refunded in full and the node's share becomes a **new** hold,
+ * which needs a key of its own in the namespace `escrowKey` already shares.
+ *
+ * Neither the task nor the engagement would do, and the reason is the one
+ * `pauseIdempotencyKey` in `packages/marketing` had to solve with an explicit
+ * epoch counter. A dispute is **repeatable on one deal**: a step can be
+ * disputed, resolved back to `in_progress` through `rejected`, worked again,
+ * and disputed a second time, all under one engagement. A key derived from
+ * either id would collide on that second settlement and read back the first
+ * one's hold, paying against money already settled.
+ *
+ * `public.disputes` has a **partial unique index on `(task_id) where resolved_at
+ * is null`**, so one open dispute exists per task at a time and every new
+ * grievance is a new row with a new id. The epoch is therefore inherited from
+ * the row rather than counted from `events` — the same trick `escrowKey` plays
+ * with `offers`, where a re-offered step mints a new offer.
+ *
+ * `public.resolve_dispute` builds the same string in SQL
+ * (`'dispute-release:' || v_dispute.id`) because the insert has to be inside the
+ * resolution's transaction, so the two are pinned by `keys.test.ts` here and by
+ * the pgTAP assertion in `marketplace_disputes.sql`.
+ *
+ * **It therefore has no TypeScript caller, unlike its three siblings, and it is
+ * exported anyway.** This file is where every idempotency key in this domain is
+ * stated and reasoned about; a format that lived only inside a migration would
+ * be the one key a reader of `packages/payments` could not find, and the one
+ * nobody could pin from a unit test. The export is what lets `keys.test.ts`
+ * assert it differs from all three siblings, which is the property that matters:
+ * a partial settlement mints a hold in the namespace `escrowKey` already shares.
+ */
+export function disputeReleaseKey(disputeId: string): string {
+  return `dispute-release:${disputeId}`;
+}

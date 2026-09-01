@@ -146,17 +146,24 @@ to move in step.
 ### What the matcher can actually rank on
 
 The algorithm below specifies "skill/credential fit, jurisdiction exactness,
-rating + completion-rate, price, responsiveness, current workload". On every row
-that exists today, `trust_score` is NULL (its writer is slice 8),
-`completed_engagements` is 0, `node_skills.verified` and
-`node_credentials.verified` are false with nothing able to set them true, and
-responsiveness has nowhere to be recorded. No task carries a location, so
-jurisdiction is never asked for.
+rating + completion-rate, price, responsiveness, current workload".
+`node_skills.verified` and `node_credentials.verified` are false with nothing
+able to set them true, and responsiveness has nowhere to be recorded. No task
+carries a location, so jurisdiction is never asked for.
+
+**Two of those inputs started moving in slices 7 and 8 and the matcher still does
+not read them**, which is stated here rather than left to look like an
+oversight. `completed_engagements` gained its writer in `settle_payout` and
+`trust_score` gained one in `submit_rating`, so both are real numbers on a row
+that has finished a deal. Weighting them is its own slice with its own argument
+about what the weights should be, and slice 8 deliberately did not open it (rule
+20). Until then the trade is visible: a node with a five-star record is ranked
+exactly like one with none.
 
 That leaves **price**, plus a stable tiebreak on node id. `matching.ts` says so
-rather than computing a weighted score over columns that are all constant, which
-would be a rank by whatever the database returned first wearing arithmetic. The
-weights arrive with the data.
+rather than computing a weighted score over columns that were, when it was
+written, all constant. The weights arrive with the argument about what they
+should be, not merely with the data.
 
 Two consequences stated rather than implied:
 
@@ -496,11 +503,29 @@ and before slice 8 asks the owner to rate them.
 `20260907123000` widens it to `ended_at is null OR outcome = 'completed'`, in both
 directions, **permanently rather than on a grace window**: ratings and disputes
 both look backwards, and a window would expire in the middle of the thing it
-exists to support. `'cancelled'`, `'reassigned'` and the future
-`'disputed_resolved'` all stay shut — the first two because nothing was delivered,
-the third because slice 8 has not decided what a resolved dispute leaves the two
-parties entitled to see, and guessing on its behalf is how a disclosure decision
-gets made by whoever wrote the migration first.
+exists to support. `'cancelled'`, `'reassigned'` and the then-future
+`'disputed_resolved'` all stayed shut — the first two because nothing was
+delivered, the third because slice 7 had no standing to decide what a resolved
+dispute leaves the two parties entitled to see, and guessing on its behalf is how
+a disclosure decision gets made by whoever wrote the migration first.
+
+**Slice 8 decided it**, in `20260908126000`: `'disputed_resolved'` is admitted, so
+both parties keep the record of a deal an operator had to settle. `'cancelled'`
+and `'reassigned'` stay shut on their original grounds. The asymmetry that
+follows is the intended one and is argued under slice 8 below: such a deal is
+**readable and not rateable**.
+
+**Widening the policy alone was not enough, and that was a shipped defect.** The
+panel's own query in `apps/api/src/routes/projects.ts` filtered
+`ended_at.is.null,outcome.eq.completed` and was left a slice behind, so an owner
+whose dispute had just been decided saw **no engagement line at all** — worse
+than the "somebody" the migration argued against — while the node kept reading
+the same deal at `/node`, which filters on nothing. The two predicates are meant
+to be identical by construction and the comment above the query says so; nothing
+compares a migration to a query string, so nothing noticed. Found by resolving a
+real dispute against the running stack, and fixed in the same push. The general
+rule, since this is the second time the pair has moved: **the policy and the read
+change together or the read is wrong in the quiet direction.**
 
 This is recorded as a consequence **discovered by building the slice** rather than
 one booked in advance, because the alternative reading — that `20260904126000` got
@@ -529,8 +554,121 @@ then.
   `/node`, where the engagement has moved to "Finished and paid" with the amount
   beside it. Notifications remain specified and unbuilt.
 - **`nda_signed_at` and `terms_hash` still have no writer.**
-- **Disputes and ratings are slice 8**, so all four `→ disputed` arcs stay
-  dropped and `trust_score` is still NULL on every row.
+- ~~**Disputes and ratings are slice 8**, so all four `→ disputed` arcs stay
+  dropped and `trust_score` is still NULL on every row.~~ **Closed by slice 8**,
+  which restored all four together and gave `trust_score` its first writer. Kept
+  struck through rather than deleted, because what slice 7 shipped without is the
+  record of why slice 8 existed.
+
+### Slice 8: the last dead end, and the first ops surface
+
+Slice 7 finished the happy path: a step runs from `escalated` all the way to
+`done` and somebody is paid. What it left behind was the unhappy one. `disputed`
+had been declared since `20260813120000`, narrowed to a single inbound arc by
+`20260815220000`, and refused by name in every slice since — most recently
+`20260906123000:53-54`: "No `-> disputed` arc is restored. Slice 8, with the ops
+console. A `disputed` task nobody can move is the `escalated` defect on purpose."
+
+This slice restores **all four** inbound arcs, adds one new edge, and builds the
+console that makes them safe. The reasoning for every arc is
+[ADR-0026](../40-adr/0026-the-dispute-exit-map.md); the money half of a partial
+settlement is [ADR-0025](../40-adr/0025-a-partial-settlement-is-a-refund-and-a-new-hold.md).
+
+#### The freeze is one statement, and there is no flag
+
+Moving a task to `disputed` **is** the freeze. `PAYABLE_TASK_STATES` in
+`apps/api/src/lib/payout.ts` is `('approved', 'payout_pending')`, so the payout
+sweep's selection stops matching the step the moment `raise_dispute` commits.
+There is no `frozen_at`, no pause row and no flag beside the state, because a
+flag is a second thing the sweep has to remember to read and a freeze that
+depends on a reader remembering is not a freeze.
+
+This is also why `payout_pending -> disputed` matters: it is the arc that catches
+a step in the window between the owner approving and the sweep sending.
+
+#### Both parties can raise, and the node's arc is the load-bearing one
+
+    owner   escrow_funded, in_progress, payout_pending
+    node    rejected
+
+The owner's three are "I paid for this and something is wrong", at the three
+points where that is still true and the money has not left. The node's one is the
+mirror, and it is **the only act in this system a node performs against the
+owner**. `rejected` is the only state where a person has told a node no; before
+this arc their options were to redo work they believe was fine, or to stop
+answering — and stopping is read by the no-show sweep as _their_ failure, which
+reassigns the step away from them and costs them both the work and the fee for a
+decision they could not contest.
+
+`in_review -> disputed` stays legal and has no button, because `in_review` is
+transit-only and no step rests there for somebody to dispute from.
+`proof_submitted` is deliberately not disputable by the owner: work handed over
+and not yet judged is a review, and `reject_work` with a required note is the
+cheaper, more informative act. If that rejection is contested, the node's arc is
+what answers it.
+
+#### Ratings, and `trust_score`'s first writer
+
+`node_profiles.trust_score` has been NULL on every row since `20260831120000`,
+whose column comment fixed the meaning before there was a writer: "cold start,
+never zero, because zero would mean measured and worthless."
+
+    trust_score = round(avg(score) / 5.0, 4)   over ratings received
+
+That is the whole formula, and the restraint is the design. `:908` above
+specifies more — "seeds from KYC + verified credentials and grows with completed
+jobs/ratings" — and **three of those four inputs cannot be computed in this
+build**: KYC is a single in-repo fake so every verified node passed the same
+check, no credential can be verified at all so that term reads a column that is
+`false` on every row, and folding `completed_engagements` into a _quality_ score
+is a decision about what this market rewards rather than a smoothing detail to
+settle inside a migration. The count is there for the matcher to read beside the
+score, where it is visible.
+
+No prior, no shrinkage, no confidence weighting either. Those exist to stop one
+five-star rating outranking a long good record, which is real — and the honest
+fix is the matcher reading the count beside the score rather than this function
+folding a guess about sample size into a number that silently means something
+different for a new node than an established one.
+
+**Two-sided and immediately visible.** Both directions land together because a
+market where only the buyer rates puts all the reputational risk on the
+individual being paid, and this market's sellers are individual people. Blind
+reveal is not built: it is a lifecycle with a hidden state, a clock and a sweep,
+and it would be machinery for a risk this build cannot observe, in a market with
+no self-service registration. Recorded as a decision with its revisit trigger
+named — the first retaliatory pattern an operator sees, or open registration.
+
+**A `disputed_resolved` deal is readable and not rateable**, which is the
+intended asymmetry. `20260908126000` admits the outcome to
+`private.engaged_counterparty` so both parties keep the record; `submit_rating`
+gates on `completed` alone so neither gets a scoreboard entry out of an
+adjudication. An operator has already produced a finding, a reason and a money
+outcome, which is a better record than a number out of five, and collecting a
+score from whoever lost would feed the matcher the output of a grievance.
+
+#### The limits slice 8 ships with
+
+- **Node suspension is not built**, though `:1040` specifies it and
+  `node_profiles_suspended_has_reason` has constrained an unreachable value since
+  `20260831120000`. It needs three things this slice has not got: a documented
+  un-suspend arc, a threshold that is not a kill switch wearing a threshold's
+  shape (ADR-0014's zero-ceiling argument), and a moderation console to review
+  the evidence. `kyc_status` still has no `* -> suspended` arc.
+- **A dispute after `paid` is out of scope.** `payouts.transfer_id` is write-once
+  and the money has left; the task is terminal.
+- **Nothing is transferred, still.** `carriesRealMoney` gates the three
+  resolutions that settle escrow, refusing before anything is written, exactly as
+  the payout sweep does. payments-billing.md's counsel gate is unmoved.
+- **The node is not told they were disputed**, and their thread is not posted to.
+  A dispute is decided by an operator rather than negotiated between the parties,
+  and a line in the working thread would invite exactly that negotiation. They
+  see it on `/node`. Notifications remain specified and unbuilt.
+- **`nda_signed_at` and `terms_hash` still have no writer.**
+- **The matcher is unchanged.** `trust_score` now moves, but
+  `packages/marketplace/src/matching.ts` still ranks on price with a
+  deterministic tiebreak. Weighting a live score is its own slice with its own
+  argument about what the weights should be; scope hygiene (rule 20).
 
 ### The limits slice 5 ships with
 
@@ -765,30 +903,36 @@ measured seventeen, gave the owner a way to take such a step on themselves, and
 said in as many words that it "is not the marketplace and must not be dressed up
 as one."
 
-**Not built, and not claimed:** disputes and ratings. The proof loop landed in
-slice 6 and payouts in slice 7, so a step now runs from `escalated` all the way to
-`done`. **No money moves**:
-the only registered payment provider is the in-repo fake, `carriesRealMoney`
-refuses any other at the writer rather than in a sentence, and payments-billing.md's
-counsel gate is unmoved. **No real KYC provider is wired** either, on the same
-pattern: Persona and Stripe Identity are both paid, so the in-repo fake verifier
-is the only registered one and `carriesRealPii` refuses the first real one at the
-writer. Credentials are claimed and never confirmed. **No node has realtime**, so
-a thread is read by polling. **Nobody is notified of anything**, so an offer and
-an acceptance are both discovered by looking.
+**Not built, and not claimed.** The proof loop landed in slice 6, payouts in
+slice 7 and disputes, ratings and the ops console in slice 8, so a step runs from
+`escalated` all the way to `done`, and when it goes wrong somebody can say so and
+an operator can decide. What is still absent:
+
+**No money moves**: the only registered payment provider is the in-repo fake,
+`carriesRealMoney` refuses any other at all three writers rather than in a
+sentence, and payments-billing.md's counsel gate is unmoved. **No real KYC
+provider is wired** either, on the same pattern: Persona and Stripe Identity are
+both paid, so the in-repo fake verifier is the only registered one and
+`carriesRealPii` refuses the first real one at the writer. Credentials are
+claimed and never confirmed. **No node can be suspended**, because that would be
+a terminal state with no exit until a moderation console exists. **The matcher
+still ranks on price alone**, though `trust_score` and `completed_engagements`
+now move. **Nobody is notified of anything**, so an offer, an acceptance and a
+dispute are all discovered by looking, which is what sets the 48-hour offer
+window and the seven-day work deadline.
 
 ### The slice sequence
 
-| #   | Slice                                                              | What it closes                                                                                                                                              | State arcs it restores                                                                                              |
-| --- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| 1   | ✅ **Domain + guards** `20260831120000`…`123000`                   | the enums with no tables behind them                                                                                                                        | none, deliberately, and the suite pins that                                                                         |
-| 2   | ✅ **Threads** `20260901120000`…`123000`                           | the narrowing below; a node would otherwise see the whole project DAG                                                                                       | none                                                                                                                |
-| 3   | ✅ **Node onboarding** `20260902120000`…`122000`                   | `user_role.human_node`, which had no writer since `20260724000000`. **Not `author_kind.node`**, which needs a node in a room and gets its writer in slice 4 | none, as planned                                                                                                    |
-| 4   | ✅ **Matcher + offers** `20260903120000`…`121000`                  | `MATCHING`, dead since `20260813120000`, and `ESCALATED`'s first exit that is not the owner giving up                                                       | **none, deliberately** ([ADR-0018](../40-adr/0018-offer-exhaustion-returns-the-step-to-its-owner.md))               |
-| 5   | ✅ **Accept, escrow, ledger** `20260904120000`…`127000`            | acceptance, and `CLAIMED`. Accept and fund are inseparable because `claimed → escrow_funded` is the machine's only exit from `claimed`                      | **none, deliberately** ([ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md))                            |
-| 6   | ✅ **The engagement loop to `approved`** `20260906120000`…`125000` | `ESCROW_FUNDED`, and the waitpoint that never completes. The core loop needs **no migration**: every arc it walks was already in the map                    | **none, deliberately** ([ADR-0022](../40-adr/0022-proof-is-an-artifact.md))                                         |
-| 7   | 🟡 **Payout** `20260907120000`…`123000`                            | `APPROVED` on a human task, which held its escrow forever and left somebody unpaid. Also **no `task_state` migration**, for the second slice running        | none. It gives three declared arcs their **first producers**: `held → released`, and `payout_pending → paid → done` |
-| 8   | **Disputes + ratings**                                             | `DISPUTED`, reachable from `in_review` with no ops writer                                                                                                   | all four `→ disputed` arcs, together                                                                                |
+| #   | Slice                                                              | What it closes                                                                                                                                              | State arcs it restores                                                                                                                 |
+| --- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | ✅ **Domain + guards** `20260831120000`…`123000`                   | the enums with no tables behind them                                                                                                                        | none, deliberately, and the suite pins that                                                                                            |
+| 2   | ✅ **Threads** `20260901120000`…`123000`                           | the narrowing below; a node would otherwise see the whole project DAG                                                                                       | none                                                                                                                                   |
+| 3   | ✅ **Node onboarding** `20260902120000`…`122000`                   | `user_role.human_node`, which had no writer since `20260724000000`. **Not `author_kind.node`**, which needs a node in a room and gets its writer in slice 4 | none, as planned                                                                                                                       |
+| 4   | ✅ **Matcher + offers** `20260903120000`…`121000`                  | `MATCHING`, dead since `20260813120000`, and `ESCALATED`'s first exit that is not the owner giving up                                                       | **none, deliberately** ([ADR-0018](../40-adr/0018-offer-exhaustion-returns-the-step-to-its-owner.md))                                  |
+| 5   | ✅ **Accept, escrow, ledger** `20260904120000`…`127000`            | acceptance, and `CLAIMED`. Accept and fund are inseparable because `claimed → escrow_funded` is the machine's only exit from `claimed`                      | **none, deliberately** ([ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md))                                               |
+| 6   | ✅ **The engagement loop to `approved`** `20260906120000`…`125000` | `ESCROW_FUNDED`, and the waitpoint that never completes. The core loop needs **no migration**: every arc it walks was already in the map                    | **none, deliberately** ([ADR-0022](../40-adr/0022-proof-is-an-artifact.md))                                                            |
+| 7   | ✅ **Payout** `20260907120000`…`123000`                            | `APPROVED` on a human task, which held its escrow forever and left somebody unpaid. Also **no `task_state` migration**, for the second slice running        | none. It gives three declared arcs their **first producers**: `held → released`, and `payout_pending → paid → done`                    |
+| 8   | ✅ **Disputes + ratings** `20260908120000`…`128000`                | `DISPUTED`, reachable from `in_review` with no ops writer. And the **last** dead end in this domain                                                         | **all four `→ disputed` arcs, together**, plus one new edge `disputed → matching` ([ADR-0026](../40-adr/0026-the-dispute-exit-map.md)) |
 
 `20260815220000` silently dropped eight arcs from the original map while
 rewriting it for an unrelated reason. Each is restored by the slice that first
@@ -1071,8 +1215,9 @@ though all nine are there. Column shapes live in
 | `ledger_entries`     | ✅ live `20260904122000`, written by `accept_offer` and the reconcile sweep         | Double-entry, append-only, immutable including for `service_role`. **No policy and no client grant**: the reader is the Phase-3 ops console, and a member's view of money is the projection                                                                                                      |
 | `proof_artifacts`    | ❌ **not built, deliberately** ([ADR-0022](../40-adr/0022-proof-is-an-artifact.md)) | Slice 6 decided against it. Proof is an `artifacts` row with `kind = 'proof'`, which the enum has carried since `20260813160000`. A second table strands an unremovable enum value and duplicates five guard and reader surfaces; EXIF/geo belong to a verdict table once an extractor exists    |
 | `payouts`            | ✅ live `20260907121000`, written by the payout sweep and `settle_payout`           | Not in the original nine; forced by them. `pending → paid` is the only mapped arc and `failed` is declared with no producer, the shape `released` had. `platform_fee` is a column written from a constant `0` ([ADR-0024](../40-adr/0024-the-take-rate-is-not-deducted-from-an-agreed-price.md)) |
-| `ratings`            | ⏳ slice 8                                                                          | Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                                                                                                                                              |
-| `disputes`           | ⏳ slice 8                                                                          | With the ops path. A `disputed` task and no ops console is a state nobody can leave                                                                                                                                                                                                              |
+| `ratings`            | ✅ live `20260908127000`, written by `submit_rating`                                | Two-sided, one per side per deal, append-only including for `service_role`. Gated on `outcome = 'completed'`, which excludes a `disputed_resolved` deal deliberately. Its writer is also `trust_score`'s first, in the same transaction                                                          |
+| `disputes`           | ✅ live `20260908122000`, written by `raise_dispute` and `resolve_dispute`          | **No state column** (ADR-0016): `tasks.state` is the machine and open is derived as `resolved_at is null`, as a partial unique index. `evidence` is text and deliberately not a join — six immutable surfaces already hold what a dispute reads                                                  |
+| `ops_actions`        | ✅ live `20260908123000`, written by `resolve_dispute`                              | Not in the original nine; forced by them. `actor_id` and `reason` are both `not null`, which is the whole reason it is not a verb in `events`: every `service_role` write lands there as `system` with a null actor. Append-only including for `service_role`                                    |
 
 **Two deliberate divergences from what this doc used to say, reconciled rather
 than left to drift (rule 1):**
