@@ -419,9 +419,30 @@ serialises CPU work for a reason that no longer applies.
 
 Measured on a 16-core host with torch on 8 threads: 6 sub-queries, 498s end to
 end, roughly 83s per pass. Nothing is wrong with any single pass; there are just
-six of them in a row. Parallelising is not free either, since six concurrent
-passes at 8 torch threads each oversubscribe a 16-core box, so the fix is a
-bounded fan-out rather than a bare `gather`, and it is **not built**.
+six of them in a row.
+
+**Half of that was torch using half the machine.** `torch.set_num_threads`
+defaults to the physical core count while a container is given the logical one,
+so the service ran on 8 of 16 threads on a number nobody had chosen. Isolating
+one rerank pass over 25 candidates in-container: **69.7s at the default 8, 36.8s
+at 16.** `TORCH_NUM_THREADS` now carries that budget, applied at startup by
+`configure_torch_threads` and set to 16 in `docker-compose.yml`. The same goal
+that took **498s now takes 267s**, a 1.86x improvement that matches the isolated
+measurement, and it lands under even the 300s budget that had been discarding it.
+
+Two smaller levers were measured and **not** taken. Capping `MAX_LENGTH` at 512
+instead of 1024 saves only 32.5s against 36.8s, because `padding=True` pads to
+the longest pair in the batch and real chunks tokenise to ~585, so the cap is
+rarely what binds. Halving `retrieval_candidates` to 12 gives 34.0s against
+36.8s, which is far less than linear and buys nothing worth the recall.
+
+**The sequential fan-out itself is still unfixed.** The loop serialises CPU work
+for a reason that expired with [ADR-0009](../40-adr/0009-local-reranker.md): the
+trade was priced when rerank was a metered Cohere call, where serialising was the
+point and `rerank_rpm` was the ceiling, and in-process rerank is explicitly not
+rate-limited. A bare `gather` is not the fix, because concurrent passes now each
+want all 16 threads and would contend; it needs a bounded fan-out that divides
+the thread budget rather than multiplying demand for it.
 
 ## State model
 

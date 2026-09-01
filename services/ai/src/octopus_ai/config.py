@@ -338,6 +338,25 @@ class Settings:
     # over, so CI sets this explicitly. The real fix is a production key.
     rerank_rpm: int = 0
 
+    # How many CPU threads torch may use for in-process embedding and reranking.
+    #
+    # 0 means "leave torch's own default alone", which is what this was before the
+    # setting existed and is still correct anywhere the process does not have the
+    # box to itself.
+    #
+    # It matters because torch defaults to the PHYSICAL core count while a
+    # container is usually given the logical one, so the service quietly uses half
+    # the machine. Measured in-container on a 16-logical-core host, one rerank
+    # pass over 25 candidates: 69.7s at torch's default of 8, 36.8s at 16. A
+    # 1.9x speedup on the single dominant cost in a planning turn, from a number
+    # that was never chosen.
+    #
+    # Not raised above the CPU count by default, and worth not doing by hand
+    # either: past saturation the threads contend and the pass gets slower, and
+    # any parallel sub-query fan-out would have to divide this budget rather than
+    # multiply it.
+    torch_num_threads: int = 0
+
     # Batch size for embedding calls. The API accepts arrays; sending one request
     # per chunk would be both slower and more expensive in overhead.
     embed_batch_size: int = 96
@@ -448,6 +467,7 @@ def get_settings() -> Settings:
         retrieval_candidates=_int("RETRIEVAL_CANDIDATES", 25),
         rerank_top_n=_int("RERANK_TOP_N", 8),
         rerank_rpm=_int("COHERE_RERANK_RPM", 0),
+        torch_num_threads=_int("TORCH_NUM_THREADS", 0),
         embed_batch_size=_int("EMBED_BATCH_SIZE", 96),
         request_timeout_s=_int("AI_REQUEST_TIMEOUT_S", 60),
     )

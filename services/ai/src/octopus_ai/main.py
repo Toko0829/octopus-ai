@@ -12,6 +12,7 @@ side consumes (ADR-0004).
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -100,6 +101,32 @@ def configure_logging(level: int = logging.INFO) -> None:
     package_logger.propagate = False
 
 
+def configure_torch_threads(settings: Settings) -> None:
+    """Give torch the whole box when a local model is doing the work.
+
+    Imported lazily and skipped entirely when neither provider is local, because
+    `local_embedder` and `local_reranker` are kept out of the import graph on
+    purpose so a deployment using hosted providers never pays for torch.
+
+    Torch defaults to the physical core count, while a container is normally
+    given the logical one, so the service was using half the machine on a number
+    nobody had chosen. Reranking is the dominant cost in a planning turn and it is
+    pure CPU, so that halving showed up directly in what a person waits for.
+    """
+    if settings.embed_provider != "local" and settings.rerank_provider != "local":
+        return
+    if settings.torch_num_threads <= 0:
+        return
+
+    import torch
+
+    torch.set_num_threads(settings.torch_num_threads)
+    logger.info(
+        "torch thread budget set",
+        extra={"threads": torch.get_num_threads(), "cpu_count": os.cpu_count()},
+    )
+
+
 class _State:
     """Process-wide singletons. Built at startup, closed at shutdown."""
 
@@ -126,6 +153,7 @@ async def lifespan(_: FastAPI):
     configure_logging()
 
     settings = get_settings()
+    configure_torch_threads(settings)
     state.settings = settings
     state.db = Database(settings)
     state.providers = Providers(settings)
