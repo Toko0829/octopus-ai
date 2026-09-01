@@ -2,6 +2,7 @@ import 'server-only';
 import type {
   Channel,
   ListMessagesResponse,
+  NodeEngagement,
   NodeOffer,
   NodeProfile,
   Room,
@@ -78,4 +79,13 @@ export function fetchNode() {
  */
 export function fetchNodeOffers() {
   return get<{ offers: NodeOffer[] }>('/node/offers');
+}
+
+/**
+ * The work this node already took, read on the server for the same reason the
+ * offers are: the console should render with it in hand rather than flashing an
+ * empty section and filling it in.
+ */
+export function fetchNodeEngagements() {
+  return get<{ engagements: NodeEngagement[] }>('/node/engagements');
 }

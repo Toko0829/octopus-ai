@@ -507,9 +507,10 @@ whose `carriesRealCredentials` flag the writer refuses on, and `checkScopes`.
 ## A node reading and editing their own record
 
 `GET | PATCH /api/node`, `POST | DELETE /api/node/skills[/:tag]`,
-`POST /api/node/credentials`, `POST /api/node/credentials/:id/revoke` and
-`POST /api/node/verification`. Every path is **`/node`, singular, with no id
-segment**, which removes a class of bug before it can be written: there is no
+`POST /api/node/credentials`, `POST /api/node/credentials/:id/revoke`,
+`POST /api/node/verification`, and since slice 5 `GET /api/node/engagements` and
+`POST /api/node/offers/:offerId/accept`. Every path is **`/node`, singular, with
+no id segment**, which removes a class of bug before it can be written: there is no
 `:userId` to forget to compare against `request.user.sub`, so no request can name
 somebody else's record. When the matcher lands and an owner has to read a node,
 that is a different route with a different authorisation question and it should
@@ -638,16 +639,27 @@ no new secret and no new failure mode. The mapping was updated to match.
   so it outranks re-reading a stranger's page; it moves no money, so it yields to
   the three sweeps that do.
 
-**Two writers, one of each kind, and the split is the concurrency design.** The
-sweep is the **single writer of `tasks.state`** in this domain; the decline route
-settles an offer row and never touches the task. Two writers racing on one task,
-one reacting to a person and one to a clock, is how a step gets offered to two
-nodes at once. The visible cost is that for up to one tick a node has declined and
-the owner still reads "Offered to an expert".
+**The sweep is the clock's side of this domain, and `accept_offer` is the
+person's side.** This section used to say the sweep was the single writer of
+`tasks.state` here, which was true while a node could only decline: the decline
+route settles an offer row and never touches the task, and the next tick moves it.
+Slice 5 changed it, because accepting and funding are inseparable, so
+`public.accept_offer` moves the task itself, twice, in one transaction.
 
-**Every task move is conditional on the state that was read**, so the owner
-resolving a step themselves and the sweep dispatching it cannot both win; the
-loser gets zero rows and answers 409, the idiom `reclaimLostRuns` already uses.
+**What keeps them apart is not a single writer, it is that every move on both
+sides is a conditional UPDATE on the row it read**, so a loser performs nothing.
+Sweep first: the accept's `status = 'open'` conditional matches zero rows, it
+raises, and the whole transaction unwinds. Accept first: `settleOffered` reads
+only tasks at `offered`, `offerMatching` only tasks at `matching`, and
+`withdrawOrphans` only `open` offers, so all three miss the accepted pair. They
+cannot interleave past each other, because the cascade only moves a task whose
+latest offer is already settled. Walked through in `match.ts`'s header and
+asserted in `match.test.ts`.
+
+The same idiom covers the owner resolving a step themselves while the sweep
+dispatches it: the loser gets zero rows and answers 409, as `reclaimLostRuns`
+already does. The visible cost of the decline half is unchanged: for up to one
+tick a node has declined and the owner still reads "Offered to an expert".
 
 ### New routes
 
@@ -657,9 +669,59 @@ loser gets zero rows and answers 409, the idiom `reclaimLostRuns` already uses.
 | `GET /api/node/offers`                        | the node | Own offers only. The projection carries three task fields and nothing identifying the owner                                |
 | `POST /api/node/offers/:offerId/decline`      | the node | One conditional UPDATE carrying every precondition, including the deadline judged by Postgres                              |
 
-**There is no accept route**, and the absence is a slice boundary: accepting is
-inseparable from funding escrow, so one that wrote no ledger row would leave a
-node holding work nobody had paid for.
+## Acceptance (marketplace slice 5)
+
+**One database function, and the reason is atomicity rather than tidiness.**
+`public.accept_offer(p_offer_id, p_charge_id)` settles the offer, walks the task
+`offered → claimed → escrow_funded`, writes the engagement, the escrow hold and a
+balanced ledger pair, creates the task's thread and admits the node to it. Written
+in Node it would be nine statements that can half-happen, and the half that matters
+is "the offer says accepted and no hold exists": a node holding work nobody funded,
+which is exactly the boundary the slice was drawn to close.
+
+- **Pure half:** `packages/payments` — the chart of accounts, the balanced pair
+  constructors, the derived idempotency keys, the provider seam and its registry.
+  No clock, no client, no `fetch`, exactly as `packages/marketing` splits.
+- **IO half:** `apps/api/src/lib/engagements.ts` (readable pre-checks, the fake
+  charge, the rpc, the projections) and `apps/api/src/lib/escrow-reconcile.ts`
+  (the ticker phase that gives escrow back).
+- **Position of the new sweep:** after optimize, before the matcher. It touches
+  modelled money, so it outranks making a new offer; it yields to optimize, which
+  stops spend that is actually happening.
+
+**The pre-checks are duplicated in SQL on purpose**, which is
+[ADR-0011](../40-adr/0011-spend-cap-checked-twice.md) applied to acceptance. The
+route exists so a person is told _which_ thing stopped them, in a sentence, before
+anything is written. The function exists because two nodes accepting two steps on
+one project at the same instant both pass a check made in Node, since each reads
+the committed total before either writes; the row lock is what actually holds the
+ceiling. When the raise wins anyway, the route surfaces **its message verbatim**,
+because every `check_violation` in that function names what it found, including
+the state it read back when a conditional update matched nothing.
+
+**Nothing is charged.** The only registered payment provider is a deterministic
+in-repo fake, and `carriesRealMoney` refuses any other before the rpc, which is
+the enforced half of the counsel gate in
+[payments-billing.md](../30-modules/payments-billing.md). That is the third flag
+of its shape, beside `carriesRealCredentials` and `carriesRealPii`.
+
+| Route                                   | Who      | Notes                                                                                                                                                    |
+| --------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/node/offers/:offerId/accept` | the node | **No body**, and one sent anyway is a 400: the price is their own rate and the step is the one offered. Offer read as the caller, so not-theirs is a 404 |
+| `GET /api/node/engagements`             | the node | Accepted work. **Exposes `roomId` and `threadId`**, which the offer projection hides: after acceptance those two ids are the admission                   |
+| `POST /api/rooms/:roomId/messages`      | either   | Gains an optional `threadId`. The channel is **derived** from the thread, and `author_kind` from the caller's own membership row                         |
+| `GET /api/projects/:id`                 | owner    | Task projection gains the engagement line; `committedBudget` gains held escrow and `escrowHeld` is broken out beside it                                  |
+
+### New environment flags
+
+`ESCROW_RECONCILE_ENABLED` (on by default, a kill switch) and
+`ESCROW_RECONCILE_MAX_PER_TICK` (default 3). Of the five sweep flags this one has
+the strongest claim to on-by-default: the others are switches over things a
+deployment might reasonably not do, and this is the only sweep whose absence
+actively takes something away. A step cancelled after its escrow was funded leaves
+the hold at `held`, a held hold commits the ceiling
+([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md)), and
+**nothing else in the product can release it**.
 
 ### New environment flags
 

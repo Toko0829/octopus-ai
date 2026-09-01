@@ -67,7 +67,7 @@ export const NO_OPEN_OFFERS =
   'There is no work to offer you right now. When an owner sends a step out for an expert and you match it, the offer appears here.';
 
 /**
- * The one gap a node can close themselves that eligibility does not cover.
+ * The gaps a node can close themselves that eligibility does not cover.
  *
  * `node_profiles.rate` is nullable and the matcher's pool query requires it,
  * because a rate is what an offer is measured against and `20260831120000:160-165`
@@ -79,9 +79,29 @@ export const NO_OPEN_OFFERS =
  * form: nothing is broken, no control is disabled, and the person waits
  * indefinitely for a reason no surface states. Returns null when there is
  * nothing to say.
+ *
+ * **The second gap arrived with escrow, and it is quieter still.** Slice 5 funds
+ * a step by holding the node's rate as a whole amount against the project's
+ * authorised budget, and an hourly rate is a price per hour: there is no hours
+ * field anywhere to multiply by, and estimating one at acceptance would be
+ * guessing at the number that decides what somebody is paid. So
+ * `readEligiblePool` filters `rate_period = 'task'` and `accept_offer` refuses an
+ * hourly rate again behind it.
+ *
+ * A node who set an hourly rate has therefore done everything the page asks and
+ * is still invisible to the matcher, which is exactly the situation the no-rate
+ * sentence exists for. It is a real product limit rather than a bug, and per-hour
+ * work returns when there is a way to agree how many hours.
  */
-export function offerabilityGap(node: { rate: number | null }): string | null {
-  return node.rate === null
-    ? 'Set your rate to start receiving offers. Work is matched against it, so a node without one is never offered anything.'
-    : null;
+export function offerabilityGap(node: {
+  rate: number | null;
+  ratePeriod?: 'hour' | 'task' | null;
+}): string | null {
+  if (node.rate === null) {
+    return 'Set your rate to start receiving offers. Work is matched against it, so a node without one is never offered anything.';
+  }
+  if (node.ratePeriod === 'hour') {
+    return 'Change your rate to a price per step to start receiving offers. Work is funded as one whole amount held in escrow, so a per-hour rate cannot be matched yet.';
+  }
+  return null;
 }

@@ -138,6 +138,40 @@ those in would override the image's own baked paths with directories that do not
 exist inside it. Same identity-versus-location split [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)
 draws, reaching a different surface.
 
+**The API image carries `scripts/`, and a healthy stack is the argument for it.**
+Compose brings up three services that pass every healthcheck and still cannot be
+used to test the product, for two reasons that both read as application defects.
+An empty corpus makes the agent refuse every goal, which is correct behaviour and
+looks from the room exactly like a planner that does not work. And a
+`node_profiles` row cannot be created by any route, policy or client grant:
+`public.invite_node` is granted to `service_role` alone and `scripts/invite-node.mjs`
+is its only caller ([human-nodes-marketplace.md](human-nodes-marketplace.md)), so
+with no invited expert the matcher sweep, the offer, the acceptance and the
+escrow hold behind it are all unreachable. **The stack could serve those features
+and could not be made to hold the one row that exercises them.**
+
+Seeding was always available inside the `ai` image, which ships `corpus/`. The
+invite was not, so the only way to run it was on the host, and the documented host
+form takes `SUPABASE_SECRET_KEY=...` on the command line. That is the part worth
+fixing rather than the inconvenience: **a testing step should not put the service
+key in a shell history**, and compose already reads `apps/api/.env` for this
+service, so through the container the script inherits exactly the credentials the
+API runs on and nothing is retyped.
+
+```bash
+docker compose run --rm --no-deps ai python -m octopus_ai.seed
+docker compose run --rm --no-deps api node scripts/invite-node.mjs --email them@example.com --jurisdictions US-TX,US --languages en --confirm
+```
+
+One `COPY scripts/ scripts/` of ~13 KB, placed last so it invalidates nothing
+above it, and it adds no dependency: the scripts are zero-dep by design, plain
+`fetch` against PostgREST and GoTrue, so there is nothing to install or build.
+`--no-deps` is for a stack already up; without it compose waits on the reasoning
+core's healthcheck again before running a script that never calls it. This is not
+the beginning of an ops console, which stays Phase 3
+([admin-ops.md](admin-ops.md)); it makes an existing script reachable from the
+network its credentials already describe.
+
 **`api` waits on the reasoning core's healthcheck, not on its process.** That
 service warms its embedder before it serves, so "started" and "ready" are minutes
 apart, and an agent run into that gap fails in a way that reads as a broken

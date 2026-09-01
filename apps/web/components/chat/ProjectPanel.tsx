@@ -356,6 +356,16 @@ function Budget({
           <span className="mono">
             {detail.committedBudget} {detail.currency}
           </span>
+          {/* Broken out rather than folded away, because the two halves settle
+              on different clocks: a campaign cap frees up when the campaign
+              ends, and a hold frees up when the step is finished or stopped.
+              An owner looking at a number they cannot reduce needs to know
+              which half is which (ADR-0020). */}
+          {detail.escrowHeld > 0 && (
+            <span className="work-budget-sub">
+              of which <span className="mono">{detail.escrowHeld}</span> held in escrow
+            </span>
+          )}
         </span>
         <span className="work-budget-figure">
           <span className="work-budget-label">Available</span>
@@ -757,6 +767,21 @@ function TaskList({
   );
 }
 
+/**
+ * A date rendered on the client only.
+ *
+ * Formatting during a server render produces the server's locale and time zone,
+ * which then differs from what the browser renders and trips a hydration
+ * mismatch. The same treatment the node console gives an expiry.
+ */
+function AcceptedDate({ value }: { value: string }) {
+  const [text, setText] = useState(value.slice(0, 10));
+  useEffect(() => {
+    setText(new Date(value).toLocaleDateString());
+  }, [value]);
+  return <>{text}</>;
+}
+
 function TaskRow({
   task,
   projectId,
@@ -794,6 +819,31 @@ function TaskRow({
           <span className="work-risk"> · Uses an outside service</span>
         )}
       </p>
+
+      {/* Who took this step, at what price, when.
+
+          **This is the counterparty pair opening in one direction**, and it is
+          the only place the owner learns who is doing their work. `offers` stays
+          closed to them, because an offer names every expert who was ASKED,
+          including the ones who said no. An engagement names the one who took it
+          and is being paid from this project's authorised budget.
+
+          Tabular numerics on the money (rule 14), and the price is the frozen
+          one: an expert who raises their rate later has not re-priced work
+          already agreed. */}
+      {task.engagement && (
+        <p className="work-engagement">
+          <span className="work-engagement-who">
+            {task.engagement.nodeDisplayName ?? 'An expert'}
+          </span>
+          <span className="work-engagement-price mono">
+            {task.engagement.agreedPrice.toFixed(2)} {task.engagement.currency}
+          </span>
+          <span className="work-engagement-when mono">
+            Accepted <AcceptedDate value={task.engagement.acceptedAt} />
+          </span>
+        </p>
+      )}
 
       {canAct && stuck && <ResolveStep task={task} projectId={projectId} onResolved={onResolved} />}
 

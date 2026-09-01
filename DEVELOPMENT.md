@@ -116,6 +116,35 @@ service warms its embedder before it serves and "started" and "ready" are minute
 apart. And `AI_SERVICE_URL` is overridden to `http://ai:8000`, since a service
 name is a fact about that network rather than about your machine.
 
+#### Two commands before the stack is worth testing
+
+A healthy stack is not yet a testable one, and both gaps present as product bugs
+rather than as missing setup:
+
+```bash
+docker compose run --rm ai python -m octopus_ai.seed
+```
+
+```bash
+docker compose run --rm api node scripts/invite-node.mjs --email them@example.com --jurisdictions US-TX,US --languages en --confirm
+```
+
+**With an empty corpus the agent refuses every goal**, which is correct behaviour
+and indistinguishable, from the room, from a planner that does not work. **With
+no invited expert the marketplace cannot be entered at all**: `public.invite_node`
+is granted to `service_role` alone and that script is its only caller, so the
+matcher, the offer, the acceptance and the escrow hold behind it are all
+unreachable until somebody runs it. The person must have signed up first, since
+an invitation attaches to an account and never creates one.
+
+Both run inside the service that already holds the credentials, so they inherit
+`apps/api/.env` and nothing is retyped. That is the reason to prefer this form
+over the host form documented under [Inviting a node](#inviting-a-node-ops):
+passing `SUPABASE_SECRET_KEY=...` on a command line puts the service key in a
+shell history, and a testing convenience is a poor reason to do that. `--no-deps`
+is worth adding when the stack is already up; without it compose waits on the
+reasoning core's healthcheck again before running a script that does not need it.
+
 Compose is for running the thing. It does not hot-reload, so editing is still the
 three-terminal path below.
 

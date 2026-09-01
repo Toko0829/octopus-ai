@@ -881,6 +881,19 @@
   color: var(--human);
 }
 
+/* Which conversation a line belongs to.
+
+   The owner's stream carries both the room's own conversation and the messages
+   of any task thread they can read, so a marker is needed to tell them apart.
+   A word rather than a tint or an indent (rule 15): somebody who cannot
+   distinguish the shades reads exactly the same page. Quiet, because the
+   marker is context and the message is the content. */
+.msg-thread {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
+
 .msg.failed .msg-text {
   border-left: 2px solid var(--human);
   padding-left: 8px;
@@ -1654,6 +1667,40 @@
 .work-budget-label {
   font-size: var(--text-xs);
   color: var(--text-muted);
+}
+
+/* The escrow half of what is committed. Set beneath the total rather than beside
+   it, because it is part of that number rather than a fourth figure: the two
+   halves settle on different clocks and an owner reading a total they cannot
+   reduce needs to know which half is which (ADR-0020). */
+.work-budget-sub {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Who took a step, for how much, and when.
+
+   The only place the owner learns who is doing their work: `offers` stays closed
+   to them because it names everybody who was asked, including the people who
+   said no. Tabular numerics on the money (rule 14). */
+.work-engagement {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.work-engagement-who {
+  color: var(--text-secondary);
+}
+.work-engagement-price {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.work-engagement-when {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Campaigns, between the budget and the steps: what was authorised, and what it

@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation';
 import './node.css';
 import { NodeConsole } from './NodeConsole';
 import { createClient } from '../../lib/supabase/server';
-import { fetchNode, fetchNodeOffers } from '../../lib/api-server';
+import { fetchNode, fetchNodeEngagements, fetchNodeOffers } from '../../lib/api-server';
 
 export const metadata: Metadata = {
   title: 'Octopus · Your node profile',
@@ -63,8 +63,21 @@ export default async function NodePage() {
   // load never reaches the offers route at all. Null on failure rather than a
   // thrown error: a console that cannot list offers is still worth rendering,
   // because the profile it also shows is what most visits are for.
-  const offerResult = await fetchNodeOffers();
+  // Both lists, in parallel, for the same reason and with the same fallback: a
+  // console that cannot list one of them is still worth rendering.
+  const [offerResult, engagementResult] = await Promise.all([
+    fetchNodeOffers(),
+    fetchNodeEngagements(),
+  ]);
   const offers = offerResult?.offers ?? [];
+  const engagements = engagementResult?.engagements ?? [];
 
-  return <NodeConsole initial={result.node} initialOffers={offers} email={user.email ?? null} />;
+  return (
+    <NodeConsole
+      initial={result.node}
+      initialOffers={offers}
+      initialEngagements={engagements}
+      email={user.email ?? null}
+    />
+  );
 }

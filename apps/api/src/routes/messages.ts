@@ -81,6 +81,7 @@ const MessageRow = z.object({
   body: z.string().nullable(),
   seq: z.coerce.number().int(),
   created_at: z.string(),
+  thread_id: z.string().nullable(),
   // PostgREST returns an embedded one-to-one relation as an array or object
   // depending on how it infers cardinality, so accept both rather than depend on
   // the inference staying stable across schema changes.
@@ -88,8 +89,14 @@ const MessageRow = z.object({
 });
 type MessageRow = z.infer<typeof MessageRow>;
 
+// `thread_id` joins the pinned select here rather than in `20260901121000`,
+// which added the column and deliberately left this string alone: "the reader
+// lands with the slice that has something to read." Slice 5 admits a node to a
+// thread, so the owner's stream now interleaves two conversations and a client
+// that could not tell them apart would render a node's work as if it had been
+// said to the whole room.
 const SELECT_COLUMNS =
-  'id, room_id, channel_id, author_id, author_kind, body, seq, created_at, ' +
+  'id, room_id, channel_id, author_id, author_kind, body, seq, created_at, thread_id, ' +
   'action_embeds(id, message_id, component, payload, required_role, state, created_at)';
 
 function toEmbed(raw: unknown): Message['embed'] {
@@ -145,6 +152,7 @@ function toMessage(row: MessageRow): Message {
     body: row.body,
     seq: row.seq,
     createdAt: row.created_at,
+    threadId: row.thread_id,
     embed: toEmbed(row.action_embeds),
   };
 }
@@ -242,7 +250,7 @@ export async function messageRoutes(
       }
 
       const { roomId } = params.data;
-      const { body, channelId, idempotencyKey } = parsedBody.data;
+      const { body, channelId, threadId, idempotencyKey } = parsedBody.data;
       const user = request.user as NonNullable<typeof request.user>;
       const db = createUserClient(opts.supabase, request.accessToken as string);
 
@@ -251,9 +259,33 @@ export async function messageRoutes(
           return fail(reply, 404, 'not_found', 'Room not found.');
         }
 
-        // A channel from another room would otherwise be accepted: the RLS policy
-        // gates the room, not the channel/room pairing.
-        if (channelId) {
+        // **The thread decides the channel when one is given.** A thread already
+        // knows which channel it lives in (`threads.channel_id`, kept honest by
+        // the composite foreign key), so a request naming both could name two
+        // different ones and the table would then have to arbitrate. Derived
+        // rather than validated, which removes the disagreement instead of
+        // catching it.
+        //
+        // Read as the caller: `threads_select_member` is
+        // `private.member_scope_covers(room_id, id)`, so a thread the caller is
+        // not admitted to simply is not there and this is a 400 rather than a
+        // 403 that confirms it exists.
+        let effectiveChannelId = channelId ?? null;
+        if (threadId) {
+          const { data: thread, error: threadErr } = await db
+            .from('threads')
+            .select('id, channel_id')
+            .eq('id', threadId)
+            .eq('room_id', roomId)
+            .maybeSingle();
+          if (threadErr) throw threadErr;
+          if (!thread) {
+            return fail(reply, 400, 'bad_request', 'threadId does not belong to this room.');
+          }
+          effectiveChannelId = (thread as { channel_id: string }).channel_id;
+        } else if (channelId) {
+          // A channel from another room would otherwise be accepted: the RLS policy
+          // gates the room, not the channel/room pairing.
           const { data: channel, error: channelErr } = await db
             .from('channels')
             .select('id')
@@ -266,15 +298,48 @@ export async function messageRoutes(
           }
         }
 
-        // author_id/author_kind come from the verified JWT, never the request body.
-        // The `messages_insert_own` policy independently re-checks both.
+        // **`author_kind` is derived from the caller's own membership row, never
+        // from the request.** A live `human_node` membership scoped to the thread
+        // being posted into makes this `'node'`; everything else stays `'user'`.
+        //
+        // Read as the caller, so `room_members_select_member` decides what is
+        // visible and a thread-scoped member reads exactly their own row
+        // (`20260901123000`). `messages_insert_own` then re-checks the same fact
+        // from the same table independently (`20260904127000`), which is the
+        // defense in depth rule 6 asks for rather than a route somebody could
+        // later call with a different thread.
+        //
+        // **The node posts through their own grant**, like every other member
+        // (rule 5). The alternative, a server-mediated `POST /api/node/messages`
+        // writing with the secret key, would be a second write path to keep in
+        // step with this one on the idempotency contract, the pairing checks and
+        // the broadcast payload. Argued in `20260904127000`'s header.
+        let authorKind: 'user' | 'node' = 'user';
+        if (threadId) {
+          const { data: membership, error: memberErr } = await db
+            .from('room_members')
+            .select('role, scope, thread_id')
+            .eq('room_id', roomId)
+            .eq('user_id', user.sub)
+            .maybeSingle();
+          if (memberErr) throw memberErr;
+          const m = membership as { role: string; scope: string; thread_id: string | null } | null;
+          if (m && m.role === 'human_node' && m.scope === 'thread' && m.thread_id === threadId) {
+            authorKind = 'node';
+          }
+        }
+
+        // author_id/author_kind come from the verified JWT and from the database,
+        // never the request body. The `messages_insert_own` policy independently
+        // re-checks both.
         const { data, error } = await db
           .from('messages')
           .insert({
             room_id: roomId,
-            channel_id: channelId ?? null,
+            channel_id: effectiveChannelId,
+            thread_id: threadId ?? null,
             author_id: user.sub,
-            author_kind: 'user',
+            author_kind: authorKind,
             body,
             idempotency_key: idempotencyKey,
           })

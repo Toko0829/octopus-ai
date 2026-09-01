@@ -823,21 +823,21 @@ Five things about that migration are load-bearing, and each is enforced in the d
 
 ## Marketplace schema
 
-Four tables are live (`20260831120000` … `20260831123000`) and five are
-deferred. The table says which is which, because a list mixing live tables with
-intentions reads as though all of them are there.
+Six tables are live and three are deferred. The table says which is which,
+because a list mixing live tables with intentions reads as though all of them are
+there.
 
-| Table                | Status                                                                     | Key columns / notes                                                                                                                                                                                       |
-| -------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node_profiles`      | ✅ live `20260831120000`, written by `invite_node` + `decide_node_kyc`     | `user_id` **PK** (a node is a user), `kyc_status`, `availability`, `trust_score` (NULL = cold start, never 0), `service_jurisdictions text[]`, `rate` + `rate_period` (NULL = nothing quoted, never free) |
-| `node_skills`        | ✅ live `20260831121000`, written by `/api/node/skills`                    | `(node_id, skill_tag)` PK, `verified`. Tag is shape-checked text, not an enum                                                                                                                             |
-| `node_credentials`   | ✅ live `20260831122000`, written by `/api/node/credentials` (claims only) | Renamed from the spec's `credentials`. `kind`, `jurisdiction`, `verified` (write-once true), `evidence_path`, `revoked_at`                                                                                |
-| `node_verifications` | ✅ live `20260831123000`, written by `decide_node_kyc`                     | The check log. **No policy and no client grant at all**; append-only including for `service_role`                                                                                                         |
-| `offers`             | ⏳ slice 4, with the matcher                                               | Its entire content is a lifecycle. A transition map for transitions nobody can make is the `ad_entities` mistake, corrected once already                                                                  |
-| `engagements`        | ⏳ slice 5, with accept-and-fund                                           | **No state column** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)): engagement state is `tasks.state`. Carries `agreed_price`, `deadline_at`, `terms_hash`, `outcome`              |
-| `proof_artifacts`    | ⏳ slice 6, with the proof loop                                            | `artifacts` already has `kind` and `storage_path`. A second answer to "where is the deliverable" is the `is_project_member` defect class; slice 6 decides table vs. columns                               |
-| `ratings`            | ⏳ slice 8                                                                 | Written after `paid`. Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                                 |
-| `disputes`           | ⏳ slice 8, with the ops path                                              | A `disputed` task with no ops console is a state nobody can leave — the `escalated` defect reproduced deliberately                                                                                        |
+| Table                | Status                                                                       | Key columns / notes                                                                                                                                                                                                                       |
+| -------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node_profiles`      | ✅ live `20260831120000`, written by `invite_node` + `decide_node_kyc`       | `user_id` **PK** (a node is a user), `kyc_status`, `availability`, `trust_score` (NULL = cold start, never 0), `service_jurisdictions text[]`, `rate` + `rate_period` (NULL = nothing quoted, never free)                                 |
+| `node_skills`        | ✅ live `20260831121000`, written by `/api/node/skills`                      | `(node_id, skill_tag)` PK, `verified`. Tag is shape-checked text, not an enum                                                                                                                                                             |
+| `node_credentials`   | ✅ live `20260831122000`, written by `/api/node/credentials` (claims only)   | Renamed from the spec's `credentials`. `kind`, `jurisdiction`, `verified` (write-once true), `evidence_path`, `revoked_at`                                                                                                                |
+| `node_verifications` | ✅ live `20260831123000`, written by `decide_node_kyc`                       | The check log. **No policy and no client grant at all**; append-only including for `service_role`                                                                                                                                         |
+| `offers`             | ✅ live `20260903120000`, written by the matcher sweep and the node's routes | Its entire content is a lifecycle, so it landed **with** its writers rather than ahead of them. Full shape in §`offers` below                                                                                                             |
+| `engagements`        | ✅ live `20260904120000`, written by `accept_offer`                          | **No state column** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)): engagement state is `tasks.state`. Carries `agreed_price` (frozen), `deadline_at`, `terms_hash`, `outcome`. Full shape in §`engagements` below |
+| `proof_artifacts`    | ⏳ slice 6, with the proof loop                                              | `artifacts` already has `kind` and `storage_path`. A second answer to "where is the deliverable" is the `is_project_member` defect class; slice 6 decides table vs. columns                                                               |
+| `ratings`            | ⏳ slice 8                                                                   | Written after `paid`. Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                                                                 |
+| `disputes`           | ⏳ slice 8, with the ops path                                                | A `disputed` task with no ops console is a state nobody can leave — the `escalated` defect reproduced deliberately                                                                                                                        |
 
 **`credentials` is named `node_credentials` here, diverging from the module doc
 on purpose.** A table called `public.credentials` three tables from
@@ -852,15 +852,48 @@ specificity ordering, not a geometry query.
 
 ## Payments schema
 
-| Table                       | Key columns                                                                                                      |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `escrow_holds`              | `id`, `task_id`, `charge_id`, `amount`, `currency`, `state` (HELD/RELEASED/REFUNDED), `idempotency_key` UNIQUE   |
-| `ledger_entries`            | `id`, `account`, `debit`, `credit`, `currency`, `ref_type`, `ref_id`, `created_at` — **double-entry, immutable** |
-| `payouts`                   | `id`, `node_id`, `transfer_id`, `amount`, `platform_fee`, `state`, `idempotency_key` UNIQUE                      |
-| `subscriptions`             | `id`, `user_id`, `tier`, `status`, `current_period_end`                                                          |
-| `platform_fees`, `invoices` | —                                                                                                                |
+**Two tables are live and the rest are deferred**, on the marketplace schema's
+habit above. **Nothing in this schema charges anything**: the only registered
+payment provider is a deterministic in-repo fake, and the counsel gate in
+[payments-billing.md](../30-modules/payments-billing.md) is unmoved, because
+modelling an obligation against an already-authorised ceiling is not money
+movement.
+
+| Table                       | Status                                                                    | Key columns                                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `escrow_holds`              | ✅ live `20260904121000`, written by `accept_offer` + the reconcile sweep | `id`, `task_id`, `project_id`, `charge_id`, `amount numeric(12,2) > 0`, `currency`, `state` checked text (`held\|released\|refunded`), `idempotency_key` UNIQUE |
+| `ledger_entries`            | ✅ live `20260904122000`, written by the same two                         | `id`, `account`, `debit`/`credit numeric(12,2) >= 0` with `check ((debit = 0) <> (credit = 0))`, `currency`, `ref_type`, `ref_id`, `created_at`                 |
+| `payouts`                   | ⏳ slice 7, with `held → released`                                        | `id`, `node_id`, `transfer_id`, `amount`, `platform_fee`, `state`, `idempotency_key` UNIQUE                                                                     |
+| `subscriptions`             | ⏳ no slice; nothing bills anybody                                        | `id`, `user_id`, `tier`, `status`, `current_period_end`                                                                                                         |
+| `platform_fees`, `invoices` | ⏳ with the first transfer                                                | —                                                                                                                                                               |
+
+**`escrow_holds` lifecycle.** `private.escrow_transition_allowed` permits exactly
+`held → refunded`, whose producer is `apps/api/src/lib/escrow-reconcile.ts`.
+**`released` is in the check constraint and out of the map**: the constraint is
+the column's vocabulary and the map is what can be done today, and release's
+producer is the payout slice. A `security definer` trigger validates, stamps
+`updated_at` and writes `escrow.transitioned`, with a `when (old.state is
+distinct from new.state)` clause so an ordinary edit is not read as a
+self-transition. It binds `service_role`.
+
+**`escrow_holds` RLS and grants.** One policy,
+`escrow_holds_select_member` (`private.is_project_member(project_id)`), and
+`grant select` to `authenticated`: a hold names no node, so what it tells a member
+is how much of their own ceiling is spoken for. `delete` and `truncate` are
+revoked **including from `service_role`**.
+
+**`ledger_entries` has the strictest posture in the schema.** RLS enabled with
+**no policy and no client grant at all**, the `events` shape: the reader of raw
+entries is the Phase-3 ops console, and a member's view of money is the
+projection. `update`, `delete` and `truncate` are revoked **including from
+`service_role`**, because append-only that binds only clients is not append-only.
+Balance is a property of two rows and cannot be a constraint, so it is enforced by
+the pair constructors in `packages/payments` and pinned by pgTAP as
+`sum(debit) = sum(credit)` per `ref_id`. `account` is text validated by a reviewed
+file rather than an enum, on `channel_connections.provider`'s precedent.
 
 - Money movements are **idempotent** (unique `idempotency_key`) and **event-sourced**; the ledger is append-only.
+- **`projects.budget_ceiling` now has two classes of committer**: non-terminal campaign `budget_cap`s and `escrow_holds` at `state = 'held'`. Four places compute that sum and must move in step ([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md)). This is still not a CHECK constraint, on this file's standing ground: a constraint is a rule the database applies to itself with no idea what was authorised.
 
 ## Marketing schema
 
@@ -977,15 +1010,17 @@ exercise is the `ad_entities` mistake.
 | `decline_reason` | `text`                 | ≤ 500 chars, and only on a decline                                                  |
 
 **Enum `public.offer_status`:** `open | declined | expired | withdrawn |
-accepted`. Three settlements because they answer different questions; `accepted`
-is declared (add-value is irreversible) and **unreachable**, since accepting is
-inseparable from funding escrow.
+accepted`. Four settlements because they answer different questions. `accepted`
+was declared (add-value is irreversible) and **unreachable for two slices**,
+becoming reachable in `20260904124000` once `accept_offer` could fund escrow in
+the same transaction.
 
 **Lifecycle:** `private.offer_transition_allowed` permits exactly `open →
-declined | expired | withdrawn`. One `security definer` trigger validates and
-writes the `offer.transitioned` audit event, with a `when (old.status is distinct
-from new.status)` clause so an ordinary edit is not read as a self-transition.
-The trigger binds `service_role`, so neither writer can route around the map.
+declined | expired | withdrawn | accepted`, all four terminal. One `security
+definer` trigger validates and writes the `offer.transitioned` audit event, with a
+`when (old.status is distinct from new.status)` clause so an ordinary edit is not
+read as a self-transition. The trigger binds `service_role`, so no writer can
+route around the map.
 
 **Three uniqueness rules carry the design.** `(task_id, round)` is the sweep's
 replay contract: a pass that inserted and crashed re-derives the same round and
@@ -994,10 +1029,13 @@ asked once ever. A partial unique on `(task_id) where status = 'open'` makes
 one-at-a-time cascade structural.
 
 **RLS and grants.** One policy, `offers_select_own` (`node_id = auth.uid()`), and
-`grant select` to `authenticated`. **The project owner reads zero rows**, which is
-deliberate and pgTAP-asserted: an offer names a node, and `20260901122000` closed
-the owner-sees-node and node-sees-owner pair together. `delete` and `truncate` are
-revoked **including from `service_role`**, the `node_verifications` precedent.
+`grant select` to `authenticated`. **The project owner reads zero rows, and still
+does after slice 5**, which is deliberate and pgTAP-asserted. The counterparty
+pair opened through `engagements` (`20260904126000`), so the owner learns who took
+their step; an offer names everybody who was _asked_, including the people who
+declined, and publishing that trail is a separate disclosure decision. `delete`
+and `truncate` are revoked **including from `service_role`**, the
+`node_verifications` precedent.
 
 **New index on `tasks`** (`20260903121000`): `tasks_market_idx (state) where state
 in ('matching','offered')`. The other two task indexes are project-scoped and
@@ -1007,3 +1045,82 @@ all projects.
 **New event verbs:** `offer.transitioned` (trigger), `offer.created` (the sweep,
 `system`), `offer.declined` (the route, `actor_kind = 'node'` with the node's id),
 and `task.match_requested` (the dispatch route, with the owner's id).
+
+## `engagements` (marketplace slice 5, `20260904120000`)
+
+One deal: one node took one task at one price. **No state column**
+([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)) because
+every state it could carry is a `public.task_state` already under trigger
+enforcement. `tasks.state` carries the fact about the **work**; this carries facts
+about the **deal**.
+
+| Column                                       | Type                       | Notes                                                                                                 |
+| -------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `id`                                         | `uuid` pk                  |                                                                                                       |
+| `task_id`                                    | `uuid not null`            | → `tasks` cascade                                                                                     |
+| `project_id`                                 | `uuid not null`            | → `projects` cascade. Denormalised, the `offers` precedent                                            |
+| `node_id`                                    | `uuid not null`            | → `node_profiles(user_id)` cascade                                                                    |
+| `offer_id`                                   | `uuid not null` **UNIQUE** | `accept_offer`'s entire idempotency contract. A new cascade round is a new offer, so it is epoch-ed   |
+| `agreed_price`                               | `numeric(12,2) > 0`        | **Frozen at acceptance.** Deliberately does not follow `node_profiles.rate`                           |
+| `currency`                                   | `text not null`            | Checked against the project's before the insert                                                       |
+| `accepted_at`                                | `timestamptz`              |                                                                                                       |
+| `deadline_at`, `nda_signed_at`, `terms_hash` | nullable                   | **No writer and no reader in slice 5.** The e-signature step is not built; the shape is settled       |
+| `ended_at`, `outcome`                        | nullable                   | `completed \| reassigned \| cancelled \| disputed_resolved`, bound to `ended_at` by an equality check |
+
+**One live engagement per task**, as `engagements_one_live_idx (task_id) where
+ended_at is null`. Partial rather than plain, because a reassignment after a
+no-show creates a **second** engagement and a plain unique would forbid the
+recovery path the machine exists to support.
+
+**Write-once guard.** `private.guard_engagement_end()` (SECURITY DEFINER) refuses
+any change to `task_id`, `node_id`, `offer_id`, `agreed_price` or `currency`,
+refuses un-ending, refuses re-outcoming, and writes `engagement.ended` in the same
+trigger so an entry cannot be forgotten by a caller.
+
+**RLS and grants.** Two policies, and the second is the deliberate opening of "who
+took my step": `engagements_select_node` (`node_id = auth.uid()`) and
+`engagements_select_member` (`private.is_project_member(project_id)`). `delete`
+and `truncate` are revoked including from `service_role`; UPDATE survives because
+ending a deal is an update and the guard is what constrains it.
+
+## `accept_offer` (marketplace slice 5, `20260904125000`)
+
+`public.accept_offer(p_offer_id uuid, p_charge_id text) returns uuid`, `security
+invoker`, granted to `service_role` alone. The fifth writer of
+`materialise_campaign`'s kind and the first that commits money. In order:
+idempotency before validation (via `engagements.offer_id`); the offer read and
+checked open on **Postgres's** clock; the price frozen from `node_profiles` with
+an hourly rate refused; `select ... for update` on the project, then the ceiling
+re-checked over **both** committer classes; the three arcs as conditional UPDATEs
+so every guard fires and every audit row is trigger-written; the engagement, hold
+and balanced ledger pair; the thread created-or-found; the node admitted
+thread-scoped; and explicit `events` rows for the three things an INSERT created.
+
+**No task-map migration ships in slice 5.** `offered → claimed` and
+`claimed → escrow_funded` have been in `private.task_transition_allowed` since
+`20260813120000` and simply gain a producer.
+[ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md) records why
+`claimed → matching` stays dropped: both moves are in one transaction, so
+`claimed` is transit-only.
+
+**New event verbs:** `engagement.created`, `engagement.ended` (trigger),
+`escrow.transitioned` (trigger), `thread.created`, `node.admitted`, and
+`offer.accepted` (the route, `actor_kind = 'node'` with the node's id).
+
+## `private.engaged_counterparty` (marketplace slice 5, `20260904126000`)
+
+The counterparty pair, deferred by name in `20260831120000`, `20260901122000` and
+`20260901123000` and written once here. SECURITY DEFINER, `stable`, EXECUTE to
+`anon` and `authenticated`, backing a **second** policy on `public.profiles`
+(`profiles_select_counterparty`). `private.shares_room_with` is untouched, so the
+roster narrowing cannot be lost by editing the counterparty rule.
+
+**It joins through `engagements`, never through `room_members.thread_id`**, and
+that is the whole design. A membership row outlives the work, so a predicate over
+memberships would need a second copy of the time-box; the owner is room-scoped and
+shares no thread with the node, so "we share a thread" is false for exactly the
+person the owner half exists to serve. `ended_at is null` is the entire time-box:
+ending the engagement closes the pair again.
+
+**`node_profiles` and `offers` stay closed**, deliberately. What opens is
+`profiles`: a display name and the basics a chat surface needs.

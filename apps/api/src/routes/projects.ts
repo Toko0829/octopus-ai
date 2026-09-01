@@ -123,6 +123,43 @@ export const CAMPAIGN_COLUMNS =
 /** Terminal campaigns hold none of the ceiling. Mirrors `private.campaign_state_is_terminal`. */
 const TERMINAL_CAMPAIGN_STATES = new Set(['completed', 'cancelled', 'failed']);
 
+/**
+ * What the project has committed against its authorised ceiling.
+ *
+ * **The fourth of ADR-0020's four places**, exported and pure so that it is
+ * pinned by a test rather than reviewed inside a handler. The other three are
+ * `checkSpendCap`, `readSpendInputs`, and the sums inside `materialise_campaign`
+ * and `accept_offer`; all four apply the same filters, and a suite asserts the
+ * same boundary on each so drift fails a test rather than passing quietly.
+ *
+ * Both classes, filtered identically to their SQL twins: a terminal campaign
+ * holds none of the ceiling, a campaign with no cap contributes nothing rather
+ * than turning the sum into NULL, and only a `held` escrow row commits anything.
+ *
+ * `escrowHeld` is returned separately as well as folded into the total, because
+ * the two halves settle on different clocks and an owner reading a number they
+ * cannot reduce needs to know which half is which.
+ *
+ * Hold amounts arrive as `numeric(12,2)`, which PostgREST hands back as a
+ * **string**. Converted here rather than compared as one: `'900' > 1000` is
+ * false in JavaScript for the wrong reason, and a money figure that is right by
+ * accident is not right.
+ */
+export function projectCommitments(input: {
+  campaigns: { state: string; budgetCap: number | null }[];
+  heldAmounts: (number | string | null)[];
+}): { committedBudget: number; escrowHeld: number } {
+  const campaignCommitted = input.campaigns
+    .filter((c) => !TERMINAL_CAMPAIGN_STATES.has(c.state) && c.budgetCap !== null)
+    .reduce((sum, c) => sum + (c.budgetCap ?? 0), 0);
+
+  const escrowHeld = input.heldAmounts
+    .filter((a): a is number | string => a !== null)
+    .reduce((sum: number, a) => sum + Number(a), 0);
+
+  return { committedBudget: campaignCommitted + escrowHeld, escrowHeld };
+}
+
 const TaskRow = z.object({
   id: z.string(),
   project_id: z.string(),
@@ -780,6 +817,67 @@ export async function projectRoutes(
         byTask.set(a.task_id, list);
       }
 
+      // **Who took which step, read as the caller.** `engagements_select_member`
+      // is `private.is_project_member(project_id)`, so this returns rows only
+      // for somebody who is actually in the project's room, and this handler
+      // adds no membership logic of its own.
+      //
+      // Live engagements only. An ended one is a fact about a step that stopped,
+      // and the panel line reads "who is doing this"; showing the node from a
+      // cancelled deal beside a step that went back to the market would be a
+      // stale name presented as a current one.
+      const { data: engagementRows, error: engagementErr } = await db
+        .from('engagements')
+        .select('task_id, node_id, agreed_price, currency, accepted_at')
+        .eq('project_id', projectId)
+        .is('ended_at', null);
+      if (engagementErr) throw engagementErr;
+
+      const engagements = (engagementRows ?? []) as {
+        task_id: string;
+        node_id: string;
+        agreed_price: number | string;
+        currency: string;
+        accepted_at: string;
+      }[];
+
+      // The counterparty's name, also read as the caller, through
+      // `profiles_select_counterparty` (`20260904126000`). That policy joins
+      // through `engagements` and requires `ended_at is null` on both sides, so
+      // this read and the one above agree by construction: a name that came back
+      // is a name this person is entitled to, and one that did not renders as
+      // null rather than as an error.
+      //
+      // **`node_profiles` is deliberately not read here.** The owner learns who
+      // took their step and at what price; the node's rate card, jurisdictions
+      // and availability are not facts about this deal.
+      const nodeIds = [...new Set(engagements.map((e) => e.node_id))];
+      const nameByNode = new Map<string, string | null>();
+      if (nodeIds.length > 0) {
+        const { data: profileRows, error: profileErr } = await db
+          .from('profiles')
+          .select('user_id, display_name')
+          .in('user_id', nodeIds);
+        if (profileErr) throw profileErr;
+        for (const p of profileRows ?? []) {
+          nameByNode.set(p.user_id as string, (p.display_name as string | null) ?? null);
+        }
+      }
+
+      const engagementByTask = new Map(
+        engagements.map((e) => [
+          e.task_id,
+          {
+            nodeDisplayName: nameByNode.get(e.node_id) ?? null,
+            // numeric(12,2) arrives as a string over PostgREST. Converted so the
+            // panel renders a number rather than sorting money as text.
+            agreedPrice: Number(e.agreed_price),
+            currency: e.currency,
+            acceptedAt: e.accepted_at,
+          },
+        ]),
+      );
+
       const tasks: Task[] = (taskRows ?? []).map((row) => {
         const t = TaskRow.parse(row);
         return {
@@ -795,6 +893,7 @@ export async function projectRoutes(
           createdAt: t.created_at,
           updatedAt: t.updated_at,
           artifacts: byTask.get(t.id) ?? [],
+          engagement: engagementByTask.get(t.id) ?? null,
         };
       });
 
@@ -858,13 +957,32 @@ export async function projectRoutes(
         };
       });
 
-      // The same two conditions `readSpendInputs` and `materialise_campaign`
-      // apply, so the headroom a person reads is the arithmetic the approval
-      // performs rather than a friendlier version of it: terminal campaigns
-      // hold none of the ceiling, and one with no cap contributes nothing.
-      const committedBudget = campaigns
-        .filter((c) => !TERMINAL_CAMPAIGN_STATES.has(c.state) && c.budgetCap !== null)
-        .reduce((sum, c) => sum + (c.budgetCap ?? 0), 0);
+      // **The fourth of ADR-0020's four places.** The ceiling has two committer
+      // classes since `20260904121000`, and a panel counting only campaigns
+      // would show headroom that the next acceptance refuses to spend, which
+      // reads as a broken check rather than as a full budget.
+      //
+      // Read as the caller, through `escrow_holds_select_member`. A hold names
+      // no node: it is an amount, a currency and a state against a step, which
+      // is exactly the figure this line needs.
+      const { data: holdRows, error: holdErr } = await db
+        .from('escrow_holds')
+        .select('amount')
+        .eq('project_id', projectId)
+        .eq('state', 'held');
+      if (holdErr) throw holdErr;
+
+      // The same conditions `readSpendInputs`, `materialise_campaign` and
+      // `accept_offer` apply, so the headroom a person reads is the arithmetic
+      // those three perform rather than a friendlier version of it. The
+      // arithmetic itself is a pure exported function so that a test can pin it
+      // (ADR-0020).
+      const { committedBudget, escrowHeld } = projectCommitments({
+        campaigns,
+        heldAmounts: ((holdRows ?? []) as { amount: number | string | null }[]).map(
+          (h) => h.amount,
+        ),
+      });
 
       return {
         id: project.id,
@@ -875,6 +993,10 @@ export async function projectRoutes(
         budgetCeiling: project.budget_ceiling,
         currency: project.currency,
         committedBudget,
+        // Broken out as well as folded in, because the two halves settle on
+        // different clocks and an owner looking at a number they cannot reduce
+        // needs to know which half is which.
+        escrowHeld,
         tasks,
         campaigns,
       };

@@ -8,8 +8,9 @@
 
 ## Implementation status
 
-**Live: the domain, threads, onboarding, and now the matcher. A node can be
-offered work.**
+**Live: the domain, threads, onboarding, the matcher, and now acceptance. A node
+can take work, be paid from a budget the owner authorised, and talk to them about
+it.**
 `20260831120000` … `123000` landed the four tables with RLS, structural
 constraints and a 46-assertion pgTAP suite. `20260901120000` … `123000` landed
 `threads`, `messages.thread_id` and enforced `room_members.scope`. Both landed
@@ -47,24 +48,77 @@ fetched-never-rendered defect this repository has recorded twice. Creation moves
 to the acceptance slice, which is the first that admits somebody. The applied
 migration's comment cannot be edited; this is the correction.
 
+### Slice 5, and the three obligations it discharges
+
+`20260904120000` … `20260904127000` are slice 5. **A node accepts.** The offer
+settles to `accepted`, the task walks `offered → claimed → escrow_funded`, an
+`engagements` row freezes the price, an `escrow_holds` row models the money
+against `projects.budget_ceiling`, a balanced `ledger_entries` pair is written,
+the task's thread is created, and the node is admitted to that thread and to
+nothing else. **All of it is one transaction**, `public.accept_offer`, because
+`claimed → escrow_funded` is the machine's only exit from `claimed`: accepting
+without funding would leave somebody holding work nobody paid for, which is
+`20260827120000`'s seventeen-permanently-stuck-steps defect built on purpose.
+
+**Nothing is charged.** The only registered payment provider is a deterministic
+in-repo fake, `carriesRealMoney` refuses any other before an rpc is made, and the
+counsel gate in [payments-billing.md](payments-billing.md) is unmoved: modelling
+an obligation against an already-authorised ceiling is not money movement.
+`20260904121000`'s header states that at length rather than leaving a reader to
+infer it.
+
+**Three obligations booked to this slice by earlier ones land with it**, and all
+three were named in advance rather than discovered:
+
+1. **The thread writer.** `20260901120000` shipped `threads` with no writer and
+   said creation lands with whatever first needs one. `accept_offer` is it.
+2. **The counterparty pair, through `engagements` and never approximated.**
+   `20260831120000`, `20260901122000` and `20260901123000` each refused to write
+   this policy without a table to join through. `20260904126000` writes it once:
+   `private.engaged_counterparty` opens `public.profiles` in both directions
+   while an engagement is live, and closes it again when `ended_at` is set.
+   **`node_profiles` and `offers` stay closed**, deliberately, and "Who the owner
+   can now see" below says why.
+3. **The `author_kind = 'node'` writer.** `20260904127000` widens
+   `messages_insert_own` so a node posts **through their own grant, on the
+   existing client path** (rule 5: every participant INSERTs like any member).
+   The route derives `author_kind` from the caller's own membership row and RLS
+   re-checks it independently.
+
+**Two structural decisions were taken against earlier bookings, and each has an
+ADR.** [ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md): the slice
+table booked `claimed → matching` and this slice does not restore it, because
+atomic accept-and-fund makes `claimed` transit-only, so the arc has no producer.
+[ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md):
+`projects.budget_ceiling` now has two classes of committer, and four places have
+to move in step.
+
 ### What ships
 
-| Piece                                                         | Where                                                                                                                                       |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| The KYC lifecycle map                                         | `20260902120000`, inside `private.guard_node_kyc_audit` beside its audit half                                                               |
-| The invite                                                    | `20260902121000` `public.invite_node`, plus `scripts/invite-node.mjs`                                                                       |
-| The verification writer                                       | `20260902122000` `public.decide_node_kyc`                                                                                                   |
-| **The offer table and its lifecycle**                         | `20260903120000`, with `private.offer_transition_allowed` and its guard trigger                                                             |
-| **The matcher's selection index**                             | `20260903121000` `tasks_market_idx`, the first global by-state read of `tasks`                                                              |
-| Skill taxonomy, verifier seam and registry, eligibility       | `packages/marketplace` (pure, no IO)                                                                                                        |
-| **The stage-to-skill map, jurisdiction containment, ranking** | `packages/marketplace/src/{stage-skills,jurisdiction,matching}.ts` (pure, no IO)                                                            |
-| **The matcher sweep**                                         | `apps/api/src/lib/match.ts`, on the ticker after optimize and before crawl                                                                  |
-| **The owner's dispatch**                                      | `find_expert` in `apps/api/src/routes/task-actions.ts` and `lib/task-resolution.ts`                                                         |
-| **The node's offer routes**                                   | `GET /api/node/offers`, `POST /api/node/offers/:offerId/decline`, `apps/api/src/lib/offers.ts`                                              |
-| The node's own routes                                         | `apps/api/src/routes/nodes.ts`, `apps/api/src/lib/nodes.ts`                                                                                 |
-| The node's own surface                                        | `apps/web/app/node`, plus the fake verifier's screen at `/node/verify`                                                                      |
-| **The owner's surface**                                       | "Find an expert" in `ProjectPanel.tsx`'s `ResolveStep`                                                                                      |
-| Tests                                                         | `supabase/tests/{node_onboarding,marketplace_offers}.sql` (36, 37), `nodes.test.ts` (36), `match.test.ts` (15), `packages/marketplace` (85) |
+| Piece                                                         | Where                                                                                                                                                                                                                              |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The KYC lifecycle map                                         | `20260902120000`, inside `private.guard_node_kyc_audit` beside its audit half                                                                                                                                                      |
+| The invite                                                    | `20260902121000` `public.invite_node`, plus `scripts/invite-node.mjs`                                                                                                                                                              |
+| The verification writer                                       | `20260902122000` `public.decide_node_kyc`                                                                                                                                                                                          |
+| **The offer table and its lifecycle**                         | `20260903120000`, with `private.offer_transition_allowed` and its guard trigger                                                                                                                                                    |
+| **The matcher's selection index**                             | `20260903121000` `tasks_market_idx`, the first global by-state read of `tasks`                                                                                                                                                     |
+| Skill taxonomy, verifier seam and registry, eligibility       | `packages/marketplace` (pure, no IO)                                                                                                                                                                                               |
+| **The stage-to-skill map, jurisdiction containment, ranking** | `packages/marketplace/src/{stage-skills,jurisdiction,matching}.ts` (pure, no IO)                                                                                                                                                   |
+| **The matcher sweep**                                         | `apps/api/src/lib/match.ts`, on the ticker after optimize and before crawl                                                                                                                                                         |
+| **The owner's dispatch**                                      | `find_expert` in `apps/api/src/routes/task-actions.ts` and `lib/task-resolution.ts`                                                                                                                                                |
+| **The node's offer routes**                                   | `GET /api/node/offers`, `POST /api/node/offers/:offerId/decline`, `apps/api/src/lib/offers.ts`                                                                                                                                     |
+| The node's own routes                                         | `apps/api/src/routes/nodes.ts`, `apps/api/src/lib/nodes.ts`                                                                                                                                                                        |
+| The node's own surface                                        | `apps/web/app/node`, plus the fake verifier's screen at `/node/verify`                                                                                                                                                             |
+| **The owner's surface**                                       | "Find an expert" in `ProjectPanel.tsx`'s `ResolveStep`                                                                                                                                                                             |
+| **The deal, the hold and the ledger**                         | `20260904120000` … `122000`: `engagements` (no state column, ADR-0016), `escrow_holds`, double-entry `ledger_entries`                                                                                                              |
+| **Acceptance**                                                | `20260904125000` `public.accept_offer`, one transaction; `20260904124000` gives the offer map its `accepted` arc                                                                                                                   |
+| **The ceiling's second committer class**                      | `20260904123000` ([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md)), `packages/payments`, `spend-reads.ts`, `spend.ts`                                                                                          |
+| **The counterparty pair**                                     | `20260904126000` `private.engaged_counterparty`, a second policy on `profiles`                                                                                                                                                     |
+| **A node's own voice in chat**                                | `20260904127000` widens `messages_insert_own`; `apps/api/src/routes/messages.ts` derives `author_kind` from the membership row                                                                                                     |
+| **The money seam and the ledger pairs**                       | `packages/payments` (pure, no IO): chart of accounts, balanced pairs, idempotency keys, provider seam and registry                                                                                                                 |
+| **Giving escrow back**                                        | `apps/api/src/lib/escrow-reconcile.ts` on the ticker, the only producer of `held → refunded`                                                                                                                                       |
+| **The node's accept and engagement routes**                   | `POST /api/node/offers/:offerId/accept`, `GET /api/node/engagements`, `apps/api/src/lib/engagements.ts`                                                                                                                            |
+| Tests                                                         | `supabase/tests/{node_onboarding,marketplace_offers,marketplace_engagements}.sql` (36, 37, 70), `nodes.test.ts` (51), `match.test.ts` (21), `escrow-reconcile.test.ts` (12), `packages/marketplace` (87), `packages/payments` (27) |
 
 ### How a step reaches an expert
 
@@ -137,17 +191,20 @@ rather than left for a reader to discover.
 
 ### The offer lifecycle
 
-| From   | To          | Made by                                             |
-| ------ | ----------- | --------------------------------------------------- |
-| `open` | `declined`  | the node, through the decline route                 |
-| `open` | `expired`   | the sweep, settling a passed `expires_at`           |
-| `open` | `withdrawn` | the sweep, when the task left the market underneath |
+| From   | To          | Made by                                                      |
+| ------ | ----------- | ------------------------------------------------------------ |
+| `open` | `declined`  | the node, through the decline route                          |
+| `open` | `expired`   | the sweep, settling a passed `expires_at`                    |
+| `open` | `withdrawn` | the sweep, when the task left the market underneath          |
+| `open` | `accepted`  | the node, through `accept_offer`, which funds escrow with it |
 
-All three settlements are terminal, so a cascade cannot reopen what it closed.
-**Nothing reaches `accepted`**, which is declared because
-`alter type ... add value` is irreversible and unreachable because accepting is
-inseparable from funding escrow. pgTAP pins every path to it as refused, worded
-descriptively rather than as a promise about a later slice.
+All four settlements are terminal, so a cascade cannot reopen what it closed.
+**`accepted` gained its producer in `20260904125000`, which is what let
+`20260904124000` add the arc**: acceptance and funding are one transaction, so an
+offer can settle a fourth way without leaving anybody holding unfunded work. The
+pgTAP assertion that used to pin the refusal flipped with it, and the wording it
+had carried was deliberately descriptive rather than promissory, which is why the
+flip is one line rather than a correction.
 
 **Expiry is a timestamp, never a status a clock must write**
 (`20260831120000:56-59`, applied again): readers compare `expires_at` against
@@ -184,9 +241,77 @@ slice 8 rates on.
 - **Once dispatched, the owner has no control until the cascade returns the step.**
   There is nothing useful to offer while a stranger is deciding, and the step
   comes back within 48 hours per candidate if nobody takes it.
-- **Accepting is disabled with its reason printed**, rather than hidden. A node
-  reading work they cannot take should not have to guess whether accepting is
-  coming, broken, or something they failed to qualify for.
+- **Accepting was disabled with its reason printed**, rather than hidden, for
+  the length of slice 4. It is live from slice 5, and both the disabled state and
+  the sentence beside it are gone rather than left behind as a control that lies
+  about itself.
+
+### The limits slice 5 ships with
+
+Stated here rather than discovered, on this section's standing habit.
+
+- **A node has no realtime, and reads their thread by polling.** Thread topics
+  are not built: a `'chat:thread:'` branch would still have no broadcaster and no
+  subscriber, and both `realtime.messages` policies remain room-scoped. The
+  since-cursor `GET` runs as the caller and RLS returns exactly their thread, so
+  **the failure mode is a delay of up to one interval, never a disclosure.**
+  Topics move to slice 6, which is the second time this obligation has been
+  re-dated and the first time it has been re-dated with a working alternative in
+  place.
+- **One thread per person per room, so a node works one step of a project at a
+  time.** `room_members` is keyed on `(room_id, user_id)`
+  ([ADR-0017](../40-adr/0017-thread-admission-is-a-property-of-the-membership.md)),
+  so admitting somebody twice in one room is not representable. `accept_offer`
+  refuses the second acceptance with a sentence rather than absorbing it
+  silently, because reusing the existing membership would admit them to the
+  wrong thread. A real product limit, and lifting it means a second membership
+  row per room, which is a change to that ADR.
+- **Hourly nodes are excluded from the pool entirely.** An hourly rate is a price
+  per hour, an escrow hold is a total, and there is no hours field anywhere to
+  multiply by; estimating one at acceptance would be guessing at the number that
+  decides what somebody is paid. `readEligiblePool` filters `rate_period = 'task'`
+  and `accept_offer` refuses again behind it. `offerabilityGap` tells such a node
+  why nothing arrives, beside the sentence it already carried for a missing rate.
+- **`deadline_at`, `nda_signed_at` and `terms_hash` are columns with no writer.**
+  The module's step 1 specifies a per-task engagement and NDA; nothing signs one.
+  They are columns rather than a later migration because the shape is settled and
+  the writer is not, which is the opposite of the `task_deps` mistake: that was a
+  _rule_ enforced with no producer, and these are _facts_ with no recorder.
+- **Thread access has no clock.** `accept_offer` admits with `expires_at` null on
+  purpose, because there is no deadline to box it with and a number invented at
+  acceptance would cut somebody off mid-task. Revocation is **explicit**: the
+  reconcile sweep stamps `expires_at` when an engagement ends. The module doc
+  says "time-boxed" and this is the honest reading of it in a slice with no
+  deadlines.
+- **Nobody is notified of anything, still.** Notifications remain specified and
+  unbuilt, so an owner learns their step was taken from a system message in their
+  room, and a node learns nothing until they open `/node`.
+- **`held → released` is declared and refused.** Release is what a payout does,
+  and its producer is slice 7. `held → refunded` has a producer in this slice
+  (the reconcile sweep), which is what lets the map permit that arc at all.
+
+### Who the owner can now see, and what stays closed
+
+The counterparty pair opens **through `engagements`**, never through
+`room_members.thread_id`. A membership row outlives the work and the owner shares
+no thread with the node, so the deal is the only row that knows both when the
+relationship started and when it stopped: `ended_at is null` is the entire
+time-box, with no second copy of any expiry rule.
+
+What opens is `public.profiles`, in both directions, which is a display name and
+the basics a chat surface needs. What deliberately does not:
+
+- **`node_profiles` stays closed.** The owner learns who took their step, at what
+  price, on what date, from the engagement projection. A rate card, a
+  jurisdiction list, an availability flag and a trust score are not facts about
+  this deal.
+- **`offers` stays closed.** An offer names every node who was _asked_, including
+  the ones who declined and the one whose offer expired. Publishing a decline
+  trail has real consequences for people who said no, and shipping acceptance did
+  not require making that decision. `marketplace_offers.sql` keeps asserting the
+  owner's zero; only its stated reason changed.
+- **`node_verifications` is untouched**, as ever: no policy at all, refused even
+  to its own subject, because a face-search result names a third party.
 
 ### The KYC lifecycle map
 
@@ -353,30 +478,30 @@ measured seventeen, gave the owner a way to take such a step on themselves, and
 said in as many words that it "is not the marketplace and must not be dressed up
 as one."
 
-**Not built, and not claimed:** the matcher, offers, engagements, escrow, the
-proof loop, payouts, disputes and ratings. **No thread can be created** —
-`threads` has no write policy and no client write grant, and creation lands with
-the matcher. **No node is admitted to any room**, and that is load-bearing rather
-than incidental — see "Thread access" below. **No real KYC provider is wired**:
-Persona and Stripe Identity are both paid, so the in-repo fake verifier is the
-only registered provider, and `carriesRealPii` refuses the first real one at the
-writer rather than in a sentence. Credentials are claimed and never confirmed.
-`matching` remains a state with no code behind it, so a verified, available node
-has nowhere to be sent, which is what makes ops-invited onboarding the whole
-cold-start answer for now.
+**Not built, and not claimed:** the proof loop, payouts, disputes and ratings.
+`escrow_funded` is where a funded step now stops, because
+`escrow_funded → in_progress` has no producer until slice 6. **No money moves**:
+the only registered payment provider is the in-repo fake, `carriesRealMoney`
+refuses any other at the writer rather than in a sentence, and payments-billing.md's
+counsel gate is unmoved. **No real KYC provider is wired** either, on the same
+pattern: Persona and Stripe Identity are both paid, so the in-repo fake verifier
+is the only registered one and `carriesRealPii` refuses the first real one at the
+writer. Credentials are claimed and never confirmed. **No node has realtime**, so
+a thread is read by polling. **Nobody is notified of anything**, so an offer and
+an acceptance are both discovered by looking.
 
 ### The slice sequence
 
-| #   | Slice                                             | What it closes                                                                                                                                              | State arcs it restores                                                                                |
-| --- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| 1   | ✅ **Domain + guards** `20260831120000`…`123000`  | the enums with no tables behind them                                                                                                                        | none, deliberately, and the suite pins that                                                           |
-| 2   | ✅ **Threads** `20260901120000`…`123000`          | the narrowing below; a node would otherwise see the whole project DAG                                                                                       | none                                                                                                  |
-| 3   | ✅ **Node onboarding** `20260902120000`…`122000`  | `user_role.human_node`, which had no writer since `20260724000000`. **Not `author_kind.node`**, which needs a node in a room and gets its writer in slice 4 | none, as planned                                                                                      |
-| 4   | ✅ **Matcher + offers** `20260903120000`…`121000` | `MATCHING`, dead since `20260813120000`, and `ESCALATED`'s first exit that is not the owner giving up                                                       | **none, deliberately** ([ADR-0018](../40-adr/0018-offer-exhaustion-returns-the-step-to-its-owner.md)) |
-| 5   | **Accept, escrow, ledger**                        | acceptance. Accept and fund are inseparable because `claimed → escrow_funded` is the machine's only exit from `claimed`                                     | `claimed → matching`                                                                                  |
-| 6   | **The engagement loop to `approved`**             | `ESCROW_FUNDED`, and the waitpoint that never completes                                                                                                     | `proof_submitted → in_progress`, `blocked → in_progress`                                              |
-| 7   | **Payout**                                        | `APPROVED` on a human task, which today can only reach `done` and leave somebody unpaid                                                                     | none                                                                                                  |
-| 8   | **Disputes + ratings**                            | `DISPUTED`, reachable from `in_review` with no ops writer                                                                                                   | all four `→ disputed` arcs, together                                                                  |
+| #   | Slice                                                   | What it closes                                                                                                                                              | State arcs it restores                                                                                |
+| --- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| 1   | ✅ **Domain + guards** `20260831120000`…`123000`        | the enums with no tables behind them                                                                                                                        | none, deliberately, and the suite pins that                                                           |
+| 2   | ✅ **Threads** `20260901120000`…`123000`                | the narrowing below; a node would otherwise see the whole project DAG                                                                                       | none                                                                                                  |
+| 3   | ✅ **Node onboarding** `20260902120000`…`122000`        | `user_role.human_node`, which had no writer since `20260724000000`. **Not `author_kind.node`**, which needs a node in a room and gets its writer in slice 4 | none, as planned                                                                                      |
+| 4   | ✅ **Matcher + offers** `20260903120000`…`121000`       | `MATCHING`, dead since `20260813120000`, and `ESCALATED`'s first exit that is not the owner giving up                                                       | **none, deliberately** ([ADR-0018](../40-adr/0018-offer-exhaustion-returns-the-step-to-its-owner.md)) |
+| 5   | ✅ **Accept, escrow, ledger** `20260904120000`…`127000` | acceptance, and `CLAIMED`. Accept and fund are inseparable because `claimed → escrow_funded` is the machine's only exit from `claimed`                      | **none, deliberately** ([ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md))              |
+| 6   | **The engagement loop to `approved`**                   | `ESCROW_FUNDED`, and the waitpoint that never completes                                                                                                     | `proof_submitted → in_progress`, `blocked → in_progress`                                              |
+| 7   | **Payout**                                              | `APPROVED` on a human task, which today can only reach `done` and leave somebody unpaid                                                                     | none                                                                                                  |
+| 8   | **Disputes + ratings**                                  | `DISPUTED`, reachable from `in_review` with no ops writer                                                                                                   | all four `→ disputed` arcs, together                                                                  |
 
 `20260815220000` silently dropped eight arcs from the original map while
 rewriting it for an unrelated reason. Each is restored by the slice that first
@@ -390,9 +515,17 @@ matcher, and decided against both
 ([ADR-0018](../40-adr/0018-offer-exhaustion-returns-the-step-to-its-owner.md)):
 an exhausted cascade returns the step to its owner at `escalated`, because
 `failed` is terminal and would strand work three live buttons could still
-finish. **Four consecutive slices have now restored no arc**, which is worth
-noticing rather than smoothing over: the machine `20260813120000` declared was
-drawn wider than the product has needed.
+finish.
+
+**A third is now permanently dropped rather than pending.** Slice 5 was booked to
+restore `claimed → matching`, built acceptance, and decided against it
+([ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md)): accept and
+fund are one transaction, so `claimed` is transit-only and nothing can be
+observed sitting in it. The reassignment producer the arc was booked for leaves
+from `escrow_funded` or later and lands in slice 6. **Five consecutive slices
+have now restored no arc**, which is worth noticing rather than smoothing over:
+the machine `20260813120000` declared was drawn wider than the product has
+needed, and each slice keeps finding that again.
 
 ### Cold start, and the dead end this sequence must not create
 
@@ -452,27 +585,29 @@ What a thread-scoped member will see, asserted in `supabase/tests/thread_scope.s
   to the same thread;
 - **no project, task, artifact, `feedback_events` or realtime.**
 
-Three obligations are carried forward rather than left implied:
+Three obligations were carried forward, and **all three are discharged by slice
+5**. Recorded with their outcomes rather than deleted, because what was deferred
+and what it was deferred for is the trail:
 
-1. **The counterparty pair is still closed, in both directions now.**
-   `node_profiles` has no counterparty policy, and slice 2 additionally narrowed
-   `private.shares_room_with` to require `scope = 'room'` on both sides, closing
-   a leak neither KNOWN NARROWING comment had named: a thread-scoped node would
-   otherwise have read the profile basics of every member of the whole room. The
-   consequence is that an admitted node sees **nobody**, including the owner they
-   work for. The engagement slice must open that pair, or slice 5/6 ships a node
-   who cannot see who engaged them.
-2. **There is no realtime for a thread-scoped member.** Thread topics are not
-   built: a `'chat:thread:'` branch would have no broadcaster and no subscriber
-   today. Both `realtime.messages` policies were narrowed to room scope in place,
-   so an admitted node reads through the since-cursor `GET` instead. The slice
-   that first admits a node must land thread topics or explicitly accept polling.
-   **Slice 4 is not that slice**: it admits nobody, so this obligation and the
-   thread writer both move to acceptance, which is where a node first needs to be
-   in a room at all.
-3. **`messages_insert_own` still pins `author_kind = 'user'`.** A node posting as
-   `author_kind = 'node'` has no client path and gains none. Whether nodes write
-   through the server or through their own grant is the writer slice's decision.
+1. **The counterparty pair is open, in both directions, through `engagements`.**
+   `20260904126000` writes `private.engaged_counterparty` and adds
+   `profiles_select_counterparty` as a **second** policy on `public.profiles`;
+   `private.shares_room_with` is untouched, so the roster narrowing cannot be
+   lost by editing the counterparty rule. `node_profiles` and `offers` stay
+   closed on purpose ("Who the owner can now see", above).
+2. **There is still no realtime for a thread-scoped member, and this slice
+   accepts polling explicitly.** That was the choice the obligation offered:
+   "land thread topics or explicitly accept polling." The since-cursor `GET` runs
+   as the caller, so the failure mode is a delay rather than a disclosure. Topics
+   move to slice 6, and the pgTAP assertion pinning their absence was re-dated
+   with its verdict unchanged.
+3. **`messages_insert_own` now permits `author_kind = 'node'`**, and the open
+   question is answered: **a node writes through their own grant, on the existing
+   client path.** A server-mediated route would have been a second write path to
+   keep in step with the first on the idempotency contract, the channel and
+   thread pairing checks, and the broadcast payload; and it would have replaced a
+   client insert that RLS re-checks with a `service_role` insert whose only
+   control is the route. `20260904127000`'s header argues it in full.
 
 ## Node onboarding & KYC
 
@@ -486,16 +621,88 @@ Three obligations are carried forward rather than left implied:
 - Trust score seeds from KYC + verified credentials and grows with completed jobs/ratings.
 - License claims are **hard filters** for regulated tasks, not ranking weights.
 
+## Future idea: AI-administered skill assessment (recorded, scored, owner-chosen)
+
+**Owner-proposed 2026-09-01, deliberately not scheduled.** The proposal: before a
+node is chosen for a task, they take a marketing knowledge check on camera —
+questions generated and scored by the AI — and the owner reviews every
+candidate's recording and score and picks one. Recorded here rather than built,
+which was the owner's own call, and listed in
+[roadmap.md](../10-architecture/roadmap.md)'s deferred table with its trigger.
+
+What it would close is the matcher's honest gap: today nothing in the system can
+set `node_skills.verified` true, so the pool matches claims and ranks on price
+because every other specified input is NULL or constant. An AI-scored assessment
+is a real signal where a weighted score over constant columns is arithmetic
+pretending to be a ranking. And owner-picks-from-candidates already has a hook in
+this doc: the "short sealed-bid window for higher-value/negotiable-scope tasks"
+offer strategy, which is the shape this idea slots into.
+
+Four constraints to hold when it is built, stated now so the slice arrives to
+them rather than discovers them:
+
+1. **Per skill, not per task.** An audition for every dispatch adds a heavy step
+   to a cascade that already runs 48 hours per candidate, and makes the same
+   person re-prove `copywriting` weekly. A passed assessment should instead be
+   the first writer of `node_skills.verified` — a column that has waited for one
+   since `20260831121000` — with a validity window, making it a certification
+   tier (already named in roadmap Phase 4) rather than a per-task gate. A
+   per-task round stays available as the sealed-bid variant for high-value
+   steps.
+2. **The owner sees all three: the recording, the score and the answers.**
+   Decided by the owner 2026-09-01, overriding this section's first draft, which
+   proposed sharing only score + answers. The reasoning holds up: the video is
+   the richest signal of whether you would trust a stranger with your work, and
+   the owner is the evaluator, which is the sharing most video-interview law
+   contemplates. What the decision costs is recorded rather than glossed: it
+   makes the platform a **custodian of face recordings**, which inverts the
+   posture [security-compliance.md](../10-architecture/security-compliance.md)
+   built (verdicts and scores kept, faces stay with the provider), so the slice
+   that builds this must arrive with the node's **explicit consent before
+   recording**, a retention schedule, a deletion path the node can walk
+   (Illinois' AIVI Act makes deletion-on-request a statutory right), and access
+   limited to owners actually choosing — never a browsable gallery. The
+   recording still doubles as the anti-fraud control: proof the test-taker is
+   the KYC'd node and not a rented account.
+3. **The AI scores; a person decides.** An AI score that hard-filters who gets
+   paid work is the authority `stage-skills.ts` refused to hand a model. The
+   owner making the final choice keeps the score advisory, which is also what
+   the law will demand: AI systems selecting people for work are **high-risk
+   under the EU AI Act**, NYC Local Law 144 requires bias audits of automated
+   employment decision tools, and Illinois' AI Video Interview Act regulates
+   exactly this artifact — consent, explanation, deletion on request, and
+   restrictions on sharing the recording. First markets are US + EU, so this is
+   not a corner case.
+4. **Showing owners candidate videos invites the bias the cascade avoids, and
+   that exposure is now accepted rather than avoided.** The price-ranked cascade
+   never shows a face before a match; recordings do, and a choice made on accent
+   or appearance is a discrimination exposure the platform carries. With the
+   owner's 2026-09-01 decision to show the video, the mitigation moves from
+   withholding it to ordering it: the surface presents **score and answers
+   first, the recording behind a deliberate click**, and the choice is logged
+   with what was viewed — the same event-sourcing every other decision here
+   gets — so a dispute can read what the pick was made on.
+
+**Trigger to build:** self-service node registration (when strangers, not
+ops-vetted invitees, enter the pool), or the first skill market where claims
+plus ratings demonstrably misprice work.
+
 ## Matching algorithm
 
 **Skill-based ranked matching, not a blind broadcast.** Eligible pool = verified skills cover `required_skills` **AND** service geo/jurisdiction includes the task location **AND** any required license is verified **AND** rate ≤ escrowed task budget **AND** currently available. Rank by weighted score: skill/credential fit, jurisdiction exactness (Austin-local > Texas-state), rating + completion-rate, price, responsiveness, current workload (load-balancing). Offer strategy is task-dependent: **first-accept-wins + cascade** for time-sensitive/commodity tasks; a **short sealed-bid window** for higher-value/negotiable-scope tasks.
 
-> **What slice 4 implements of the above, and what it cannot.** The pool filters
-> on `kyc_status = 'verified'`, `availability = 'available'`, a non-null `rate`,
-> and a **claimed** skill from the stage map. It does not filter on verified
-> skills or licences (nothing can set either true), on jurisdiction (no task
-> carries one), or on an escrowed budget (escrow is slice 5). Ranking is price
-> ascending then a stable id tiebreak, because every other specified input is
+> **What slices 4 and 5 implement of the above, and what they cannot.** The pool
+> filters on `kyc_status = 'verified'`, `availability = 'available'`, a non-null
+> `rate`, and a **claimed** skill from the stage map. **Slice 5 adds a fifth
+> filter, `rate_period = 'task'`**, because an escrow hold is a whole amount and
+> there is no hours field anywhere to fund an hourly rate against. It still does
+> not filter on verified skills or licences (nothing can set either true) or on
+> jurisdiction (no task carries one). **"Rate ≤ escrowed task budget" is enforced
+> at acceptance rather than at ranking**, which is the right place for it: the
+> ceiling can move between an offer and an acceptance, so `accept_offer` re-checks
+> it under a row lock over both committer classes
+> ([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md)). Ranking is
+> price ascending then a stable id tiebreak, because every other specified input is
 > NULL or constant on every row. **First-accept-wins with cascade is the shipped
 > strategy**, expressed structurally by a partial unique index allowing one open
 > offer per task; the sealed-bid window would drop that index and is a different
@@ -526,8 +733,19 @@ plain unique, because reassignment after a no-show creates a second engagement
 and `claimed → matching` exists to say so), and **multi-node splits deferred**
 until the first acceptance criteria naming more than one node.
 
-1. **Accept + escrow fund** — escrow confirmed funded (charge already captured from the user's authorized budget; transfer deferred). Node e-signs a per-task engagement + NDA. A signal moves the task to `IN_PROGRESS`.
-2. **Join group chat** — node added to the project's channel/thread with a distinct **Human Node** role/badge, **scoped to this task's thread** and **time-boxed** (`room_members.scope`, `expires_at`).
+1. **Accept + escrow fund** — ✅ live as of `20260904125000`, with two parts of
+   this sentence not yet true. **Nothing is captured**: the hold is modelled
+   against the already-authorised `projects.budget_ceiling` and the only
+   registered provider is the in-repo fake. **Nothing is e-signed**:
+   `engagements.nda_signed_at` and `terms_hash` are columns with no writer. The
+   step stops at `ESCROW_FUNDED`; `escrow_funded → in_progress` gains its
+   producer in slice 6.
+2. **Join group chat** — ✅ live in the same transaction. The node is added to the
+   task's thread with `role = 'human_node'` and `scope = 'thread'`, and the chat
+   surface badges them "Human node" as a word rather than a colour (rule 15).
+   **`expires_at` is null on purpose**: there is no deadline source, so access is
+   revoked explicitly when the engagement ends rather than boxed by a clock
+   nobody set.
 3. **Do the work** — the AI co-pilots in-thread (prepared docs, RAG-grounded checklists, forms, addresses, talking points); the user answers questions; presence/typing show live activity. All coordination stays in-thread for auditability.
 4. **Submit proof** — deliverables to Supabase Storage (signed docs, stamped permits, geotagged/timestamped site photos, receipts, filing confirmation numbers), attached as artifacts.
 5. **Approval (maker-checker + human)** — AI critic validates proof against `acceptance_criteria` (authenticity, tampering/liveness, correct reference numbers) → the user (and/or AI for low-risk) gives final approval. Rejections return to `IN_PROGRESS` with structured feedback + a re-do window.
@@ -554,17 +772,19 @@ than a date, because a list that mixes live tables with intentions reads as
 though all nine are there. Column shapes live in
 [data-model.md](../10-architecture/data-model.md).
 
-| Entity               | Status                                                                       | Notes                                                                                                                                                                                                            |
-| -------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node_profiles`      | ✅ live `20260831120000`, written by `invite_node` and `decide_node_kyc`     | Keyed on `user_id`: a node **is** a user, so every child predicate is a plain equality. `available` + not-`verified` is unrepresentable, by constraint                                                           |
-| `node_skills`        | ✅ live `20260831121000`, written by `/api/node/skills`                      | Claim and verified claim on one row, one boolean apart. Tag is shape-checked text; the curated taxonomy is a reviewed code registry landing in slice 3                                                           |
-| `node_credentials`   | ✅ live `20260831122000`, written by `/api/node/credentials`, claims only    | Renamed from `credentials` (below). `verified` is write-once true — a licence is **revoked**, with a date, never un-verified                                                                                     |
-| `node_verifications` | ✅ live `20260831123000`, written by `decide_node_kyc`                       | Not in the original nine; forced by them. No policy, no client grant, append-only including for `service_role`                                                                                                   |
-| `offers`             | ✅ live `20260903120000`, written by the matcher sweep and the decline route | Its entire content is a lifecycle, so it landed **with** its writers rather than ahead of them, inverting this domain's ordering for the first time. One policy, `node_id = auth.uid()`: the owner reads nothing |
-| `engagements`        | ⏳ slice 5                                                                   | **No state column** — [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)                                                                                                                        |
-| `proof_artifacts`    | ⏳ slice 6                                                                   | `artifacts` already has `kind` and `storage_path`. Slice 6 decides new table vs. EXIF/geo columns; deciding earlier would be deciding without the writer                                                         |
-| `ratings`            | ⏳ slice 8                                                                   | Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                                                              |
-| `disputes`           | ⏳ slice 8                                                                   | With the ops path. A `disputed` task and no ops console is a state nobody can leave                                                                                                                              |
+| Entity               | Status                                                                       | Notes                                                                                                                                                                                                                                                                           |
+| -------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node_profiles`      | ✅ live `20260831120000`, written by `invite_node` and `decide_node_kyc`     | Keyed on `user_id`: a node **is** a user, so every child predicate is a plain equality. `available` + not-`verified` is unrepresentable, by constraint                                                                                                                          |
+| `node_skills`        | ✅ live `20260831121000`, written by `/api/node/skills`                      | Claim and verified claim on one row, one boolean apart. Tag is shape-checked text; the curated taxonomy is a reviewed code registry landing in slice 3                                                                                                                          |
+| `node_credentials`   | ✅ live `20260831122000`, written by `/api/node/credentials`, claims only    | Renamed from `credentials` (below). `verified` is write-once true — a licence is **revoked**, with a date, never un-verified                                                                                                                                                    |
+| `node_verifications` | ✅ live `20260831123000`, written by `decide_node_kyc`                       | Not in the original nine; forced by them. No policy, no client grant, append-only including for `service_role`                                                                                                                                                                  |
+| `offers`             | ✅ live `20260903120000`, written by the matcher sweep and the decline route | Its entire content is a lifecycle, so it landed **with** its writers rather than ahead of them, inverting this domain's ordering for the first time. One policy, `node_id = auth.uid()`: the owner reads nothing                                                                |
+| `engagements`        | ✅ live `20260904120000`, written by `accept_offer`                          | **No state column** — [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md). `agreed_price` frozen at acceptance and never following `node_profiles.rate`. One live engagement per task, as a partial unique index, so reassignment can still create a second row |
+| `escrow_holds`       | ✅ live `20260904121000`, written by `accept_offer` and the reconcile sweep  | Not in the original nine; forced by them. Models an obligation against `projects.budget_ceiling` and **charges nothing**. `held → refunded` is the only mapped arc; `released` waits for a payout ([payments-billing.md](payments-billing.md))                                  |
+| `ledger_entries`     | ✅ live `20260904122000`, written by `accept_offer` and the reconcile sweep  | Double-entry, append-only, immutable including for `service_role`. **No policy and no client grant**: the reader is the Phase-3 ops console, and a member's view of money is the projection                                                                                     |
+| `proof_artifacts`    | ⏳ slice 6                                                                   | `artifacts` already has `kind` and `storage_path`. Slice 6 decides new table vs. EXIF/geo columns; deciding earlier would be deciding without the writer                                                                                                                        |
+| `ratings`            | ⏳ slice 8                                                                   | Feeds `trust_score`, which lands now as a nullable column so the writer arrives to a column rather than a migration                                                                                                                                                             |
+| `disputes`           | ⏳ slice 8                                                                   | With the ops path. A `disputed` task and no ops console is a state nobody can leave                                                                                                                                                                                             |
 
 **Two deliberate divergences from what this doc used to say, reconciled rather
 than left to drift (rule 1):**
@@ -602,10 +822,11 @@ sanctions_pep | license_check`. The 1:1 and 1:N face checks are separate
   cascade reads differently depending which it was: `declined` is a person saying
   no and is the only one that can carry a reason, `expired` is a person saying
   nothing, and `withdrawn` is the offer ceasing to matter through no act of the
-  node's. **`accepted` is declared and unreachable**: `alter type ... add value`
-  is irreversible, so the label is cheap now and awkward later, while the arc
-  stays out because accepting is inseparable from funding escrow. **No
-  `cascading`**: that is the task's state, not the offer's, and a second machine
+  node's. **`accepted` was declared and unreachable for two slices** and became
+  reachable in `20260904124000`, which is exactly the ordering this domain
+  intends: `alter type ... add value` is irreversible, so the label was cheap to
+  declare early, and the arc stayed out until `accept_offer` could fund escrow in
+  the same transaction. **No `cascading`**: that is the task's state, not the offer's, and a second machine
   over one truth is what [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)
   refuses.
 - **`verification_result`** `passed | failed | inconclusive | error`. The last

@@ -11,6 +11,15 @@
 -- authoritatively under a row lock) and two implementations that drift apart must
 -- fail a test rather than disagree quietly in production.
 --
+-- **The ceiling has had two committer classes since `20260904123000`**
+-- ([ADR-0020](../../docs/40-adr/0020-the-ceiling-has-two-committer-classes.md)):
+-- non-terminal campaign caps and **held escrow**. The boundary is therefore
+-- asserted a second time with a hold present, because a project can now be
+-- refused for a number that does not appear anywhere in its campaign list. The
+-- filtering matches its campaign twin exactly: a terminal campaign holds none of
+-- the ceiling, a null cap contributes nothing, and a settled hold contributes
+-- nothing either.
+--
 -- Every path that raises is also checked for leaving NOTHING behind. The reason
 -- this is one database function rather than a sequence of supabase-js calls is
 -- atomicity: a campaign row written after a task was moved, or a task moved for a
@@ -31,7 +40,7 @@
 
 begin;
 
-select extensions.plan(41);
+select extensions.plan(44);
 
 -- ---------------------------------------------------------------- fixtures
 
@@ -75,7 +84,14 @@ insert into cids (k, v) values
   ('m_exact', gen_random_uuid()),     ('c_exact', gen_random_uuid()),
   ('m_over', gen_random_uuid()),      ('c_over', gen_random_uuid()),
   ('m_term', gen_random_uuid()),      ('c_term', gen_random_uuid()),
-  ('m_nullcap', gen_random_uuid()),   ('c_nullcap', gen_random_uuid());
+  ('m_nullcap', gen_random_uuid()),   ('c_nullcap', gen_random_uuid()),
+  -- The escrow class (ADR-0020): a project whose ceiling is partly held against
+  -- a step somebody accepted, with a settled hold beside it that must count for
+  -- nothing.
+  ('pm_escrow', gen_random_uuid()),   ('pc_escrow', gen_random_uuid()),
+  ('p_escrow', gen_random_uuid()),    ('t_escrow', gen_random_uuid()),
+  ('m_esc_exact', gen_random_uuid()), ('c_esc_exact', gen_random_uuid()),
+  ('m_esc_over', gen_random_uuid()),  ('c_esc_over', gen_random_uuid());
 
 create or replace function pg_temp.cid(text) returns uuid language sql stable as
   $$ select v from cids where k = $1 $$;
@@ -116,7 +132,8 @@ values
   (pg_temp.cid('pc_nullcap'), pg_temp.cid('pm_nullcap'), pg_temp.cid('room'),       'plan', '{"title":"P","summary":"S","citations":[],"stages":[]}'::jsonb, 'owner', 'approved'),
   (pg_temp.cid('pc_noceil'),  pg_temp.cid('pm_noceil'),  pg_temp.cid('room'),       'plan', '{"title":"P","summary":"S","citations":[],"stages":[]}'::jsonb, 'owner', 'approved'),
   (pg_temp.cid('pc_done'),    pg_temp.cid('pm_done'),    pg_temp.cid('room'),       'plan', '{"title":"P","summary":"S","citations":[],"stages":[]}'::jsonb, 'owner', 'approved'),
-  (pg_temp.cid('pc_other'),   pg_temp.cid('pm_other'),   pg_temp.cid('other_room'), 'plan', '{"title":"P","summary":"S","citations":[],"stages":[]}'::jsonb, 'owner', 'approved');
+  (pg_temp.cid('pc_other'),   pg_temp.cid('pm_other'),   pg_temp.cid('other_room'), 'plan', '{"title":"P","summary":"S","citations":[],"stages":[]}'::jsonb, 'owner', 'approved'),
+  (pg_temp.cid('pc_escrow'),  pg_temp.cid('pm_escrow'),  pg_temp.cid('room'),       'plan', '{"title":"P","summary":"S","citations":[],"stages":[]}'::jsonb, 'owner', 'approved');
 
 insert into public.projects (id, owner_id, goal, status, source_embed_id, budget_ceiling, currency) values
   (pg_temp.cid('p_main'),    pg_temp.cid('owner'), 'main',    'active',    pg_temp.cid('pc_main'),    1000.00, 'USD'),
@@ -126,7 +143,8 @@ insert into public.projects (id, owner_id, goal, status, source_embed_id, budget
   -- Nothing authorised, which is what NULL means here and never "unlimited".
   (pg_temp.cid('p_noceil'),  pg_temp.cid('owner'), 'noceil',  'active',    pg_temp.cid('pc_noceil'),  null,    'USD'),
   (pg_temp.cid('p_done'),    pg_temp.cid('owner'), 'done',    'completed', pg_temp.cid('pc_done'),    1000.00, 'USD'),
-  (pg_temp.cid('p_other'),   pg_temp.cid('owner'), 'other',   'active',    pg_temp.cid('pc_other'),   1000.00, 'USD');
+  (pg_temp.cid('p_other'),   pg_temp.cid('owner'), 'other',   'active',    pg_temp.cid('pc_other'),   1000.00, 'USD'),
+  (pg_temp.cid('p_escrow'),  pg_temp.cid('owner'), 'escrow',  'active',    pg_temp.cid('pc_escrow'),  1000.00, 'USD');
 
 -- Inserted straight at needs_user, which is where the router parks a high-risk
 -- step and therefore the only state a campaign card is ever approved against.
@@ -135,7 +153,11 @@ insert into public.tasks (id, project_id, title, detail, stage, owner_type, risk
   -- Already closed, standing in for the owner having answered its question card
   -- while the campaign card sat unapproved.
   (pg_temp.cid('t_done'),  pg_temp.cid('p_main'),  'Already handled',      'Done.',    'channels', 'ai', 'high_risk', 'approved',   1),
-  (pg_temp.cid('t_other'), pg_temp.cid('p_other'), 'Someone else''s step', 'Theirs.',  'channels', 'ai', 'high_risk', 'needs_user', 0);
+  (pg_temp.cid('t_other'), pg_temp.cid('p_other'), 'Someone else''s step', 'Theirs.',  'channels', 'ai', 'high_risk', 'needs_user', 0),
+  -- A step an expert took. Written directly at `escrow_funded` for the reason
+  -- every task here is written directly at a state: the point is the arithmetic
+  -- the hold produces, not the route that produced the hold.
+  (pg_temp.cid('t_escrow'), pg_temp.cid('p_escrow'), 'Taken by an expert', 'Theirs.', 'content', 'human', 'reversible', 'escrow_funded', 0);
 
 -- Siblings that must not count against the ceiling, written directly because the
 -- point is the arithmetic rather than how they were authorised.
@@ -144,6 +166,15 @@ insert into public.campaigns (project_id, name, channel, state, budget_cap, curr
   (pg_temp.cid('p_term'), 'Stopped', 'meta', 'cancelled', 900.00, 'USD'),
   -- Null cap: contributes nothing rather than poisoning the sum with a NULL.
   (pg_temp.cid('p_nullcap'), 'Unpriced', 'email', 'ready', null, 'USD');
+
+-- The second committer class. 300 is held against `p_escrow`'s ceiling of 1000,
+-- and 500 is refunded and therefore holds none of it, exactly as a cancelled
+-- campaign holds none. Written directly rather than through `accept_offer`,
+-- because what is under test here is the sum this function performs and not the
+-- route that produced the rows.
+insert into public.escrow_holds (task_id, project_id, charge_id, amount, currency, state, idempotency_key) values
+  (pg_temp.cid('t_escrow'), pg_temp.cid('p_escrow'), 'ch_fake_held', 300.00, 'USD', 'held', 'escrow:cam-held'),
+  (pg_temp.cid('t_escrow'), pg_temp.cid('p_escrow'), 'ch_fake_gone', 500.00, 'USD', 'refunded', 'escrow:cam-refunded');
 
 insert into public.messages (id, room_id, author_kind, body, idempotency_key) values
   (pg_temp.cid('m_good'),      pg_temp.cid('room'),       'agent', 'campaign', 'cam-good'),
@@ -161,7 +192,9 @@ insert into public.messages (id, room_id, author_kind, body, idempotency_key) va
   (pg_temp.cid('m_exact'),     pg_temp.cid('room'),       'agent', 'campaign', 'cam-exact'),
   (pg_temp.cid('m_over'),      pg_temp.cid('room'),       'agent', 'campaign', 'cam-over'),
   (pg_temp.cid('m_term'),      pg_temp.cid('room'),       'agent', 'campaign', 'cam-term'),
-  (pg_temp.cid('m_nullcap'),   pg_temp.cid('room'),       'agent', 'campaign', 'cam-nullcap');
+  (pg_temp.cid('m_nullcap'),   pg_temp.cid('room'),       'agent', 'campaign', 'cam-nullcap'),
+  (pg_temp.cid('m_esc_exact'), pg_temp.cid('room'),       'agent', 'campaign', 'cam-esc-exact'),
+  (pg_temp.cid('m_esc_over'),  pg_temp.cid('room'),       'agent', 'campaign', 'cam-esc-over');
 
 -- The happy path card. `acted_by` is set because it is what decides `created_by`,
 -- and a campaign attributed to the agent when a person authorised it would put an
@@ -243,7 +276,17 @@ values
 
   (pg_temp.cid('c_nullcap'), pg_temp.cid('m_nullcap'), pg_temp.cid('room'), 'campaign',
    jsonb_build_object('projectId', pg_temp.cid('p_nullcap'), 'name', 'Past an unpriced sibling',
-     'channel', 'meta', 'budgetCap', 400, 'currency', 'USD', 'summary', 'S'), 'owner', 'approved');
+     'channel', 'meta', 'budgetCap', 400, 'currency', 'USD', 'summary', 'S'), 'owner', 'approved'),
+
+  -- 700 against a ceiling of 1000 with 300 held: exactly on the line, and only
+  -- if the refunded 500 counts for nothing.
+  (pg_temp.cid('c_esc_exact'), pg_temp.cid('m_esc_exact'), pg_temp.cid('room'), 'campaign',
+   jsonb_build_object('projectId', pg_temp.cid('p_escrow'), 'name', 'Exactly the ceiling, with escrow',
+     'channel', 'meta', 'budgetCap', 700, 'currency', 'USD', 'summary', 'S'), 'owner', 'approved'),
+
+  (pg_temp.cid('c_esc_over'), pg_temp.cid('m_esc_over'), pg_temp.cid('room'), 'campaign',
+   jsonb_build_object('projectId', pg_temp.cid('p_escrow'), 'name', 'One cent over, with escrow',
+     'channel', 'meta', 'budgetCap', 0.01, 'currency', 'USD', 'summary', 'S'), 'owner', 'approved');
 
 -- ------------------------------------------------------------- the happy path
 
@@ -450,6 +493,31 @@ select extensions.is(
   pg_temp.cerr(format('select public.materialise_campaign(%L)', pg_temp.cid('c_nullcap'))),
   null,
   'a sibling with no cap contributes nothing rather than turning the sum into NULL'
+);
+
+-- ------------------------------------------ the second committer class (3)
+--
+-- ADR-0020. `p_escrow` has a ceiling of 1000, 300 held and 500 refunded. A cap of
+-- 700 therefore lands exactly on the line, and it does so ONLY if the refunded
+-- hold counts for nothing: were both summed, 800 + 700 would be refused.
+
+select extensions.is(
+  pg_temp.cerr(format('select public.materialise_campaign(%L)', pg_temp.cid('c_esc_exact'))),
+  null,
+  'landing exactly on the ceiling is authorised with a held sibling hold present, and a refunded one holds none of it'
+);
+
+select extensions.is(
+  (select (payload->>'escrow_held_before')::numeric from public.events
+    where verb = 'campaign.materialised' and project_id = pg_temp.cid('p_escrow')),
+  300.00::numeric,
+  'and the event records the escrow half as its own figure: an owner refused for a number their campaign list cannot show is owed it in the trail'
+);
+
+select extensions.is(
+  pg_temp.cerr(format('select public.materialise_campaign(%L)', pg_temp.cid('c_esc_over'))),
+  '23514',
+  'one cent past the two classes together is refused, which is the same > this file already pins for one'
 );
 
 -- ------------------------------------------------------------------ atomicity

@@ -203,6 +203,42 @@ const EnvSchema = z.object({
   MATCHER_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
 
   /**
+   * Whether this deployment gives back escrow held against steps that stopped.
+   *
+   * **On by default, and the polarity argument here is the strongest of the
+   * five.** The other four flags are kill switches over things a deployment
+   * might reasonably not want to do: reach a stranger's server, publish, measure,
+   * pause. This one is the only sweep whose absence actively takes something
+   * away from a person. A step that is cancelled after its escrow was funded
+   * leaves the hold at `held` forever, and a held hold counts against
+   * `projects.budget_ceiling` (ADR-0020), so the owner's authorised budget stays
+   * pinned against work that will never happen and **nothing else in the product
+   * can release it**. `held -> refunded` has exactly one producer and it is this.
+   *
+   * It is inert in the same doubly-safe way its siblings are: it selects only
+   * holds at `held` whose task has reached `cancelled` or `failed`, and a
+   * workspace where nothing was cancelled costs one indexed read per pass.
+   *
+   * A kill switch, like its siblings: set it to `false` and steps can still be
+   * accepted and funded, and no hold is ever unwound. That is a supported
+   * configuration and a bad one, which is why it is not the default.
+   */
+  ESCROW_RECONCILE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
+  /**
+   * How many holds one pass may refund.
+   *
+   * Three, matching its siblings, and it bounds refunds PERFORMED rather than
+   * holds examined. Reading which held holds sit on stopped steps is one indexed
+   * query for the whole batch and is deliberately not counted against this, so a
+   * backlog of live engagements cannot starve the one cancelled step whose money
+   * is waiting to go back.
+   */
+  ESCROW_RECONCILE_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
+
+  /**
    * Signing key for the OAuth `state` parameter.
    *
    * **Optional in this schema and required at the point of use**, which is a

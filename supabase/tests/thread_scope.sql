@@ -366,8 +366,9 @@ select extensions.is(
   pg_temp.tscount_as(pg_temp.tsid('owner'), format(
     'select count(*) from public.profiles where user_id = %L', pg_temp.tsid('tnode'))),
   0::bigint,
-  'and the owner cannot read the node''s profile either: the counterparty policy joins '
-  'through engagements and is deferred to that slice rather than approximated here'
+  'and the owner cannot read the node''s profile either, because there is no engagement in '
+  'this fixture: profiles_select_counterparty (20260904126000) joins through engagements, and '
+  'marketplace_engagements.sql asserts the pair opening and closing with one'
 );
 
 select extensions.is(
@@ -562,8 +563,9 @@ select extensions.is(
 select extensions.is(
   (select count(*) from pg_policies where schemaname = 'public' and tablename = 'threads'),
   1::bigint,
-  'threads has exactly one policy, for SELECT: no write policy exists, because the writer '
-  'that would need one does not exist'
+  'threads still has exactly one policy, for SELECT. accept_offer (20260904125000) is now '
+  'the writer, and it runs under the secret key, so creating a thread needed a grant rather '
+  'than a policy: no client writes here even now that something does'
 );
 
 select extensions.is(
@@ -571,8 +573,9 @@ select extensions.is(
     where schemaname = 'realtime' and tablename = 'messages'
       and coalesce(qual, '') || coalesce(with_check, '') like '%chat:thread:%'),
   0::bigint,
-  'and no thread topic branch exists yet: it lands with the slice that first admits a node, '
-  'as an OR inside these same two policies rather than as a third one'
+  'and there is still no thread topic branch. Slice 5 admits a node and deliberately accepts '
+  'polling instead: the since-cursor GET runs as the caller, so the failure mode is a delay '
+  'rather than a disclosure. Topics move to slice 6, as an OR inside these same two policies'
 );
 
 select * from extensions.finish();

@@ -60,6 +60,15 @@ export interface UiMessage {
   /** Set when a send failed, so the UI can show it rather than dropping the text. */
   failed?: boolean;
   /**
+   * The thread this message belongs to, or null for the room stream.
+   *
+   * The owner's stream interleaves both since slice 5, because a node admitted
+   * to a task thread posts into the same room. Marked rather than filtered: the
+   * owner may read these rows and hiding them would be the fetched-never-rendered
+   * defect this repository has recorded twice.
+   */
+  threadId?: string | null;
+  /**
    * The interactive card attached to this message, when there is one.
    *
    * Null for a message that arrived over Realtime: the broadcast carries the

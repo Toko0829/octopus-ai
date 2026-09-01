@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SpendCapInput } from '@octopus/marketing';
 
 /**
- * The two reads that feed `checkSpendCap`.
+ * The three reads that feed `checkSpendCap`.
  *
  * The arithmetic lives in `packages/marketing` and has no database, no clock and
  * no `fetch`; this is the IO half, and the split is the one
@@ -25,6 +25,16 @@ const TERMINAL_STATES = ['completed', 'cancelled', 'failed'] as const;
 export interface SpendReads {
   projectBudgetCeiling: number | null;
   existingCampaignCaps: number[];
+  /**
+   * The second committer class
+   * ([ADR-0020](../../../../docs/40-adr/0020-the-ceiling-has-two-committer-classes.md)):
+   * every escrow hold on this project still at `state = 'held'`.
+   *
+   * Filtered here rather than in the arithmetic, on this file's own rule: the
+   * condition that decides which holds count is visible in the query, and
+   * `accept_offer` and `materialise_campaign` apply the identical one in SQL.
+   */
+  escrowHeld: number[];
   currency: string;
 }
 
@@ -65,9 +75,30 @@ export async function readSpendInputs(
     // wrong reason, and a spend check that is right by accident is not a check.
     .map((c) => Number(c));
 
+  // Held only, mirroring the terminal filter on campaigns directly above: a
+  // refunded hold commits none of the ceiling exactly as a cancelled campaign
+  // does. `accept_offer` and `materialise_campaign` both apply `state = 'held'`
+  // under the project row lock, so this read and those two sums answer the same
+  // question (ADR-0020's four-places contract).
+  const { data: holds, error: holdError } = await admin
+    .from('escrow_holds')
+    .select('amount')
+    .eq('project_id', projectId)
+    .eq('state', 'held');
+  if (holdError) throw holdError;
+
+  const held = ((holds ?? []) as { amount: number | string | null }[])
+    .map((h) => h.amount)
+    .filter((a): a is number | string => a !== null)
+    // numeric(12,2) arrives as a string over PostgREST, converted here for the
+    // same reason the caps above are: a string comparison on money is a check
+    // that is right by accident.
+    .map((a) => Number(a));
+
   return {
     projectBudgetCeiling: row.budget_ceiling === null ? null : Number(row.budget_ceiling),
     existingCampaignCaps: caps,
+    escrowHeld: held,
     currency: row.currency ?? 'USD',
   };
 }
@@ -77,6 +108,7 @@ export function spendCapInput(reads: SpendReads, proposedCap: number): SpendCapI
   return {
     projectBudgetCeiling: reads.projectBudgetCeiling,
     existingCampaignCaps: reads.existingCampaignCaps,
+    existingEscrowHolds: reads.escrowHeld,
     proposedCap,
   };
 }

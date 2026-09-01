@@ -238,20 +238,36 @@ The marketplace half (`MATCHING` through `PAID`) has no code behind it until the
 
 That migration rewrote `private.task_transition_allowed` from plpgsql to SQL to add one arc (`needs_user → approved`) and, in restating the map, **silently lost eight others** the original `20260813120000` had. Nothing asserted they had ever been there, which is why it went unnoticed for two weeks. Every one belongs to the marketplace half, so none was reachable and none has caused a defect — but each has to come back **with the slice that first makes it reachable**, never earlier, because an arc into a state nobody can leave is the `escalated` defect on purpose.
 
-| Arc                             | Restored in | Why not earlier                                                            |
-| ------------------------------- | ----------- | -------------------------------------------------------------------------- |
-| `matching → failed`             | slice 4     | no eligible node is a real outcome; without it the task strands mid-search |
-| `offered → failed`              | slice 4     | the cascade exhausted the pool                                             |
-| `claimed → matching`            | slice 5     | the no-show / withdraw-before-funding path back into the cascade           |
-| `proof_submitted → in_progress` | slice 6     | a proof withdrawn or superseded before review starts                       |
-| `escrow_funded → disputed`      | slice 8     | a `disputed` task with no ops console is a state nobody can leave          |
-| `in_progress → disputed`        | slice 8     | as above                                                                   |
-| `rejected → disputed`           | slice 8     | as above                                                                   |
-| `payout_pending → disputed`     | slice 8     | as above                                                                   |
+| Arc                             | Restored in | Why not earlier                                                                                                                                                                                                                                                   |
+| ------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `matching → failed`             | slice 4     | no eligible node is a real outcome; without it the task strands mid-search                                                                                                                                                                                        |
+| `offered → failed`              | slice 4     | the cascade exhausted the pool                                                                                                                                                                                                                                    |
+| `claimed → matching`            | **never**   | ❌ slice 5 decided against it ([ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md)): accept and fund are one transaction, so `claimed` is transit-only and the arc has no producer. The no-show path leaves from `escrow_funded` or later, in slice 6 |
+| `proof_submitted → in_progress` | slice 6     | a proof withdrawn or superseded before review starts                                                                                                                                                                                                              |
+| `escrow_funded → disputed`      | slice 8     | a `disputed` task with no ops console is a state nobody can leave                                                                                                                                                                                                 |
+| `in_progress → disputed`        | slice 8     | as above                                                                                                                                                                                                                                                          |
+| `rejected → disputed`           | slice 8     | as above                                                                                                                                                                                                                                                          |
+| `payout_pending → disputed`     | slice 8     | as above                                                                                                                                                                                                                                                          |
 
 **A ninth nobody had counted: `blocked → failed`.** The universal `p_to in ('cancelled', 'blocked')` rule is evaluated before the `blocked` case, so `blocked → cancelled` survived by accident and `blocked → failed` did not. Recorded here rather than fixed, since nothing writes `blocked` yet either.
 
-`supabase/tests/marketplace_rls.sql` pins two of these as **still absent** (`matching → failed` refused, `escalated → matching` allowed), so slice 4's restoration reads as a dated decision rather than as drift.
+`supabase/tests/marketplace_rls.sql` pins two of these as **still absent** (`matching → failed` refused, `escalated → matching` allowed), so slice 4's decision reads as dated rather than as drift.
+
+**Three of the eight are now permanently dropped rather than pending**, and each
+has an ADR reversing the booking above:
+[ADR-0018](../40-adr/0018-offer-exhaustion-returns-the-step-to-its-owner.md) for
+the two `→ failed` arcs, and
+[ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md) for
+`claimed → matching`. That is worth noticing rather than smoothing over: **five
+consecutive marketplace slices have restored no arc at all**, which says the
+machine `20260813120000` declared was drawn wider than the product has needed.
+
+**`offered → claimed` and `claimed → escrow_funded` were never dropped**, and it
+is worth saying so beside this table because slice 5 is the slice that first walks
+them. They have been in the map since `20260813120000` and simply had no producer
+for a year of commits. `public.accept_offer` (`20260904125000`) walks both, as two
+conditional UPDATEs in one transaction, so every guard fires and both moves write
+their own `task.transitioned` event.
 
 ## Scheduler
 
@@ -363,7 +379,28 @@ this slice and the slice decided against them: `failed` is terminal, it would bl
 every dependent step, and it would put beyond reach work the owner can still take.
 The ADR dates the reversal and `marketplace_rls.sql` carries the corrected wording.
 
-**The sweep is the single writer of `tasks.state` here.** The node's decline route
-settles the offer row and stops; the next tick moves the task. Every move is
-conditional on the state that was read, so the owner resolving a step and the
-matcher dispatching it cannot both win.
+- **`offered → claimed → escrow_funded`** is acceptance, both moves inside
+  `public.accept_offer`'s single transaction. `claimed` is therefore **never
+  observable**, which is the premise
+  [ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md) rests on and the
+  reason `claimed → matching` stays dropped.
+
+**The sweep is the clock's side of this domain, and `accept_offer` is the person's
+side.** That sentence replaces "the sweep is the single writer of `tasks.state`
+here", which was true while a node could only decline: the decline route settles
+the offer row and stops, and the next tick moves the task. Acceptance changed it,
+because accepting and funding are inseparable and there is nothing safe to leave
+half done.
+
+**What keeps them apart is not a single writer, it is that every move on both
+sides is a conditional UPDATE on the row it read**, so a loser performs nothing
+rather than overwriting a winner. Sweep first: the accept's `status = 'open'`
+conditional matches zero rows and the whole transaction unwinds. Accept first: all
+three sweep phases read states the accepted pair no longer occupies. They cannot
+interleave past each other, because the cascade only moves a task whose latest
+offer is already settled. Walked through in `match.ts`'s header and in
+`accept_offer`'s, and asserted in `match.test.ts`.
+
+**`escrow_funded` is where a funded step now stops.**
+`escrow_funded → in_progress` has no producer until slice 6, so the machine's
+marketplace half remains half-walked, deliberately and with the boundary stated.

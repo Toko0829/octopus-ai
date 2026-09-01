@@ -7,6 +7,18 @@
 # Then http://localhost:3000. The API is on :3011 and the reasoning core on
 # :8000, both published so they can be probed directly while testing.
 #
+# **Two things the running stack cannot do to itself, and both are prerequisites
+# for testing rather than extras.** An empty corpus makes the agent refuse every
+# goal, which is correct behaviour and looks exactly like a broken planner; and a
+# node profile can only be created by `public.invite_node`, which `service_role`
+# alone may call, so with no invited expert the matcher, offer, accept and escrow
+# paths are unreachable. Both are one-off commands against the stack that is
+# already up, and both inherit `apps/api/.env` from the service they run in, so
+# no credential is retyped and the secret key never reaches a shell history:
+#
+#   docker compose run --rm ai python -m octopus_ai.seed
+#   docker compose run --rm api node scripts/invite-node.mjs #     --email them@example.com --jurisdictions US-TX,US --languages en --confirm
+#
 # **Every service carries `pull_policy: build`, and the reason is a stack that
 # lied.** Compose's default is `missing`: it builds only when no image with the
 # tag exists, so once `octopus-web:latest` has been built one time, every later

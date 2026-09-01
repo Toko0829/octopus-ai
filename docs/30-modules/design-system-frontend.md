@@ -417,10 +417,12 @@ stage in words rather than the planner's token, its description, and when the
 offer runs out. Settled offers stay on the page as a quiet history line, because a
 list that empties after a decline reads as though the decline lost something.
 
-**Accept is rendered and disabled, with its reason printed beside it.** Omitting it
-would be worse: a node reading work they cannot take has no way to tell whether
-accepting is coming, broken, or something they failed to qualify for. This reuses
-the idiom the availability control already uses while a node is unverified.
+**Accept was rendered and disabled, with its reason printed beside it**, for the
+length of slice 4. Omitting it would have been worse: a node reading work they
+cannot take has no way to tell whether accepting is coming, broken, or something
+they failed to qualify for. Slice 5 makes it live, and **both the disabled state
+and the sentence beside it are gone** rather than left behind as a control that
+lies about itself.
 
 **Declining is two steps**, because it cannot be undone: the cascade moves on and
 `offers_task_node_idx` means this node is never asked about this step again. The
@@ -445,3 +447,67 @@ cannot bring one in yet, so these are paused rather than under way."
 `offered` already had copy in `STATE_COPY` ("Finding an expert", "Offered to an
 expert"); the `stuck` set stays `needs_user | escalated`. There is nothing useful
 to offer the owner while a stranger is deciding.
+
+## The marketplace surfaces (slice 5)
+
+**Accepting is two steps, on declining's exact shape and for a stronger reason.**
+Declining cannot be undone; accepting cannot be undone **and commits somebody
+else's money**. The confirm step therefore states the figure rather than implying
+it: "Your rate, $X for the task, is locked in escrow when you accept." A person
+should not have to infer what they will be paid from a rate card on another card
+of the same page. It also says what acceptance opens, in one line, because being
+admitted to a stranger's room is the other thing the click does.
+
+**`/node` gains an "Accepted work" section**, and each engagement carries a
+**minimal thread panel** underneath it: the messages of that thread, and a box to
+add one. `STATE_COPY` for the node is written from the expert's side rather than
+the owner's ("Funded and ready to start" rather than "Funded"), because the same
+row means different things to the two people looking at it.
+
+**The panel polls, and the doc says so rather than implying live updates.** Thread
+realtime topics are not built, so it re-reads the since-cursor `GET` every ten
+seconds. That call runs as the caller, so RLS returns exactly their thread: the
+failure mode is a delay of up to one interval, never a disclosure. The panel says
+"New messages appear within a few seconds" rather than pretending to be live.
+
+**The owner's stream now interleaves two conversations, and the rows are marked
+rather than hidden.** A node admitted to a task thread posts into the same room,
+so messages arrive carrying a `threadId` the room's own conversation does not
+have. **Hiding them would be the fetched-never-rendered defect**, and it would hide
+work the owner is paying for and is entitled to read. Each such row carries a
+quiet "in a task thread" marker: a word, not a tint or an indent, so somebody who
+cannot distinguish the shades reads the same page (rule 15). The mirror image is
+RLS rather than anything in the UI: the node sees only their own thread.
+
+**A node's messages are badged "Human node" by role, not by name.** The roster
+cannot name them and that is by design: `room_members_select_member` gives a
+room-scoped member the room-scoped roster plus their own row, so a thread-scoped
+membership is invisible to the owner. The owner **can** read the node's `profiles`
+row, through the counterparty policy, and where that name belongs is the project
+panel's engagement line, beside the price and the date it was agreed. So the
+stream labels the role rather than inventing a name, which is honest and is also
+the rule-15 requirement: the badge is a word.
+
+**`ProjectPanel` gains an engagement line on a taken step**, showing who took it,
+the agreed price in tabular numerics (rule 14), and the date. This is the only
+place the owner learns who is doing their work: `offers` stays closed to them,
+because it names everybody who was _asked_, including the people who declined.
+
+**`Budget` counts escrow, and breaks it out.** "Committed" is now both classes
+([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md)), with "of
+which N held in escrow" beneath it. Folding escrow away would leave an owner
+reading a number they cannot reduce with no way to tell which half is which, and
+counting only campaigns would show headroom the next acceptance refuses to spend,
+which reads as a broken check rather than as a full budget.
+
+**`STATE_COPY` needed no change at all.** `claimed` ("An expert took it") and
+`escrow_funded` ("Funded") were written when the machine was declared in full,
+which is what that table exists for: a view showing a raw enum value the day
+something first reaches a state is a view nobody updated.
+
+**The offer card's classes finally got their styles.** `node-offer`,
+`node-confirm`, `node-textarea` and `node-history` were introduced by slice 4 with
+no rules at all, so an offer rendered as bare stacked text. They land here rather
+than in a separate tidy-up because this slice adds a second list of the same shape
+with a money figure inside it, and half-styling one of the two would be worse than
+the gap it started from.

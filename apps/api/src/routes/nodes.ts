@@ -30,6 +30,16 @@ import {
   revokeNodeCredential,
 } from '../lib/nodes';
 import { auditOfferDeclined, declineOffer, readNodeOffers } from '../lib/offers';
+import {
+  auditOfferAccepted,
+  chargeForOffer,
+  precheckAccept,
+  readEngagement,
+  readNodeEngagements,
+  readOwnOffer,
+} from '../lib/engagements';
+import { postSystemMessage } from '../lib/system-message';
+import { roomForProject } from '../lib/room-for-project';
 
 /**
  * A node's own record, and nothing else in the marketplace.
@@ -490,10 +500,15 @@ export async function nodeRoutes(app: FastifyInstance, opts: NodeRoutesOptions):
    * declined and the owner still reads "Offered to an expert". That is a delay
    * in a status line, where the alternative is a double offer.
    *
-   * **There is no accept route**, and its absence is the slice boundary rather
-   * than an omission. Accepting is inseparable from funding escrow, so an accept
-   * that wrote no ledger row would leave somebody holding work nobody had paid
-   * for. The surface says so where the button would be.
+   * **Accepting is the other half, and it does the opposite**, which is worth
+   * stating here because the asymmetry looks like an inconsistency until you see
+   * why. A decline settles the offer and leaves the task to the sweep; an accept
+   * moves the task itself, twice, in the same transaction. The difference is
+   * that acceptance and funding are inseparable (`claimed -> escrow_funded` is
+   * the machine's only exit from `claimed`), so there is nothing for a later
+   * sweep to finish and nothing safe to leave half done. Both are conditional
+   * updates on the rows they read, so neither can win a race it did not win in
+   * the database. See `accept_offer`'s header and `match.ts`.
    */
   app.post(
     '/api/node/offers/:offerId/decline',
@@ -569,4 +584,185 @@ export async function nodeRoutes(app: FastifyInstance, opts: NodeRoutesOptions):
       }
     },
   );
+
+  /**
+   * Saying yes.
+   *
+   * **Five things happen and only one of them is a write this process makes.**
+   * The offer is read as the caller (so an offer that is not theirs is a 404 and
+   * not a 403); the readable pre-checks run, each surfacing its own sentence; a
+   * charge reference is minted from the fake provider; `accept_offer` does
+   * everything else in one transaction; and then the acceptance is announced.
+   *
+   * **The pre-checks are duplicated in SQL on purpose** (ADR-0011, applied to
+   * acceptance). This side exists so a person is told which thing stopped them
+   * before anything is written. That side exists because two nodes accepting two
+   * steps on one project at the same instant both pass a check made here, since
+   * each reads the committed total before either writes. When the raise wins
+   * anyway, its message is surfaced verbatim: SQL is authoritative and its
+   * sentences are written for a reader.
+   *
+   * **Nothing is charged.** The only registered provider is the in-repo fake and
+   * `carriesRealMoney` refuses before any rpc, which is the enforced half of the
+   * counsel gate in payments-billing.md.
+   */
+  app.post(
+    '/api/node/offers/:offerId/accept',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = z.object({ offerId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'Bad offer id.');
+
+      // **Accepting takes no body**, and a body sent anyway is refused rather
+      // than ignored. Everything an acceptance depends on is read from rows the
+      // caller cannot name: the price from their own profile, the ceiling from
+      // the project, the step from the offer. A field here would be a person
+      // naming what they are paid.
+      if (request.body !== undefined && request.body !== null) {
+        const empty = z.object({}).strict().safeParse(request.body);
+        if (!empty.success) {
+          return fail(
+            reply,
+            400,
+            'bad_request',
+            'Accepting takes no body: the price is your rate and the step is the one offered.',
+          );
+        }
+      }
+
+      const found = await requireNode(request, reply);
+      if (!found) return reply;
+
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+      const admin = createServiceClient(opts.supabase);
+
+      try {
+        // Read as the caller. `offers_select_own` is `node_id = auth.uid()`, so
+        // an offer made to somebody else is simply not there, and the API does
+        // not confirm the existence of something it will not show.
+        const offer = await readOwnOffer(db, params.data.offerId, found.userId);
+        if (!offer) return fail(reply, 404, 'not_found', 'Offer not found.');
+
+        // A replayed accept, short-circuited before the pre-checks re-run a
+        // ceiling that may have moved since. `accept_offer` performs the same
+        // short-circuit against the same unique key; this one exists so a retry
+        // does not fail a pre-check about work the node already holds.
+        const { data: existing, error: existingError } = await admin
+          .from('engagements')
+          .select('id')
+          .eq('offer_id', offer.id)
+          .maybeSingle();
+        if (existingError) throw existingError;
+        if (existing) {
+          const replayed = await readEngagement(admin, (existing as { id: string }).id);
+          if (replayed) return reply.code(200).send({ engagement: replayed });
+        }
+
+        const precheck = await precheckAccept(admin, offer);
+        if (!precheck.ok) {
+          if (precheck.rule === 'not_found') {
+            return fail(reply, 404, 'not_found', precheck.reason);
+          }
+          return fail(reply, 409, 'conflict', precheck.reason);
+        }
+
+        const charge = await chargeForOffer(offer.id, precheck.price, precheck.currency);
+
+        const { data: engagementId, error: rpcError } = await admin.rpc('accept_offer', {
+          p_offer_id: offer.id,
+          p_charge_id: charge.chargeId,
+        });
+
+        if (rpcError) {
+          // The raise's own message, not a generic refusal. Every check_violation
+          // in `accept_offer` is a sentence naming what it found, including the
+          // state it read back when a conditional update matched nothing, and a
+          // 409 saying only "that step moved" is the one message a node cannot
+          // act on.
+          if (pgCode(rpcError) === PG_CHECK_VIOLATION) {
+            request.log.info(
+              { offerId: offer.id, userId: found.userId, reason: rpcError.message },
+              'accept refused by the database',
+            );
+            return fail(reply, 409, 'conflict', rpcError.message);
+          }
+          throw rpcError;
+        }
+
+        const engagement = await readEngagement(admin, engagementId as string);
+        if (!engagement) {
+          request.log.error(
+            { offerId: offer.id, engagementId },
+            'accepted engagement not readable',
+          );
+          return fail(reply, 500, 'internal_error', 'The step was accepted but could not be read.');
+        }
+
+        await auditOfferAccepted(
+          admin,
+          {
+            projectId: offer.project_id,
+            nodeId: found.userId,
+            offerId: offer.id,
+            taskId: offer.task_id,
+            engagementId: engagementId as string,
+            price: precheck.price,
+            currency: precheck.currency,
+          },
+          request.log,
+        );
+
+        // The owner is told, in their own room. Keyed on the offer so a retried
+        // request that already committed does not post a second line, and named
+        // by the step rather than by the node: who took it reaches the owner
+        // through the panel, where the engagement projection puts a name beside
+        // the price.
+        const roomId = await roomForProject(admin, offer.project_id);
+        if (roomId) {
+          await postSystemMessage(
+            admin,
+            request.log,
+            roomId,
+            `offer-accepted:${offer.id}`,
+            `An expert accepted "${engagement.task.title}" for ${engagement.agreedPrice} ` +
+              `${engagement.currency}, which is now held in escrow against your project budget. ` +
+              `You can follow the work in this room.`,
+          );
+        }
+
+        return reply.code(200).send({ engagement });
+      } catch (err) {
+        request.log.error({ err, userId: found.userId }, 'offer accept failed');
+        return fail(reply, 500, 'internal_error', 'Could not accept that offer.');
+      }
+    },
+  );
+
+  /**
+   * The work this node took.
+   *
+   * A separate route from `GET /api/node/offers` for the reason that one is
+   * separate from `GET /api/node`: they change on different clocks. An offer list
+   * changes when somebody else's step moves; an engagement list changes when this
+   * node accepts, or when a step they hold finishes.
+   *
+   * **The projection is the access control**, and it deliberately exposes
+   * `roomId` and `threadId` where the offer projection hides every internal id.
+   * After acceptance those two ids ARE the admission: `room_members` carries
+   * them, RLS is written against them, and the node's own client needs both to
+   * read and post in their thread.
+   */
+  app.get('/api/node/engagements', { preHandler: requireAuth }, async (request, reply) => {
+    const found = await requireNode(request, reply);
+    if (!found) return reply;
+
+    const admin = createServiceClient(opts.supabase);
+    try {
+      const engagements = await readNodeEngagements(admin, found.userId);
+      return reply.code(200).send({ engagements });
+    } catch (err) {
+      request.log.error({ err, userId: found.userId }, 'engagement list read failed');
+      return fail(reply, 500, 'internal_error', 'Could not load your accepted work.');
+    }
+  });
 }

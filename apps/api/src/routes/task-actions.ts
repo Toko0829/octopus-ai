@@ -147,6 +147,32 @@ export async function taskActionRoutes(
             );
           }
 
+          // **A step nobody can be paid for must not be sent out.** Since slice
+          // 5 an expert who accepts is funded from `projects.budget_ceiling`, and
+          // `accept_offer` refuses a null ceiling. Without this check the refusal
+          // lands on the node, at the last possible moment, for a problem only
+          // the owner can fix and which nothing would have told them about: they
+          // would see a step sitting at "Offered to an expert" and never learn
+          // why nobody took it.
+          //
+          // Same class as the two refusals below it, and refused for the same
+          // reason they are: before the task moves, so the step keeps all three
+          // buttons and is told what to do.
+          const { data: budgetRow, error: budgetErr } = await db
+            .from('projects')
+            .select('budget_ceiling')
+            .eq('id', projectId)
+            .maybeSingle();
+          if (budgetErr) throw budgetErr;
+          if ((budgetRow as { budget_ceiling: number | null } | null)?.budget_ceiling == null) {
+            return fail(
+              reply,
+              409,
+              'conflict',
+              'Set the project budget before searching: an expert who accepts is paid from it.',
+            );
+          }
+
           // Check there is somebody to ask BEFORE burning the arc. The pool read
           // is the same one the sweep runs, imported rather than rewritten, so
           // the precheck and the search can never disagree about who is eligible.

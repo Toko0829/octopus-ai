@@ -9,6 +9,7 @@ import type {
   MarketingChannel,
   Message,
   NodeCredential,
+  NodeEngagement,
   NodeOffer,
   NodeProfile,
   NodeSkill,
@@ -156,7 +157,7 @@ export function getMessages(roomId: string, since?: number) {
  */
 export function postMessage(
   roomId: string,
-  input: { body: string; channelId?: string; idempotencyKey: string },
+  input: { body: string; channelId?: string; threadId?: string; idempotencyKey: string },
 ) {
   return bff<Message>(`/rooms/${roomId}/messages`, {
     method: 'POST',
@@ -395,4 +396,27 @@ export function declineOffer(offerId: string, reason?: string) {
     method: 'POST',
     body: JSON.stringify(reason ? { reason } : {}),
   });
+}
+
+/**
+ * Say yes.
+ *
+ * **No body**, and that is a decision rather than an omission: the price is the
+ * node's own rate, frozen at this moment, and the step is the one that was
+ * offered. A field here would be a person naming what they are paid. The route
+ * refuses a body rather than ignoring one.
+ *
+ * What comes back carries `roomId` and `threadId`, which the offer projection
+ * deliberately hides. After acceptance those two ids ARE the admission: the
+ * thread panel below cannot read or post without both.
+ */
+export function acceptOffer(offerId: string) {
+  return bff<{ engagement: NodeEngagement }>(`/node/offers/${offerId}/accept`, {
+    method: 'POST',
+  });
+}
+
+/** The work this node took, with the room and thread each one lives in. */
+export function getNodeEngagements() {
+  return bff<{ engagements: NodeEngagement[] }>('/node/engagements');
 }

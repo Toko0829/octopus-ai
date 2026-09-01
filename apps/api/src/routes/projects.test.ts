@@ -14,6 +14,7 @@ import {
   CAMPAIGN_COLUMNS,
   CampaignRow,
   decideFileUrl,
+  projectCommitments,
   signedUrlExpiresAt,
   PROJECT_COLUMNS,
   ProjectRow,
@@ -133,5 +134,82 @@ describe('signedUrlExpiresAt', () => {
     // the ttl is the exposure if one is copied out of a history or a screenshot.
     // A change to this number is a security decision and should fail here first.
     expect(SIGNED_URL_TTL_SECONDS).toBe(600);
+  });
+});
+
+/**
+ * The fourth of ADR-0020's four places.
+ *
+ * The ceiling has two committer classes since slice 5, and a panel counting only
+ * campaigns would show headroom the next acceptance refuses to spend. That reads
+ * as a broken check rather than as a full budget, and it is invisible: no type
+ * error, no exception, just a number that is wrong in the direction of
+ * encouraging spend.
+ *
+ * The filters are asserted individually because each one has a SQL twin that has
+ * to agree with it.
+ */
+describe('projectCommitments', () => {
+  const campaign = (state: string, budgetCap: number | null) => ({ state, budgetCap });
+
+  it('sums non-terminal campaign caps', () => {
+    const result = projectCommitments({
+      campaigns: [campaign('ready', 400), campaign('live', 200)],
+      heldAmounts: [],
+    });
+
+    expect(result.committedBudget).toBe(600);
+    expect(result.escrowHeld).toBe(0);
+  });
+
+  it('lets a terminal campaign hold none of the ceiling', () => {
+    for (const state of ['completed', 'cancelled', 'failed']) {
+      expect(
+        projectCommitments({ campaigns: [campaign(state, 900)], heldAmounts: [] }).committedBudget,
+      ).toBe(0);
+    }
+  });
+
+  it('lets a campaign with no cap contribute nothing rather than NaN', () => {
+    const result = projectCommitments({
+      campaigns: [campaign('ready', null), campaign('ready', 400)],
+      heldAmounts: [],
+    });
+
+    expect(result.committedBudget).toBe(400);
+  });
+
+  it('counts held escrow as the second class', () => {
+    const result = projectCommitments({
+      campaigns: [campaign('ready', 400)],
+      heldAmounts: [500],
+    });
+
+    expect(result.committedBudget).toBe(900);
+    expect(result.escrowHeld).toBe(500);
+  });
+
+  it('converts a hold amount from the string PostgREST returns', () => {
+    // numeric(12,2) arrives as text. Concatenating it instead of adding would
+    // produce "0500", which is a money figure that is wrong in the worst way
+    // available: silently, and without a type error.
+    const result = projectCommitments({ campaigns: [], heldAmounts: ['500.00', '250.50'] });
+
+    expect(result.escrowHeld).toBe(750.5);
+  });
+
+  it('drops a null amount rather than passing it into the sum', () => {
+    expect(projectCommitments({ campaigns: [], heldAmounts: [null, '100'] }).escrowHeld).toBe(100);
+  });
+
+  it('breaks escrow out as well as folding it in', () => {
+    // The two halves settle on different clocks, so an owner reading a total
+    // they cannot reduce needs to know which half is which.
+    const result = projectCommitments({
+      campaigns: [campaign('ready', 100)],
+      heldAmounts: ['300.00'],
+    });
+
+    expect(result).toEqual({ committedBudget: 400, escrowHeld: 300 });
   });
 });

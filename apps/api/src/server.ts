@@ -156,6 +156,13 @@ export async function buildServer(): Promise<FastifyInstance> {
     // the same kill-switch shape again: `false` still lets a step be dispatched
     // and still shows "Finding an expert", and no offer is ever made.
     matcher: env.MATCHER_ENABLED ? { maxPerPass: env.MATCHER_MAX_PER_TICK } : undefined,
+    // Giving back escrow held against steps that stopped before delivery. The
+    // only producer of `held -> refunded` anywhere: with this off, a cancelled
+    // step pins part of the owner's authorised budget permanently and no other
+    // code path can release it.
+    escrow: env.ESCROW_RECONCILE_ENABLED
+      ? { maxPerPass: env.ESCROW_RECONCILE_MAX_PER_TICK }
+      : undefined,
     log: app.log,
   });
   app.addHook('onClose', async () => stopTicker());

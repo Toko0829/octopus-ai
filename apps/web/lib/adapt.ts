@@ -84,6 +84,9 @@ export function fromBroadcastRecord(record: unknown): UiMessage | null {
     body: typeof r.body === 'string' ? r.body : '',
     seq: r.seq === null || r.seq === undefined ? null : Number(r.seq),
     ts: typeof r.created_at === 'string' ? formatTime(r.created_at) : '',
+    // The broadcast trigger sends the whole NEW row, so `thread_id` has been
+    // travelling on every payload since `20260901121000` with nobody reading it.
+    threadId: typeof r.thread_id === 'string' ? r.thread_id : null,
   };
 }
 
@@ -95,6 +98,7 @@ export function toMessage(m: Message): UiMessage {
     body: m.body ?? '',
     seq: m.seq,
     ts: formatTime(m.createdAt),
+    threadId: m.threadId,
     embed: m.embed ?? null,
   };
 }
