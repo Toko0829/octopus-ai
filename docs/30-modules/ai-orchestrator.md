@@ -373,6 +373,56 @@ Per-run tracing (`projectId` + `agentRunId`), LLM traces (prompt/response/token/
 
 **Flywheel capture:** every plan diff, tool result, user approve/reject/edit, and human-node correction is event-sourced and projected into the [learning flywheel](../10-architecture/learning-flywheel.md) as labeled data — the AI should need fewer corrections over time.
 
+### The Python service logs its structured context, as of this change
+
+Every call site in `services/ai` passes `extra={...}`: `agent_run_id` on each
+reasoning step, the groundedness verdict with its reason, the retrieval counts,
+and the reason a structured plan was rejected. **None of it was ever emitted.**
+The service only ever called `logging.getLogger`, so it inherited uvicorn's
+default formatter, which drops non-standard `LogRecord` attributes silently.
+
+That is worth recording as a defect rather than a tidy-up, because of which
+field it discarded. `planner.py` catches a malformed plan and logs
+`reason=str(exc)` before regenerating as prose, and that reason is the only thing
+separating a truncated response from an upstream provider timeout. Both present
+identically as "structured plan unusable, falling back to prose", and the
+distinction was written and thrown away on every occurrence. The same was true of
+every `agent_run_id`, which is what ties a log line back to the run a person is
+waiting on, and which [observability.md](../10-architecture/observability.md)
+requires be threaded across the seam.
+
+`configure_logging` in `main.py` attaches a formatter that renders those fields,
+scoped to the `octopus` logger with `propagate = False` so uvicorn's own access
+logging is neither duplicated nor silenced. It is called first in `lifespan`, so
+startup lines carry their context too.
+
+**What it immediately surfaced.** A whole-funnel goal was reported to a user as a
+timeout. With the extras visible, one reproduction showed the run had decomposed
+into 6 sub-queries, paid 6 sequential rerank passes, taken 498s, and then been
+**refused by the groundedness gate as `unsupported`** with a precise reason. The
+refusal was correct and the person never saw it, because the API's 300s budget
+discarded it and reported that the service had given up instead. Telling somebody
+the reasoning service failed when it in fact answered, and answered "your goal is
+outside my sources", is the same class of defect as reporting a timeout as an
+outage. The latency itself is unfixed and recorded below.
+
+### Sub-query fan-out is the dominant planning cost, and the loop is sequential
+
+`retrieval.py` runs `for sub in queries: await self._retrieve_one(...)`, and
+`config.py` states the trade plainly: decomposition costs **one rerank per
+sub-query**, because the cheap alternative (search every sub-query, rerank once
+against the original goal) was built, measured, and found to change nothing.
+That trade was priced when rerank was a metered Cohere call, where serialising
+was the point and `rerank_rpm` was the ceiling. Since [ADR-0009](../40-adr/0009-local-reranker.md)
+rerank runs in-process on CPU and is explicitly not rate-limited, so the loop now
+serialises CPU work for a reason that no longer applies.
+
+Measured on a 16-core host with torch on 8 threads: 6 sub-queries, 498s end to
+end, roughly 83s per pass. Nothing is wrong with any single pass; there are just
+six of them in a row. Parallelising is not free either, since six concurrent
+passes at 8 torch threads each oversubscribe a 16-core box, so the fix is a
+bounded fan-out rather than a bare `gather`, and it is **not built**.
+
 ## State model
 
 The agent drives the project/task state machine owned by [business-projects-workflow.md](business-projects-workflow.md); it is the single writer to task states via the scheduler/router.
