@@ -106,3 +106,34 @@ Warm Chat skin by default; compact density for power users; per-business accent 
 ## Key entities
 
 `rooms` · `channels` · `threads` (**live**, written by `accept_offer`) · `messages` (idempotency key, `seq` ordering cursor, `author_kind`, `thread_id?`) · `room_members` (`scope`, `thread_id?`, `expires_at`) · `reactions` / `pins` · `action_embeds` (component, payload, `required_role`, state) · presence (ephemeral, Realtime).
+
+## A third topic namespace: `notify:user:<uid>` (notifications slice 1, `20260909122000`)
+
+`chat:room:<id>` and `chat:thread:<id>` are joined by membership in a **place**.
+The inbox topic is joined by **being a person**, which is the difference that
+decides its shape ([ADR-0028](../40-adr/0028-a-notification-is-derived-from-the-event.md)).
+
+It is a **separate SELECT policy** on `realtime.messages`, not a third `OR`
+disjunct inside the two above. What `20260906120000` refused to duplicate was the
+`expires_at` time-box, which lives on `room_members`; this topic has no membership
+row and no time-box, so there is nothing to keep in step, and folding a predicate
+about a person into two predicates about rooms would mean the next person to edit
+either had to reason about all three. There is **no send policy**, because nobody
+is present in their notifications: the client subscribes and never calls
+`track()`, and the pgTAP suite pins that a node cannot push to their own inbox
+topic.
+
+The client is `apps/web/components/inbox/useInbox.ts`, and it is this shell's
+subscription pattern copied deliberately rather than abstracted: `getSession()`,
+`realtime.setAuth`, a private channel, `broadcast` on `INSERT`, a since-cursor
+catch-up on `SUBSCRIBED` because a live subscription is not durable catch-up, and
+a visible line when the socket drops. That makes three copies of the sequence
+(`ChatApp`, `ThreadPanel`, `useInbox`); the note in that file says the third is
+where extracting it becomes worth doing, and what stopped it is that the two chat
+copies also carry presence, message merging and embed dedupe, so the shared thing
+would be four lines of setup behind six parameters.
+
+**Scoping is the point.** A room topic tells somebody about the room they are
+looking at. An owner running two businesses, and a node whose work lives in
+threads their access to has been revoked, are both people the chat topics
+structurally cannot reach.

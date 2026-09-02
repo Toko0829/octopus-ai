@@ -1692,6 +1692,97 @@ export const OpsIdentity = z.object({
 });
 export type OpsIdentity = z.infer<typeof OpsIdentity>;
 
+/* --------------------------------------------------------- notifications */
+
+/**
+ * The moments somebody is told about.
+ *
+ * Mirrors the `kind` check constraint in
+ * `supabase/migrations/20260909120000_notifications.sql`, which in turn mirrors
+ * the `verb` values in `public.events`: a notification carries its event's verb
+ * through unchanged so the two vocabularies cannot drift
+ * ([ADR-0028](../../docs/40-adr/0028-a-notification-is-derived-from-the-event.md)).
+ * Adding one means touching the migration, this enum and
+ * `apps/web/lib/notification-copy.ts` together, which is the point: a kind with
+ * no sentence renders as nothing at all.
+ */
+export const NotificationKind = z.enum([
+  'offer.created',
+  'offer.accepted',
+  'proof.submitted',
+  'proof.bounced',
+  'work.approved',
+  'work.rejected',
+  'engagement.reassigned',
+  'payout.settled',
+  'dispute.raised',
+  'dispute.resolved',
+  'node.kyc_status_changed',
+  'task.transitioned',
+]);
+export type NotificationKind = z.infer<typeof NotificationKind>;
+
+/** Which hat the row was written for. One person can hold both, on different projects. */
+export const NotificationRecipientRole = z.enum(['owner', 'node']);
+export type NotificationRecipientRole = z.infer<typeof NotificationRecipientRole>;
+
+/**
+ * One row of somebody's inbox.
+ *
+ * **`payload` is facts, never a sentence.** The database stores what the
+ * sentence is made from (the step title, the money, the deadline) and
+ * `apps/web/lib/notification-copy.ts` composes the words, so copy changes
+ * without a migration and can be unit-tested against AGENTS.md rule 22, which
+ * names notification copy in its ban on em dashes. `z.unknown()` rather than a
+ * per-kind union because the keys differ by kind and a union here would have to
+ * be kept in step with a plpgsql `case` statement by hand.
+ */
+export const Notification = z.object({
+  id: z.string().uuid(),
+  kind: NotificationKind,
+  recipientRole: NotificationRecipientRole,
+  subjectType: z.string(),
+  subjectId: z.string().uuid(),
+  /** Null for `node.kyc_status_changed`: becoming a verified node is not about a project. */
+  projectId: z.string().uuid().nullable(),
+  payload: z.record(z.unknown()),
+  createdAt: z.string(),
+  readAt: z.string().nullable(),
+});
+export type Notification = z.infer<typeof Notification>;
+
+export const ListNotificationsQuery = z.object({
+  /** Present and `1` narrows to unread. Absent returns the whole recent inbox. */
+  unread: z.literal('1').optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  /** Keyset cursor: `created_at` of the oldest row already held. */
+  before: z.string().datetime().optional(),
+});
+export type ListNotificationsQuery = z.infer<typeof ListNotificationsQuery>;
+
+/**
+ * The list and the badge in one answer.
+ *
+ * `unread` is counted over the whole inbox rather than derived from
+ * `notifications`, because the list is a page and the badge is not: a reader
+ * holding thirty rows still needs to know there are two hundred.
+ */
+export const ListNotificationsResponse = z.object({
+  notifications: z.array(Notification),
+  unread: z.number().int(),
+});
+export type ListNotificationsResponse = z.infer<typeof ListNotificationsResponse>;
+
+export const MarkNotificationReadResponse = z.object({ notification: Notification });
+export type MarkNotificationReadResponse = z.infer<typeof MarkNotificationReadResponse>;
+
+export const MarkAllNotificationsReadResponse = z.object({
+  marked: z.number().int(),
+  /** Always zero. Returned so the caller sets the badge from the answer, not from arithmetic. */
+  unread: z.literal(0),
+});
+export type MarkAllNotificationsReadResponse = z.infer<typeof MarkAllNotificationsReadResponse>;
+
 /**
  * **Neither the `/api/node` routes nor the `/api/ops` routes appear in the
  * ts-rest router below, and that is deliberate rather than an omission.** The
@@ -1710,6 +1801,17 @@ export type OpsIdentity = z.infer<typeof OpsIdentity>;
  * — which every browser client can not. Leaving them as schemas keeps the type
  * shared and the reachability an API-layer question, which is where
  * `require-ops.ts` answers it.
+ *
+ * **The notification routes are in, and the difference is worth naming** so the
+ * boundary above stays a rule rather than a habit. What kept the node group out
+ * was an undecided question: what a generated client should do about a surface
+ * whose subject is always the caller and whose shape therefore changes meaning
+ * with who is holding it. Notifications have that same property and no such
+ * question, because the answer is uniform and total: every caller sees their own
+ * rows, one policy says so, and there is no variant for an operator, a node or
+ * an owner to disagree about. They are also the one group called from **both**
+ * browser surfaces, `/app` and `/node`, so leaving them out would mean two pages
+ * sharing an untyped boundary.
  */
 
 const ProjectParams = z.object({ projectId: z.string().uuid() });
@@ -1922,6 +2024,50 @@ export const contract = c.router(
         409: ApiError,
       },
       summary: 'Post a message (server-authoritative; Postgres trigger broadcasts it)',
+    },
+
+    listNotifications: {
+      method: 'GET',
+      path: '/notifications',
+      query: ListNotificationsQuery,
+      responses: {
+        200: ListNotificationsResponse,
+        400: ApiError,
+        401: ApiError,
+      },
+      summary: 'The inbox of whoever is calling, newest first, with the unread count',
+    },
+
+    markNotificationRead: {
+      method: 'POST',
+      path: '/notifications/:id/read',
+      pathParams: z.object({ id: z.string().uuid() }),
+      /** ts-rest requires a body on a mutation; there is nothing to send. */
+      body: z.object({}).optional(),
+      responses: {
+        /**
+         * Also the answer to a second click. Reading something twice is not an
+         * error, and `read_at` is written once by the database, so a replay
+         * returns the row with its original timestamp rather than moving it.
+         */
+        200: MarkNotificationReadResponse,
+        400: ApiError,
+        401: ApiError,
+        /** Absent and somebody else's are both 404: RLS returns no row for either. */
+        404: ApiError,
+      },
+      summary: 'Mark one notification read (idempotent)',
+    },
+
+    markAllNotificationsRead: {
+      method: 'POST',
+      path: '/notifications/read-all',
+      body: z.object({}).optional(),
+      responses: {
+        200: MarkAllNotificationsReadResponse,
+        401: ApiError,
+      },
+      summary: 'Mark every unread notification read',
     },
   },
   {

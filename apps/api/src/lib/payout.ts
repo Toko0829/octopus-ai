@@ -334,10 +334,13 @@ async function payOne(
     return;
   }
 
-  // **The owner is told, and the node is not.** Slice 6 revoked the node's thread
-  // access when the owner approved the work, so there is no surface to tell them
-  // on; they read it on `/node`, where their engagement has moved to `completed`
-  // with the amount beside it. Notifications remain specified and unbuilt.
+  // **The owner is told here, and the node is told elsewhere.** Slice 6 revoked
+  // the node's thread access when the owner approved the work, so there has never
+  // been a surface in the chat to tell them on. As of notifications slice 1 they
+  // do not need one: `settle_payout` writes `payout.settled` to `public.events`,
+  // and the trigger on that table derives an inbox row carrying the amount, on a
+  // topic that belongs to the person rather than to the room (ADR-0028). This
+  // system message stays the owner's, which is what it always was.
   //
   // Keyed on the engagement, so a crash between the settlement and the post
   // leaves the next pass unable to say it twice — and it cannot repeat the

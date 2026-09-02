@@ -823,3 +823,83 @@ with crawl: the polarity rule is that a sweep opts in only when there is a
 stranger to protect, and the matcher reaches nobody. It is doubly inert until an
 owner clicks, and off by default would leave the panel's "Find an expert" button
 moving a step to `matching` where it waits forever.
+
+## Telling somebody (notifications slice 1)
+
+The fourth route group in `apps/api`, and the only one whose authorisation is
+entirely the database's.
+
+### The derivation runs in Postgres, not in Node
+
+`private.notify_from_event()` is an `AFTER INSERT` trigger on `public.events` and
+the only writer of `public.notifications`
+([ADR-0028](../40-adr/0028-a-notification-is-derived-from-the-event.md)). This is
+a deliberate exception to "Python proposes, Node executes with guardrails": the
+guardrail here is not a side effect to be gated, it is a **completeness property**,
+and Node cannot hold it. Six of the eleven moments worth telling somebody about
+are written by SQL functions inside their own transactions (`accept_offer`,
+`reassign_engagement`, `settle_payout`, `raise_dispute`, and the guard triggers
+behind dispute resolution and the KYC verdict). A helper called from a route
+reaches none of them without re-implementing those transactions in TypeScript,
+which is the two-writers-over-one-truth shape this system keeps paying for.
+
+`events` is the one ledger every writer already reaches, in the same transaction
+as the fact. Hanging the derivation off it means a moment cannot be recorded
+without the person it concerns being told, **including by a writer that does not
+exist yet** — which is the only version of this property that survives the next
+slice.
+
+The consequence runs the other way too and is written down rather than
+discovered: this trigger executes inside `settle_payout`, so a defect in it
+aborts a payout. Three things bound that. Enrichment is `left join` throughout,
+so a missing step title or a deleted room can never be the fault. The verb list is
+a closed `case`, so an unknown verb returns before touching anything. And
+`supabase/tests/notifications.sql` derives a row for every verb in the map, so a
+payload rename fails a suite rather than a transfer.
+
+### The routes are thin because the table is not
+
+`apps/api/src/routes/notifications.ts` holds three endpoints and **every query in
+it runs as the caller**. `public.notifications` carries two own-row policies, a
+`select` grant, and an `update` grant narrowed to the single column `read_at`, so
+the database already answers "whose rows are these" and "which column may they
+touch". There is no `.eq('user_id', userId)` anywhere in the file and its absence
+is the design: adding one would look like defence and would in fact be a second
+place for the answer to live.
+
+This is the inverse of `routes/ops.ts`, which must use the service client because
+its authorisation is `profiles.role` and RLS cannot read that without a
+`SECURITY DEFINER` helper in `public` — a shape `security-compliance.md` records
+being reintroduced once by somebody who had read the migration that removed it.
+The two route groups sit at opposite ends of the same rule.
+
+`routes/notifications.test.ts` asserts the service client is never constructed,
+because that swap would keep every functional assertion green while removing the
+backstop.
+
+### Delivery reuses the Realtime transport, on a per-person topic
+
+A trigger on `notifications` broadcasts each row to `notify:user:<uid>`, a third
+topic namespace beside `chat:room:` and `chat:thread:` (ADR-0003's transport,
+unchanged). The client half in `apps/web/components/inbox/useInbox.ts` is the
+shell's own subscription sequence: `getSession()`, `realtime.setAuth`, a private
+channel, `broadcast` on `INSERT`, and a since-cursor catch-up on `SUBSCRIBED`
+because a live subscription is not durable catch-up.
+
+**Scoping to a person rather than a room is the point.** The chat topics are
+joined by membership in a place, so they structurally cannot reach an owner about
+their second business, or a node whose thread access was revoked when the work was
+approved. Both are people this system pays.
+
+### Contract
+
+`listNotifications`, `markNotificationRead` and `markAllNotificationsRead` are in
+the ts-rest router, unlike the node and ops groups, and
+`packages/contracts/src/index.ts` records why: what kept those out was an
+undecided question about a surface whose subject is always the caller, and
+notifications have that property with no such question, because the answer is
+uniform and total. They are also the one group called from both browser surfaces,
+so leaving them out would mean two pages sharing an untyped boundary.
+
+No new environment flags. There is nothing to disable: a deployment without this
+is one where an offer, a handover and a dispute are all discovered by looking.

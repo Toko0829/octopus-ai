@@ -1,9 +1,15 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import './node.css';
+import '../inbox.css';
 import { NodeConsole } from './NodeConsole';
 import { createClient } from '../../lib/supabase/server';
-import { fetchNode, fetchNodeEngagements, fetchNodeOffers } from '../../lib/api-server';
+import {
+  fetchNode,
+  fetchNodeEngagements,
+  fetchNodeOffers,
+  fetchNotifications,
+} from '../../lib/api-server';
 
 export const metadata: Metadata = {
   title: 'Octopus · Your node profile',
@@ -65,9 +71,10 @@ export default async function NodePage() {
   // because the profile it also shows is what most visits are for.
   // Both lists, in parallel, for the same reason and with the same fallback: a
   // console that cannot list one of them is still worth rendering.
-  const [offerResult, engagementResult] = await Promise.all([
+  const [offerResult, engagementResult, inbox] = await Promise.all([
     fetchNodeOffers(),
     fetchNodeEngagements(),
+    fetchNotifications(),
   ]);
   const offers = offerResult?.offers ?? [];
   const engagements = engagementResult?.engagements ?? [];
@@ -78,6 +85,8 @@ export default async function NodePage() {
       initialOffers={offers}
       initialEngagements={engagements}
       email={user.email ?? null}
+      viewerId={user.id}
+      initialInbox={inbox}
     />
   );
 }

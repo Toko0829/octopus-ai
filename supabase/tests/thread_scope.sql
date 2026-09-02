@@ -48,7 +48,7 @@
 
 begin;
 
-select extensions.plan(54);
+select extensions.plan(55);
 
 -- ---------------------------------------------------------------- fixtures
 
@@ -657,11 +657,29 @@ select extensions.is(
 );
 
 select extensions.is(
-  (select count(*) from pg_policies where schemaname = 'realtime' and tablename = 'messages'),
+  (select count(*) from pg_policies
+   where schemaname = 'realtime' and tablename = 'messages'
+     and policyname in ('realtime_room_members_can_receive', 'realtime_room_members_can_send')),
   2::bigint,
-  'and realtime.messages still carries exactly two policies. A separate additive policy '
-  'would union to the same rows and leave a second expires_at check to keep in step, which '
-  'is how an expired node keeps a live socket while correctly losing the rows'
+  'and the CHAT half of realtime.messages still carries exactly two policies. A separate '
+  'additive policy for a chat topic would union to the same rows and leave a second '
+  'expires_at check to keep in step, which is how an expired node keeps a live socket while '
+  'correctly losing the rows'
+);
+
+-- Amended 20260909122000, which added a third policy for the per-user inbox
+-- topic `notify:user:<uid>`. The assertion above was a bare count of every policy
+-- on the table and is now scoped to the two it is actually about, because what
+-- it defends is the single copy of the `expires_at` time-box rather than the
+-- number of policies. The inbox topic has no membership row and no time-box, so
+-- there is nothing for it to duplicate; ADR-0028 argues that in full. The count
+-- of all three is asserted in `notifications.sql`, so changing it still costs
+-- somebody an argument in a suite.
+select extensions.is(
+  (select count(*) from pg_policies where schemaname = 'realtime' and tablename = 'messages'),
+  3::bigint,
+  'and the table carries three in total: the two chat policies plus the inbox topic, which '
+  'is a predicate about a person rather than about a room'
 );
 
 select * from extensions.finish();

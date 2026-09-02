@@ -23,6 +23,16 @@
   padding: 8vh 24px 20vh;
 }
 
+/* The eyebrow and title on the left, the inbox bell on the right. A row rather
+   than an absolute corner, so the bell moves with the column at every width and
+   never floats over the copy. */
+.node-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
 .node-eyebrow {
   margin: 0;
   font-family: var(--font-mono);
