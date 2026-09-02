@@ -1,197 +1,824 @@
 /*
- * Landing — editorial / calm minimal. See docs/20-design/design-system.md.
+ * Landing. Ink & Bioluminescence, in the reference's structure.
  *
- * The page used to be inline styles with raw numbers (fontSize: 12,
- * marginBottom: 28, padding: '7px 13px'), none of which were on the 4px grid and
- * none of which the token system could reach. Every value here comes from a
- * token, so a change to the system changes the landing rather than being
- * re-decided on it.
+ * Reference: hermes-agent.nousresearch.com, measured on computed values on
+ * 2026-09-01 (design-system.md, reference map). What was taken: one ground
+ * under the whole page with a paper panel dropped into it; a fluid scale unit
+ * for the frame and section rhythm; upper-case display headings at a light
+ * weight; monospace for every label; square paper buttons with a real shadow;
+ * a panel that overlaps the section above it; a fixed footer revealed as a
+ * curtain; a light sweep across a picture on hover; smooth scrolling. What was
+ * not: the blue, the 800-weight nav, upper-case body copy at 14px for long
+ * paragraphs, and the canvas grain (ours is CSS).
+ *
+ * Every value is a token or a multiple of the landing's own unit, `--u`.
+ * Component internals stay on the 4px grid; only the page frame and the
+ * section rhythm scale with the viewport, which is the reference's split too.
  */
 
-.page {
+/* ============================ The unit and the layers ============================ */
+
+.hw {
+  /* The reference is designed at 2360 and scales linearly with a floor. `vw`
+     rather than `cqw`: a container query unit needs `container-type` on an
+     ancestor, and `container-type` applies layout containment, which turns the
+     fixed curtain and frame into descendants positioned against the page. The
+     scrollbar's width is the whole difference, under one percent. */
+  --u: max(calc(100vw / 2360), 0.58px);
+  --edge: calc(93 * var(--u));
+  --gap: calc(30 * var(--u));
+  --frame: calc(2.5 * (0.5vw + 0.5vh));
+  /* The ground's own ink. `--bg` on the dark skin is the command deck's ink,
+     which is warm-neutral; the water is cool, and the two side by side read as
+     a seam. Used only where the plate is not: the frame and the panel margin. */
+  --water: #060c13;
+
+  position: relative;
   min-height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  /* A subtree skin paints its own ground. `body` is OUTSIDE .page and resolves
-     its tokens from :root, so with the operating system in dark mode this page
-     inherited ink-50 text onto its own paper-white background and every word
-     below the hero was invisible. Declaring the skin is not enough; something
-     has to apply it. `color-scheme` carries it to the scrollbars and form
-     controls, which do not read custom properties. */
-  background: var(--bg);
+  background: var(--water);
   color: var(--text);
-  color-scheme: light;
+  color-scheme: dark;
 }
 
-.wrap {
-  width: 100%;
-  max-width: var(--container);
-  margin-inline: auto;
-  padding-inline: var(--gutter);
+/* The scrolling layer. Opaque, above the curtain, and carrying one viewport of
+   bottom margin so the curtain has room to be revealed. */
+.hw-scroll {
+  position: relative;
+  z-index: 2;
+  background: var(--water);
+  margin-bottom: 100dvh;
 }
 
-/* Section rhythm. This is the token scale that did not exist before: the grid
-   stopped at 48px, so the distance between two sections had to be invented. */
-.section {
-  padding-block: var(--sp-24);
-  border-top: 1px solid var(--border);
+/* The content sits above the sticky ground because the ground's track is at
+   z-index -1 inside this stacking context, NOT because <main> carries a
+   z-index of its own. A z-index on <main> makes it an isolated group, and a
+   blended image blends only with its own group's backdrop: every ink engraving
+   then screened onto nothing and kept its black plate. The nav is absolute and
+   carries its own z-index; listing it here once made it `relative` by
+   specificity and put it in flow. */
+.hw-scroll > main {
+  position: relative;
 }
 
-.section-head {
-  max-width: 34ch;
-  margin-bottom: var(--sp-12);
+/* ============================ Ground ============================
+ * Sticky for the length of the scroll layer, then leaves with it: see Ground.tsx
+ * for why sticky and not fixed, and why the track exists.
+ */
+.ground-track {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
 }
 
-.section-head .lede {
-  margin: var(--sp-4) 0 0;
-  max-width: 52ch;
-}
-
-/* ============================ Nav ============================ */
-
-/* Sticky, like the reference's. Opaque rather than blurred: a translucent bar
-   over a blur is the glassmorphism the anti-pattern list rejects, and the only
-   backdrop-filter in this codebase is the 2px one on the command-palette scrim.
-   An opaque bar with a hairline is also the one that stays legible over the
-   theatre frame as it scrolls under. */
-.nav-shell {
-  /* Dark, over a light page, the way the reference's navbar is. It has to state
-     its own colour for the same reason .page does: it is a dark island inside a
-     light subtree. */
-  color: var(--text);
+.ground {
   position: sticky;
   top: 0;
-  z-index: 20;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  height: 100dvh;
+  overflow: hidden;
 }
 
-.nav {
-  height: 64px;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-4);
+.gd-plate {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* The bloom is at the bottom of the render and the arms rise from it, so the
+     bottom edge is the one that stays anchored. */
+  object-position: 50% 100%;
+  display: block;
 }
 
-.nav-link {
-  color: var(--text-muted);
-  text-decoration: none;
-  transition: color var(--dur-fast) var(--ease-state);
+.gd-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
-.nav-link:hover {
-  color: var(--text);
+/* The arms breathe out of phase, which is what stops eight strokes reading as a
+   diagram. The one ambient motion the design system sanctions is the agent's
+   presence, and this is the agent's presence. */
+.gd-arms path {
+  animation: gd-breathe 11s ease-in-out infinite;
 }
 
-.wordmark {
+@keyframes gd-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.gd-motes {
+  position: absolute;
+  inset: 0;
+}
+
+.gd-motes span {
+  position: absolute;
+  border-radius: var(--r-full);
+  background: radial-gradient(circle, #7ef0e2 0%, rgba(36, 201, 184, 0.5) 45%, transparent 70%);
+  animation: gd-drift 34s linear infinite;
+}
+
+@keyframes gd-drift {
+  0% {
+    transform: translateY(14px);
+  }
+  100% {
+    transform: translateY(-160px);
+  }
+}
+
+/* Film grain as feTurbulence in a data URI: nothing to ship, nothing to 404, and
+   the single biggest difference between a field that looks rendered and one
+   that looks cheap. */
+.gd-grain {
+  position: absolute;
+  inset: 0;
+  opacity: 0.055;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* A light scrim, heaviest on the left where the hero copy sits. The previous
+   hero measured this: with no scrim every tier still passed AA on the plate, and
+   0.34 at the centre bought the margin back to 5.5 or better while keeping 61%
+   of the picture. Directional now, because the copy is left, not centred. */
+.gd-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    rgba(4, 10, 14, 0.42) 0%,
+    rgba(4, 10, 14, 0.3) 36%,
+    rgba(4, 10, 14, 0.1) 62%,
+    rgba(4, 10, 14, 0) 100%
+  );
+}
+
+/* ============================ Frame ============================ */
+.frame {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  border: var(--frame) solid var(--water);
+}
+
+/* ============================ Type ============================
+ * Display headings are Fraunces, upper-case, at the normal weight: the reference
+ * sets its display face at 300, ours has `opsz` doing that work. Upper-case text
+ * has no descenders, so its leading is tighter than the prose token: 0.92 on
+ * the h1 and 1.0 on section heads, measured against the reference's 0.88 / 1.0.
+ */
+.hero-h1 {
+  margin: 0;
   font-family: var(--font-display);
   font-optical-sizing: auto;
-  font-size: var(--text-md);
-  font-weight: var(--fw-strong);
-  letter-spacing: var(--ls-title);
-  text-decoration: none;
+  font-size: clamp(2.75rem, calc(120 * var(--u)), 6rem);
+  font-weight: var(--fw-normal);
+  line-height: 0.92;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-0);
+  text-wrap: balance;
 }
 
-.nav-spacer {
-  flex: 1;
+/* Solid, not translucent white: text over a photograph should not composite. */
+.hero-h1 .quiet {
+  color: #9fb3b3;
 }
 
-/* ============================ Buttons ============================ */
+.h2-display,
+.entry-h2,
+.ledger-h2,
+.curtain-h2,
+.surfaces-h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-size: clamp(2rem, calc(64 * var(--u)), 3.5rem);
+  font-weight: var(--fw-normal);
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  text-wrap: balance;
+}
+
+.eyebrow {
+  color: var(--accent-text);
+  margin: 0 0 var(--sp-4);
+}
+
+/* Mono prose. The reference sets all its body copy in mono and upper-case; we
+   keep the mono and drop the upper-case for anything longer than a label. */
+.mono-prose {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
+}
+
+/* ============================ Buttons ============================
+ * Square, paper on ink, mono, with a real shadow: the reference's control, which
+ * is a printed label rather than a pill. Overrides the global `.btn` by source
+ * order, on the landing only. `.btn-primary` carries a teal rule on its leading
+ * edge: one arm.
+ */
 .btn {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: 10px var(--sp-5);
-  border-radius: var(--r-sm);
-  border: 1px solid transparent;
-  font-size: var(--text-sm);
+  height: 42px;
+  padding: 0 var(--sp-5);
+  border: 0;
+  border-radius: 0;
+  background: var(--ink-25);
+  color: var(--ink-950);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
   text-decoration: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
   transition:
     background var(--dur-fast) var(--ease-state),
-    border-color var(--dur-fast) var(--ease-state);
+    box-shadow var(--dur-fast) var(--ease-state),
+    transform var(--dur-fast) var(--ease-state);
+}
+
+/* A wash over the fill, never a fade of the element. */
+.btn:hover {
+  background: linear-gradient(var(--state-hover), var(--state-hover)), var(--ink-25);
+}
+
+.btn:active {
+  transform: translateY(1px);
 }
 
 .btn-primary {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--ink-25);
+  color: var(--ink-950);
+  box-shadow:
+    inset 3px 0 0 var(--teal-400),
+    0 4px 14px rgba(0, 0, 0, 0.25);
+  padding-left: calc(var(--sp-5) + 3px);
 }
 
-/* A wash over the fill, never a fade of the element. Fading drops the label's
-   contrast at the exact moment somebody points at it. */
 .btn-primary:hover {
-  background: linear-gradient(var(--state-active), var(--state-active)), var(--accent);
+  background: linear-gradient(var(--state-hover), var(--state-hover)), var(--ink-25);
 }
 
-.btn-quiet {
-  background: transparent;
-  border-color: var(--border-strong);
-  color: var(--text-secondary);
+/* On paper the button inverts: ink on paper. */
+.ledger .btn {
+  background: var(--ink-950);
+  color: var(--ink-25);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
 }
 
-.btn-quiet:hover {
-  background: var(--state-hover);
-  color: var(--text);
+.ledger .btn:hover {
+  background: var(--ink-800);
 }
 
-/* ============================ Goal composer ============================
- * The page had zero form controls, and the product's entry point is "type what
- * you are building". See components/landing/GoalComposer.tsx for why the goal
- * travels in sessionStorage rather than the URL.
- */
+/* ============================ Goal composer ============================ */
 .goal {
   display: flex;
   gap: var(--sp-2);
-  width: min(52ch, 100%);
-  margin-inline: auto;
+  width: min(56ch, 100%);
 }
 
 .goal-input {
   flex: 1;
   min-width: 0;
+  height: 42px;
   font: inherit;
-  font-size: var(--text-base);
-  color: var(--text);
-  padding: 12px var(--sp-5);
-  border-radius: var(--r-full);
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: var(--ls-label);
+  color: var(--ink-0);
+  padding: 0 var(--sp-4);
+  border-radius: 0;
+  /* Opaque over a photograph. A translucent field over a plate is unreadable. */
+  background: #0a141aef;
+  border: 1px solid color-mix(in oklab, var(--ink-0) 26%, transparent);
   transition:
     border-color var(--dur-fast) var(--ease-state),
     box-shadow var(--dur-fast) var(--ease-state);
 }
 
 .goal-input::placeholder {
-  color: var(--text-faint);
+  color: #93a6a6;
 }
 
 .goal-input:focus-visible {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-quiet);
+  border-color: var(--teal-400);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--teal-400) 26%, transparent);
 }
 
 .goal-send {
   flex: none;
 }
 
-/* ============================ Eyebrows ============================
- * Only the hero had one, and six naked h2s is a good part of why the page read
- * as a wall. Quiet, because a section label should not out-shout its heading.
+/* ============================ Nav ============================
+ * Absolute, three columns, wordmark centred: the reference's bar. It scrolls
+ * away with the hero; the curtain repeats the two links at the end.
  */
-.eyebrow-quiet {
-  color: var(--text-faint);
+.nav {
+  position: absolute;
+  inset: var(--frame) var(--frame) auto;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: calc(28 * var(--u)) var(--edge) 0;
+}
+
+.nav-left,
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.nav-right {
+  justify-content: flex-end;
+}
+
+.nav-link {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-state);
+}
+
+.nav-link:hover {
+  color: var(--ink-0);
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  justify-self: center;
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-size: var(--text-lg);
+  font-weight: var(--fw-strong);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-0);
+  text-decoration: none;
+}
+
+/* The glyph's visual centre sits below its box centre: one pixel of lift. */
+.wordmark-glyph {
+  transform: translateY(-1px);
+  color: var(--accent);
+}
+
+/* ============================ Hero ============================ */
+/* Centred, one column. It was two columns with an engraving on the right for
+   an afternoon; with the picture gone the copy sat in the left half beside a
+   half-viewport of nothing, so the column went with the picture. The arms of
+   light rise from the bottom centre of the ground and the copy now sits over
+   them, which is where the old hero had it. */
+.hero {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  text-align: center;
+  min-height: min(calc(1360 * var(--u)), 100dvh);
+  padding: calc(200 * var(--u)) var(--edge) calc(120 * var(--u));
+}
+
+.hero-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: calc(1180 * var(--u));
+}
+
+.hero-eyebrow {
+  margin-bottom: var(--sp-6);
+}
+
+.hero-lede {
+  margin: var(--sp-8) auto 0;
+  max-width: 52ch;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
+  color: #c6d4d4;
+  text-wrap: pretty;
+}
+
+.hero-ask {
+  margin-top: var(--sp-10);
+  width: min(56ch, 100%);
+}
+
+.hero-ask .goal {
+  width: 100%;
+}
+
+.hero-ask-label {
+  display: block;
   margin: 0 0 var(--sp-3);
+  color: var(--ink-0);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-eyebrow);
+}
+
+/* Demoted from a second button to a text link: there is one thing to do here. */
+.hero-secondary {
+  display: inline-block;
+  margin-top: var(--sp-6);
+  color: #c6d4d4;
+  text-transform: uppercase;
+  letter-spacing: var(--ls-eyebrow);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in oklab, var(--ink-0) 28%, transparent);
+  padding-bottom: 2px;
+  transition: color var(--dur-fast) var(--ease-state);
+}
+
+.hero-secondary:hover {
+  color: var(--ink-0);
+}
+
+/* The disclosure, under the ask. A limit nobody scrolls to has not been made. */
+.hero-note {
+  margin: var(--sp-10) auto 0;
+  max-width: 60ch;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
+  color: #93a6a6;
+}
+
+/* ============================ Engravings ============================
+ * See Engraving.tsx for the two encodes. On the ground the picture is light
+ * lines and screens onto the water; on paper it is ink and multiplies onto the
+ * sheet. Either way the picture's own background disappears and it reads as
+ * printed on the surface rather than pasted on it.
+ */
+.eng {
+  position: relative;
+  margin: 0;
+  overflow: hidden;
+  /* No `isolation: isolate` here. It would make the figure its own stacking
+     context, and a blended image blends only with its stacking context's
+     backdrop: the figure's transparent box rather than the water behind it,
+     which put a black rectangle around every ink engraving. */
+}
+
+.eng img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.eng-ink img {
+  mix-blend-mode: screen;
+}
+
+.eng-paper img {
+  mix-blend-mode: multiply;
+}
+
+/* ============================ Sweep ============================
+ * The reference's hover: a diagonal band of paper, accent and ground crossing
+ * the picture on a 300% canvas, animated by background-position. Off until
+ * hovered or focused; opacity is the only thing that transitions, and the
+ * band is already moving when it appears.
+ */
+.sweep {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  mix-blend-mode: soft-light;
+  background: linear-gradient(
+    160deg,
+    transparent 0%,
+    var(--ink-0) 15%,
+    var(--teal-300) 20%,
+    var(--water) 25%,
+    transparent 35%,
+    transparent 40%,
+    var(--ink-0) 55%,
+    var(--teal-300) 60%,
+    var(--water) 65%,
+    transparent 75%
+  );
+  background-size: 300% 300%;
+  background-position: 15% 15%;
+  transition: opacity var(--dur) var(--ease-enter);
+}
+
+.eng:hover .sweep,
+.surface:hover .sweep,
+.surface:focus-within .sweep,
+.entry:hover .sweep,
+.entry:focus-within .sweep {
+  opacity: 1;
+  animation: sweep 2.2s linear infinite;
+}
+
+@keyframes sweep {
+  from {
+    background-position: 15% 15%;
+  }
+  to {
+    background-position: 75% 75%;
+  }
+}
+
+/* ============================ Preview ============================ */
+.preview {
+  position: relative;
+  padding: calc(60 * var(--u)) var(--edge) 0;
+}
+
+.preview-head {
+  text-align: center;
+  margin-bottom: calc(60 * var(--u));
+}
+
+.preview-head .h2-display {
+  margin-inline: auto;
+  max-width: 24ch;
+}
+
+.pf {
+  margin: 0;
+}
+
+.pf-caption {
+  margin: var(--sp-3) 0 0;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* The operable proof beside its argument. */
+.proof-row {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: var(--gap);
+  align-items: start;
+  padding-block: calc(140 * var(--u)) calc(60 * var(--u));
+}
+
+.proof-lede {
+  margin: var(--sp-6) 0 0;
+  max-width: 44ch;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
+  color: var(--text-secondary);
+}
+
+/* ============================ Surfaces ============================
+ * The reference's three download cards. Ours are the three surfaces the product
+ * has: the room, the plan, the thread.
+ */
+.surfaces {
+  padding: calc(60 * var(--u)) var(--edge) calc(220 * var(--u));
+  text-align: center;
+}
+
+.surfaces-eyebrow {
+  margin-bottom: var(--sp-4);
+}
+
+.surfaces-h2 {
+  margin-inline: auto;
+  max-width: 26ch;
+}
+
+.surface-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--gap);
+  list-style: none;
+  margin: calc(60 * var(--u)) 0 0;
+  padding: 0;
+  text-align: left;
+}
+
+.surface {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-6);
+  background: color-mix(in oklab, var(--ink-0) 5%, transparent);
+  border: 1px solid var(--border);
+  transition: background var(--dur-fast) var(--ease-state);
+}
+
+.surface:hover {
+  background: color-mix(in oklab, var(--ink-0) 8%, transparent);
+}
+
+.surface-art {
+  aspect-ratio: 3 / 2;
+  margin: calc(var(--sp-6) * -1) calc(var(--sp-6) * -1) var(--sp-3);
+}
+
+.surface-n {
+  margin: 0;
+  color: var(--accent-text);
+}
+
+.surface-h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-size: var(--text-xl);
+  font-weight: var(--fw-normal);
+  line-height: 1.05;
+  text-transform: uppercase;
+  color: var(--ink-0);
+}
+
+.surface-body {
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
+  color: var(--text-secondary);
+}
+
+.surface .btn {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+/* ============================ Ledger panel ============================
+ * Paper on the water. Inset by the frame, lifted into the section above it by
+ * 126 units the way the reference's panel overlaps its downloads, and clipped so
+ * the wordmark at the end runs off its edge.
+ */
+.ledger {
+  position: relative;
+  margin: 0 var(--frame);
+  transform: translateY(calc(-126 * var(--u)));
+  background: var(--bg);
+  color: var(--text);
+  color-scheme: light;
+  overflow: clip;
+  padding-top: calc(24 * var(--u));
+}
+
+.ledger-inner {
+  position: relative;
+  padding: 0 var(--edge);
+}
+
+/* The mark, sticky, in the panel's left margin: the reference's badge. */
+.ledger-badge {
+  position: sticky;
+  top: calc(var(--frame) + 30 * var(--u));
+  z-index: 2;
+  float: left;
+  margin-left: calc(var(--edge) * -1 + 18 * var(--u));
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.ledger-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding-top: calc(30 * var(--u));
+  margin-bottom: calc(60 * var(--u));
+}
+
+.ledger-head .eyebrow {
+  margin: 0;
+}
+
+.ledger-head-note {
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-eyebrow);
+}
+
+.entries {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: calc(120 * var(--u)) var(--gap);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.entry {
+  display: flex;
+  flex-direction: column;
+}
+
+.entry-n {
+  margin: 0 0 var(--sp-5);
+  color: var(--accent-text);
+}
+
+.entry-h2 {
+  min-height: 2em;
+  margin-bottom: var(--sp-8);
+  color: var(--text);
+}
+
+.entry .eng {
+  aspect-ratio: 3 / 2;
+  background: var(--surface-2);
+}
+
+.entry-body {
+  margin: var(--sp-6) 0 0;
+  max-width: 44ch;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
+  color: var(--text-secondary);
+}
+
+/* --- how it works, inside the panel */
+.ledger-how,
+.ledger-limits {
+  padding-top: calc(160 * var(--u));
+}
+
+.ledger-h2 {
+  max-width: 22ch;
+  margin-bottom: calc(60 * var(--u));
+  color: var(--text);
+}
+
+.ledger-lede {
+  margin: calc(-30 * var(--u)) 0 var(--sp-12);
+  max-width: 52ch;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
+  color: var(--text-secondary);
+}
+
+/* --- the wordmark at ground scale, clipped by the panel */
+.ledger-ghost {
+  margin-top: calc(120 * var(--u));
+  padding-inline: var(--frame);
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-size: clamp(7rem, 24.3vw, 30rem);
+  font-weight: var(--fw-normal);
+  line-height: 0.78;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  text-align: center;
+  white-space: nowrap;
+  color: var(--teal-300);
+  opacity: 0.28;
+  transform: translateY(0.06em);
+  user-select: none;
 }
 
 /* ============================ Steps ============================ */
 .steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--sp-10) var(--sp-8);
+  gap: var(--sp-10) var(--gap);
 }
 
-/* --- the three micro-scenes. Diagrams, so they stay drawn: see StepScenes.tsx */
 .step-scene {
   margin-bottom: var(--sp-5);
 }
@@ -268,8 +895,7 @@
   fill: var(--warn);
 }
 
-/* Drawn on arrival, driven by the group's `.is-in` and nothing else: no
-   per-element JavaScript, and the finished diagram is the default. */
+/* Drawn on arrival, driven by the group's `.is-in` and nothing else. */
 .js .reveal-group > * .sc-edge path,
 .js .reveal-group > * .sc-track path {
   stroke-dasharray: 90;
@@ -352,12 +978,6 @@
   }
 }
 
-.step-n {
-  color: var(--text-faint);
-  margin-bottom: var(--sp-4);
-  display: block;
-}
-
 .step h3 {
   margin: 0 0 var(--sp-3);
 }
@@ -365,38 +985,50 @@
 .step p {
   margin: 0;
   color: var(--text-muted);
-  font-size: var(--text-base);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
 }
 
-/* ============================ Plan sample ============================ */
-.sample-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-  gap: var(--sp-18);
-  align-items: start;
-}
-
-/* Hairline does the structural work; the shadow only says "this sits above the
-   page". Three layers at low alpha, per the elevation tokens. */
+/* ============================ Plan sample (CitationProof) ============================ */
 .sample {
   margin: 0;
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-sm);
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md);
   overflow: hidden;
 }
 
-/* The copy column in this section is the section head, so it carries no bottom
-   margin of its own: the grid gap already sets the distance to the card. */
-.sample-grid .section-head {
-  margin-bottom: 0;
+/* The proof sits on the water, so its skin is light and it paints it. */
+.proof {
+  color: var(--ink-900);
+  color-scheme: light;
+  --bg: var(--ink-25);
+  --bg-sunken: var(--ink-50);
+  --surface: var(--ink-0);
+  --surface-2: var(--ink-50);
+  --surface-hover: var(--ink-100);
+  --border: color-mix(in oklab, var(--ink-600) 22%, transparent);
+  --border-strong: color-mix(in oklab, var(--ink-600) 38%, transparent);
+  --text: var(--ink-900);
+  --text-secondary: var(--ink-700);
+  --text-muted: var(--ink-600);
+  --text-faint: var(--ink-550);
+  --accent: var(--teal-600);
+  --accent-quiet: color-mix(in oklab, var(--teal-500) 12%, transparent);
+  --accent-text: var(--teal-700);
+  --human: var(--coral-700);
+  --human-quiet: color-mix(in oklab, var(--coral-500) 12%, transparent);
+  --warn: var(--amber-700);
+  --warn-quiet: color-mix(in oklab, var(--amber-500) 14%, transparent);
 }
 
 .sample-bar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--sp-2);
   padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--border);
@@ -416,16 +1048,12 @@
   align-items: baseline;
   gap: var(--sp-3);
   padding: var(--sp-3);
-  border-radius: var(--r-sm);
 }
 
 .stage + .stage {
   border-top: 1px solid var(--border);
 }
 
-/* Wide enough for the longest stage name plus its tracking. At 9ch,
-   "Measurement" ran straight into the step text beside it, which is only
-   visible on the row this section exists to show: the empty stage. */
 .stage-name {
   color: var(--text-faint);
   flex: none;
@@ -440,16 +1068,6 @@
   line-height: var(--lh-ui);
 }
 
-.stage-cite {
-  display: block;
-  margin-top: 6px;
-  color: var(--text-faint);
-  font-size: var(--text-xs);
-}
-
-/* An empty stage is meaningful output, not absent output: it says the corpus had
-   nothing in scope. The landing shows one, because hiding it here would
-   misrepresent the thing the section is about. */
 .stage-empty .stage-step {
   color: var(--text-faint);
 }
@@ -467,7 +1085,7 @@
   align-items: center;
   gap: 4px;
   padding: 3px var(--sp-2);
-  border-radius: var(--r-full);
+  border-radius: 0;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   letter-spacing: var(--ls-label);
@@ -491,21 +1109,19 @@
 .sample-caption {
   margin: var(--sp-3) 0 0;
   color: var(--text-faint);
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
+  letter-spacing: var(--ls-label);
 }
 
-/* ---------------------- the operable proof (CitationProof.tsx) ---------- */
-
-.sample-bar {
-  justify-content: space-between;
+.proof .sample-caption {
+  color: var(--ink-450);
 }
 
 .sample-count {
   color: var(--text-faint);
 }
 
-/* The citation is a control now, not a caption: it opens the passage the step was
-   written from. A native <details>/<summary>, so it works with no JavaScript. */
 .cite {
   margin-top: 6px;
 }
@@ -519,7 +1135,6 @@
   transition: color var(--dur-fast) var(--ease-state);
 }
 
-/* The default marker is a black triangle that belongs to no design system. */
 .stage-cite::-webkit-details-marker {
   display: none;
 }
@@ -552,14 +1167,11 @@
   opacity: 1;
 }
 
-/* Real text from services/ai/corpus, quoted. The one surface whose subject is
-   "you can check this" does not get plausible-sounding filler. */
 .cite-open {
   margin: var(--sp-2) 0 0;
   padding: var(--sp-3) var(--sp-4);
   border-left: 2px solid var(--accent);
   background: var(--surface-2);
-  border-radius: 0 var(--r-sm) var(--r-sm) 0;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   line-height: var(--lh-prose);
@@ -609,28 +1221,22 @@
 .limits {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-6) var(--sp-8);
+  gap: var(--sp-6) var(--gap);
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-/* The strongest argument on the page was four bullets prefixed with a middot.
-   Each card now shows the refusal happening. See components/landing/LimitCard.tsx.
-   Padded on all sides rather than only on top, because it is a hoverable card
-   now and a wash that bleeds to the grid gap reads as a rendering fault. */
 .limit {
   display: block;
   padding: var(--sp-5) var(--sp-4) var(--sp-4);
   margin-inline: calc(var(--sp-4) * -1);
   border-top: 1px solid var(--border);
-  border-radius: var(--r-sm);
   transition: background var(--dur-fast) var(--ease-state);
 }
 
 .limit:hover,
 .limit:focus-visible {
-  /* A wash, never a fade: fading an element fades its label with it. */
   background: var(--state-hover);
   outline: none;
 }
@@ -651,7 +1257,6 @@
   margin-top: var(--sp-3);
   padding: var(--sp-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-sm);
   background: var(--surface-2);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -695,16 +1300,12 @@
   color: var(--warn);
 }
 
-/* Word first, tint second (rule 15). The verdict names the rule that stopped it. */
 .ld-verdict {
   color: var(--human);
   margin-left: auto;
   flex: none;
 }
 
-/* The strike-through and the verdict are the demonstration. Both are visible
-   from the server; only `.js` introduces the sequence, and the reveal backstop
-   shows it after a second even if the observer never delivers. */
 .js .limit-demo .ld-attempt::after {
   content: '';
   position: absolute;
@@ -761,334 +1362,45 @@
   margin-bottom: 4px;
 }
 
-/* Scoped to the paragraph so it does not also catch .limit-mark, which sets its
-   own quieter colour and would otherwise lose to the more specific selector. */
 .limit p span {
+  display: block;
   color: var(--text-muted);
-  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
 }
 
-/* ============================ Human nodes band ============================
- * The page's second dark world. Before this it was one dark plate at the top and
- * then 3,226px of unbroken paper, which is most of why the lower half read as a
- * document. See components/landing/NodeReach.tsx for what the picture argues.
+/* ============================ Product frame (.th-*) ============================
+ * The chat shell in miniature, drawn with the product's own tokens. It sits on
+ * the water, so like the proof it carries the light skin on itself.
  */
-
-.reach {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  /* A subtree skin paints its own ground: `body` is outside this element and
-     still resolves from `:root`. Declaring the skin is not applying one, which is
-     a defect this page has already shipped once. */
-  background: #050b10;
-  color: var(--text);
-  color-scheme: dark;
-  /* No `width: 100vw`. This is a direct child of <main> and already full width;
-     the bleed trick counts the scrollbar and overflows the document by it. */
-}
-
-.reach-art {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-}
-
-.reach-plate-wrap,
-.reach-plate {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-
-.reach-plate {
-  object-fit: cover;
-  /* Hold the right of the frame when the band is cropped: that is where the arm
-     terminates at the coral node, and losing the node loses the whole argument. */
-  object-position: 72% 50%;
-  display: block;
-}
-
-/* Two layers: the head sits left, the arm and node are right, so the first is
-   directional and has fallen to nothing well before it reaches them. The beat row
-   crosses the full width at the bottom, under where the arm sweeps low, so the
-   second rises from the bottom edge and is gone by mid-frame, below the node. */
-.reach-scrim {
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(
-      0deg,
-      rgba(5, 11, 16, 0.78) 0%,
-      rgba(5, 11, 16, 0.5) 22%,
-      rgba(5, 11, 16, 0) 44%
-    ),
-    linear-gradient(
-      100deg,
-      rgba(5, 11, 16, 0.9) 0%,
-      rgba(5, 11, 16, 0.78) 34%,
-      rgba(5, 11, 16, 0.4) 58%,
-      rgba(5, 11, 16, 0.06) 80%,
-      rgba(5, 11, 16, 0) 100%
-    );
-}
-
-.reach-inner {
-  position: relative;
-  z-index: 1;
-  padding-block: var(--sp-24);
-  min-height: 560px;
-}
-
-.reach-eyebrow {
-  color: var(--accent-text);
-  margin: 0 0 var(--sp-4);
-}
-
-.reach-inner .section-head {
-  max-width: 40ch;
-  margin-bottom: var(--sp-18);
-}
-
-/* Full width, one beat per column: the head keeps its reading measure on the
-   left, and this row is what occupies the band's width so the plate behind it
-   reads as a backdrop rather than as space nothing claimed. */
-.reach-beats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--sp-6) var(--sp-10);
-}
-
-.reach-beat {
-  padding-top: var(--sp-4);
-  border-top: 1px solid var(--border);
-}
-
-.reach-beat-n {
-  display: block;
-  color: var(--accent-text);
-  margin-bottom: var(--sp-2);
-}
-
-.reach-beat b {
-  display: block;
-  font-size: var(--text-md);
-  font-weight: var(--fw-strong);
-  margin-bottom: var(--sp-2);
-}
-
-.reach-beat span:not(.reach-beat-n) {
-  display: block;
-  color: var(--text-secondary);
-  font-size: var(--text-base);
-  line-height: var(--lh-prose);
-  max-width: 34ch;
-}
-
-/* The plate wipes in from the left rather than fading, because the subject IS an
-   arm extending: the motion and the picture are saying the same thing. Only under
-   `.js`, and the observer backstop still shows it after a second, so a client that
-   never runs gets the finished band (design-system.md, Motion). */
-.js .reveal.reach-plate-wrap {
-  transform: none;
-  clip-path: inset(0 100% 0 0);
-  transition:
-    opacity var(--dur-slower) var(--ease-enter),
-    clip-path 900ms var(--ease-enter);
-}
-
-.js .reveal.reach-plate-wrap.is-in {
-  clip-path: inset(0 0 0 0);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .js .reveal.reach-plate-wrap,
-  .js .reveal.reach-plate-wrap.is-in {
-    clip-path: none;
-    transition: none;
-  }
-}
-
-/* Four columns need the room; below this each beat's measure falls under ~20ch
-   and the row turns into confetti. Two-by-two holds the width instead. */
-@media (max-width: 1240px) {
-  .reach-beats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 900px) {
-  /* Stacked rather than overlaid. At this width `cover` crops the arm down to a
-     stripe behind the text and the picture stops being readable as anything. */
-  .reach-art {
-    position: static;
-  }
-  .reach-plate-wrap {
-    position: relative;
-    inset: auto;
-    height: auto;
-    display: block;
-  }
-  .reach-plate {
-    position: relative;
-    inset: auto;
-    /* Cropped to 2:1 rather than shown at its native 2.56:1. At 375px the full
-       frame is 146px tall and the arm is a smudge; this trades the empty left of
-       the picture for height, and the object-position keeps the coral node, which
-       is the half that carries the meaning. */
-    height: auto;
-    aspect-ratio: 2 / 1;
-    object-position: 85% 50%;
-  }
-  .reach-scrim {
-    display: none;
-  }
-  .reach-inner {
-    min-height: 0;
-    padding-block: var(--sp-14) var(--sp-8);
-  }
-  .reach-beats {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-/* ============================ Pull quote ============================
- * Everything below the hero was t-title plus t-prose, two sizes. Editorial pages
- * get their texture from contrast in scale, and this page had none. One quote,
- * not a habit: a second would make it a pattern and stop it doing this job.
- */
-.pull {
-  padding-block: var(--sp-18);
-  text-align: center;
-}
-
-.pull-quote {
-  margin: 0 auto;
-  max-width: 26ch;
-  color: var(--text);
-  text-wrap: balance;
-}
-
-.pull-src {
-  margin: var(--sp-4) 0 0;
-  color: var(--text-faint);
-}
-
-/* ============================ Close + footer ============================ */
-.close {
-  padding-block: var(--sp-24) var(--sp-32);
-  border-top: 1px solid var(--border);
-  text-align: center;
-}
-
-.close h2 {
-  margin: 0 auto var(--sp-8);
-  max-width: 18ch;
-}
-
-.close-meta {
-  justify-content: center;
-  margin-top: var(--sp-6);
-}
-
-.foot {
-  margin-top: auto;
-  border-top: 1px solid var(--border);
-  padding-block: var(--sp-8);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-3) var(--sp-6);
-  color: var(--text-faint);
-}
-
-.foot-note {
-  flex-basis: 100%;
-  max-width: 74ch;
-  line-height: var(--lh-ui);
-}
-
-.quiet-label {
-  color: var(--text-faint);
-}
-
-/* ============================ Narrow ============================ */
-@media (max-width: 900px) {
-  .sample-grid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--sp-12);
-  }
-  .steps {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--sp-10);
-  }
-  .limits {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .section {
-    padding-block: var(--sp-18);
-  }
-  .hero {
-    padding-block: var(--sp-14) var(--sp-24);
-  }
-  .close {
-    padding-block: var(--sp-18) var(--sp-24);
-  }
-}
-
-/* ============================ Hero theatre ============================
- * A miniature of the real chat shell, drawn with the product's own tokens and
- * running the loop the page describes. This is the answer to "the landing has no
- * visual": mercury.com anchors its hero on a 1265x720 video of its own app and
- * carries the rest on 25 images, and for a product whose output is an interface
- * the honest equivalent is the interface, not stock photography we do not have.
- */
-
-.theatre {
-  margin: var(--sp-18) 0 0;
-}
-
-/* The scrub track. The frame pins inside an over-tall wrapper and the reader's
-   own scrolling writes the plan. `is-pinned` is stamped by the component only
-   above 900px and only when motion is not reduced, so the server renders an
-   ordinary auto-height block and every non-pinned path keeps the old layout.
-   See PlanTheatre.tsx for why its default phase is the FINISHED plan. */
-.theatre-scroll.is-pinned {
-  height: 220vh;
-}
-
-.theatre-scroll.is-pinned .theatre {
-  position: sticky;
-  /* Clears the 64px sticky navbar with room to breathe. */
-  top: 84px;
-}
-
-.th-ticks {
-  display: flex;
-  gap: var(--sp-2);
-  margin-top: var(--sp-4);
-}
-
-.th-tick {
-  width: 26px;
-  height: 3px;
-  border-radius: var(--r-full);
-  background: var(--border-strong);
-  transition: background var(--dur) var(--ease-state);
-}
-
-.th-tick.is-on {
-  background: var(--accent);
+.pf .th-frame {
+  color: var(--ink-900);
+  color-scheme: light;
+  --bg: var(--ink-25);
+  --bg-sunken: var(--ink-50);
+  --surface: var(--ink-0);
+  --surface-2: var(--ink-50);
+  --border: color-mix(in oklab, var(--ink-600) 22%, transparent);
+  --border-strong: color-mix(in oklab, var(--ink-600) 38%, transparent);
+  --text: var(--ink-900);
+  --text-secondary: var(--ink-700);
+  --text-muted: var(--ink-600);
+  --text-faint: var(--ink-550);
+  --accent: var(--teal-600);
+  --accent-quiet: color-mix(in oklab, var(--teal-500) 12%, transparent);
+  --accent-text: var(--teal-700);
+  --human: var(--coral-700);
+  --human-quiet: color-mix(in oklab, var(--coral-500) 12%, transparent);
+  --warn: var(--amber-700);
+  --warn-quiet: color-mix(in oklab, var(--amber-500) 14%, transparent);
 }
 
 .th-frame {
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border: 1px solid color-mix(in oklab, var(--ink-0) 18%, transparent);
   background: var(--surface);
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
 
@@ -1123,11 +1435,9 @@
   flex: 1;
 }
 
-/* Tabular, because it is money, even in an illustration. */
 .th-budget {
   font-variant-numeric: tabular-nums;
   border: 1px solid var(--border);
-  border-radius: var(--r-full);
   padding: 3px var(--sp-3);
   white-space: nowrap;
 }
@@ -1135,7 +1445,7 @@
 .th-body {
   display: grid;
   grid-template-columns: 52px 190px minmax(0, 1fr);
-  height: 452px;
+  height: 520px;
 }
 
 .th-rail {
@@ -1187,8 +1497,6 @@
   color: var(--accent-text);
 }
 
-/* Bottom-anchored like the real stream, so the plan pushes the opening message
-   up and out of frame the way it would in the app. */
 .th-stream {
   background: var(--bg);
   padding: var(--sp-5);
@@ -1209,8 +1517,6 @@
   align-items: start;
 }
 
-/* The agent is a member of the room with an accent bar, never a bubble and never
-   a widget in the corner. */
 .th-msg-agent {
   border-left: 2px solid var(--accent);
   margin-left: -2px;
@@ -1236,8 +1542,7 @@
   color: var(--accent-text);
 }
 
-/* The one ambient animation the design system sanctions: glow is reserved for a
-   live agent, and this is a live agent. */
+/* Glow is reserved for a live agent, and this is a live agent. */
 .th-avatar-agent.is-working {
   animation: th-breathe 1.8s ease-in-out infinite;
 }
@@ -1268,13 +1573,11 @@
   font-weight: var(--fw-strong);
 }
 
-/* Role is a word first. The tint is the second signal, never the carrier. */
 .th-badge {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: var(--ls-label);
   padding: 1px 6px;
-  border-radius: var(--r-full);
   background: var(--surface-2);
   border: 1px solid var(--border);
   color: var(--text-muted);
@@ -1294,38 +1597,8 @@
   max-width: 62ch;
 }
 
-.th-working {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 2px;
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-  font-style: italic;
-}
-
-.th-dots {
-  display: inline-block;
-  width: 1.2em;
-}
-
-.th-dots::after {
-  content: '···';
-  animation: th-dots 1.4s steps(4, end) infinite;
-  display: inline-block;
-}
-
-@keyframes th-dots {
-  0% {
-    clip-path: inset(0 100% 0 0);
-  }
-  100% {
-    clip-path: inset(0 0 0 0);
-  }
-}
-
 .th-card {
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
@@ -1385,65 +1658,148 @@
   margin-top: var(--sp-2);
 }
 
-.theatre-caption {
-  margin: var(--sp-3) 0 0;
-  color: var(--text-faint);
-  font-size: var(--text-xs);
+/* ============================ Curtain ============================ */
+.curtain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  height: 100dvh;
+  overflow: hidden;
+  background: #050b10;
+  color: var(--ink-50);
 }
 
-@media (max-width: 900px) {
-  /* The CSS is authoritative for the pin, not the `is-pinned` class.
-     The component only stamps that class above 900px, but a class is state and
-     state goes stale: under the preview pane's viewport emulation neither
-     `matchMedia` change nor `resize` fires, and the pin survived a drop from
-     1280 to 375, which is a 220vh sticky section on a phone. Whatever the class
-     says, this width does not pin. */
-  .theatre-scroll.is-pinned {
-    height: auto;
-  }
-  .theatre-scroll.is-pinned .theatre {
-    position: static;
-  }
-  .th-ticks {
-    display: none;
-  }
+.curtain-art {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
 
-  .theatre {
-    margin-top: var(--sp-12);
-  }
-  /* The rail and the sidebar are context, not the demonstration. On a phone the
-     stream is the whole point and 52+190px of chrome would leave it unreadable. */
-  .th-rail,
-  .th-side,
-  .th-topic,
-  .th-bar-sep {
-    display: none;
-  }
-  .th-body {
-    grid-template-columns: minmax(0, 1fr);
-    height: 420px;
-  }
-  .th-stream {
-    padding: var(--sp-4);
-  }
-  .th-stage {
-    display: block;
-  }
-  .th-stage-name {
-    display: block;
-    margin-bottom: 4px;
-  }
+.curtain-plate {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* The arm terminates at the coral node on the right; keep it in frame. */
+  object-position: 72% 50%;
+  display: block;
+}
+
+.curtain-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    0deg,
+    rgba(5, 11, 16, 0.85) 0%,
+    rgba(5, 11, 16, 0.5) 30%,
+    rgba(5, 11, 16, 0.15) 60%,
+    rgba(5, 11, 16, 0.3) 100%
+  );
+}
+
+.curtain-ghost {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 46%;
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-size: clamp(6rem, 15vw, 18rem);
+  font-weight: var(--fw-normal);
+  line-height: 0.8;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  text-align: center;
+  white-space: nowrap;
+  color: var(--teal-300);
+  opacity: 0.14;
+  transform: translateY(-50%);
+}
+
+.curtain-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: calc(120 * var(--u)) var(--edge) 0;
+}
+
+.curtain-eyebrow {
+  margin-bottom: var(--sp-6);
+}
+
+.curtain-h2 {
+  max-width: 16ch;
+  color: var(--ink-0);
+}
+
+.curtain-lede {
+  margin: var(--sp-6) 0 var(--sp-8);
+  max-width: 44ch;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--lh-prose);
+  letter-spacing: var(--ls-label);
+  color: #c6d4d4;
+}
+
+.curtain-inner .goal {
+  justify-content: center;
+}
+
+.curtain-meta {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-3) var(--sp-8);
+  align-items: end;
+  padding: 0 var(--edge) calc(var(--frame) + 30 * var(--u));
+  color: var(--text-secondary);
+}
+
+.curtain-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: uppercase;
+  letter-spacing: var(--ls-eyebrow);
+}
+
+.curtain-links {
+  display: inline-flex;
+  gap: var(--sp-6);
+  justify-content: flex-end;
+}
+
+.curtain-links a {
+  text-transform: uppercase;
+  letter-spacing: var(--ls-eyebrow);
+  color: var(--ink-0);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in oklab, var(--ink-0) 28%, transparent);
+}
+
+.curtain-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  max-width: 76ch;
+  color: var(--text-muted);
 }
 
 /* ============================ Reveal ============================
  * Hiding is opt-in and client-side only. `html.js` is stamped by the inline
  * script in layout.tsx before first paint, so only a browser that is actually
  * running our code ever starts a section hidden. No JS, a failed hydration, or
- * an IntersectionObserver that never delivers all end up at the finished page,
- * which is the only acceptable failure for a marketing surface: a blank section
- * is worse than an unanimated one, and it fails silently.
+ * an IntersectionObserver that never delivers all end up at the finished page.
  */
-
 .js .reveal,
 .js .reveal-group > * {
   opacity: 0;
@@ -1459,8 +1815,6 @@
   transform: none;
 }
 
-/* The stagger. Six steps is more than any group on this page has, and a child
-   past the sixth simply arrives with the sixth rather than never arriving. */
 .js .reveal-group.is-in > *:nth-child(2) {
   transition-delay: 60ms;
 }
@@ -1477,8 +1831,6 @@
   transition-delay: 300ms;
 }
 
-/* Reduced motion declines to hide anything in the first place, rather than
-   hiding it and revealing it faster. The destination is the content. */
 @media (prefers-reduced-motion: reduce) {
   .js .reveal,
   .js .reveal-group > * {
@@ -1488,38 +1840,168 @@
   }
 }
 
-/* ============================ Brand lockup ============================ */
-
-/* The gap and the optical lift are part of the logo, not of the bar it sits in.
-   The glyph's visual centre is slightly below its box centre, because the dome
-   carries more weight than the lobes, so it needs 1px of lift to sit on the same
-   line as the cap height beside it. */
-.wordmark {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
+/* ============================ Lenis ============================
+ * The recommended stylesheet from the library, verbatim. `scroll-behavior` has
+ * to be `auto` while lenis drives, or an anchor click smooth-scrolls twice.
+ */
+html.lenis,
+html.lenis body {
+  height: auto;
 }
 
-.wordmark-glyph {
-  transform: translateY(-1px);
-  color: var(--accent);
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
 }
 
-.foot-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
 }
 
-/* The section straight after the hero band carries no hairline: the image edge
-   is already the strongest division on the page and a rule under it reads as a
-   seam. */
-.section-flush {
-  border-top: none;
+.lenis.lenis-stopped {
+  overflow: hidden;
 }
 
-/* Inside a section that already has a head, the theatre needs no top margin of
-   its own. */
-.section .theatre {
-  margin-top: 0;
+/* ============================ Narrow ============================ */
+@media (max-width: 1240px) {
+  .entries {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .surface-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .proof-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .hw {
+    --edge: var(--gutter);
+    --frame: 0px;
+  }
+  .frame {
+    display: none;
+  }
+
+  /* The curtain is a normal block at the end. See CurtainFooter.tsx. */
+  .hw-scroll {
+    margin-bottom: 0;
+  }
+  .curtain {
+    position: relative;
+    height: auto;
+    min-height: 0;
+    inset: auto;
+    padding-block: var(--sp-24) var(--sp-8);
+  }
+  .curtain-inner {
+    padding-top: 0;
+  }
+  .curtain-meta {
+    grid-template-columns: minmax(0, 1fr);
+    padding-bottom: var(--sp-6);
+    margin-top: var(--sp-18);
+  }
+  .curtain-links {
+    justify-content: flex-start;
+  }
+
+  .nav {
+    padding-top: var(--sp-5);
+    grid-template-columns: auto 1fr;
+    gap: var(--sp-4);
+  }
+  .nav-left {
+    display: none;
+  }
+  .wordmark {
+    justify-self: start;
+  }
+  .nav-right .nav-link {
+    display: none;
+  }
+
+  /* The art flows after the copy. Placed first it arrives as a stripe above the
+     heading, which the previous human-nodes band shipped once already. */
+  .hero {
+    min-height: 0;
+    padding-top: calc(var(--sp-24) + var(--sp-8));
+    padding-bottom: var(--sp-14);
+  }
+
+  .preview-head {
+    text-align: left;
+  }
+  .preview-head .h2-display {
+    margin-inline: 0;
+  }
+  .proof-row {
+    padding-top: var(--sp-18);
+  }
+
+  /* The rail and the sidebar are context, not the demonstration. */
+  .th-rail,
+  .th-side,
+  .th-topic,
+  .th-bar-sep {
+    display: none;
+  }
+  .th-body {
+    grid-template-columns: minmax(0, 1fr);
+    height: 440px;
+  }
+  .th-stream {
+    padding: var(--sp-4);
+  }
+  .th-stage {
+    display: block;
+  }
+  .th-stage-name {
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .surfaces {
+    text-align: left;
+    padding-bottom: calc(var(--sp-24) + 126px);
+  }
+  .surfaces-h2 {
+    margin-inline: 0;
+  }
+  .surface-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ledger {
+    margin: 0;
+    transform: translateY(-126px);
+  }
+  .ledger-badge {
+    display: none;
+  }
+  .ledger-head {
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+  .entries {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-18);
+  }
+  .entry-h2 {
+    min-height: 0;
+  }
+  .ledger-how,
+  .ledger-limits {
+    padding-top: var(--sp-24);
+  }
+  .steps {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-10);
+  }
+  .limits {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ledger-ghost {
+    margin-top: var(--sp-18);
+  }
 }
