@@ -241,10 +241,17 @@ slice 8 rates on.
   is offered a task once ever. "Search later" only helps once new nodes join. A
   re-offer policy needs a reason to re-ask, and "the owner clicked again" is not
   one, so it is a later slice's decision.
-- **A node is not told about an offer.** The notifications module is specified and
+- ~~**A node is not told about an offer.** The notifications module is specified and
   unbuilt, and there is no push, email or SMS anywhere, so an offer is discovered
   by visiting `/node`. That is what sets the 48-hour window: anything shorter
-  would expire against people who had not looked yet.
+  would expire against people who had not looked yet.~~ **Closed by notifications
+  slice 1** (`20260909120000`…`122000`): `offer.created` derives an inbox row for
+  the node it was offered to, and the count moves on their open page without a
+  reload ([ADR-0028](../40-adr/0028-a-notification-is-derived-from-the-event.md)).
+  Kept struck through rather than deleted, because **the 48-hour window has not
+  changed and this is the sentence that explains why it was that wide**. It is
+  now unblocked rather than justified, and shortening it is its own decision.
+  Push, email and SMS remain unbuilt.
 - **Once dispatched, the owner has no control until the cascade returns the step.**
   There is nothing useful to offer while a stranger is deciding, and the step
   comes back within 48 hours per candidate if nobody takes it.
@@ -422,10 +429,14 @@ arrive with their producer in the same push.
   elsewhere.
 - **`nda_signed_at` and `terms_hash` still have no writer.** The shape is settled
   and the writer is not. `deadline_at` no longer belongs on this list.
-- **Nobody is notified of anything, still.** The owner learns a step was handed
+- ~~**Nobody is notified of anything, still.** The owner learns a step was handed
   over from a system message in their room; the node learns a verdict by opening
   `/node`. That absence is what sets the deadline at seven days: anything tighter
-  would expire against people who had not looked.
+  would expire against people who had not looked.~~ **Closed by notifications
+  slice 1**: `proof.submitted` reaches the owner and `work.approved` /
+  `work.rejected` reach the node. Kept struck through because the **seven-day
+  deadline is unchanged**, and this is the sentence that says why it was set
+  there. It is now unblocked rather than justified.
 - **A deadline cannot be extended.** The sweep warns once and then acts. A node
   can ask for longer in the thread and the owner has no way to grant it, because
   an extension writer needs a surface, an authorisation question (whose extension
@@ -549,10 +560,13 @@ then.
 - **`payouts.failed` is declared and refused**, deliberately the shape `released`
   had. Every failure retries at tick cadence, because a terminal row against work
   somebody did, in a build with no ops console to un-terminal it, is worse.
-- **The node is not told they were paid.** Slice 6 revoked their thread access
+- ~~**The node is not told they were paid.** Slice 6 revoked their thread access
   when the owner approved, so there is no surface to tell them on; they see it on
   `/node`, where the engagement has moved to "Finished and paid" with the amount
-  beside it. Notifications remain specified and unbuilt.
+  beside it. Notifications remain specified and unbuilt.~~ **Closed by
+  notifications slice 1**, and the revoked thread access is exactly why it needed
+  a channel that is not the thread: `payout.settled` derives a row carrying the
+  amount, on a topic that belongs to the person rather than to the room.
 - **`nda_signed_at` and `terms_hash` still have no writer.**
 - ~~**Disputes and ratings are slice 8**, so all four `→ disputed` arcs stay
   dropped and `trust_score` is still NULL on every row.~~ **Closed by slice 8**,
@@ -660,10 +674,15 @@ score from whoever lost would feed the matcher the output of a grievance.
 - **Nothing is transferred, still.** `carriesRealMoney` gates the three
   resolutions that settle escrow, refusing before anything is written, exactly as
   the payout sweep does. payments-billing.md's counsel gate is unmoved.
-- **The node is not told they were disputed**, and their thread is not posted to.
-  A dispute is decided by an operator rather than negotiated between the parties,
-  and a line in the working thread would invite exactly that negotiation. They
-  see it on `/node`. Notifications remain specified and unbuilt.
+- ~~**The node is not told they were disputed**~~, **and their thread is still not
+  posted to.** Half of this closed and half of it is a decision that stands.
+  `dispute.raised` now derives a row for whichever party did not raise it, and
+  `dispute.resolved` derives one for both. **The working thread still gets
+  nothing**, for the reason it always got nothing: a dispute is decided by an
+  operator rather than negotiated between the parties, and a line in the thread
+  would invite exactly that negotiation. An inbox row is not a negotiation. The
+  row also carries no `resolved_by`, so an operator is never named to the parties
+  ([ADR-0028](../40-adr/0028-a-notification-is-derived-from-the-event.md)).
 - **`nda_signed_at` and `terms_hash` still have no writer.**
 - **The matcher is unchanged.** `trust_score` now moves, but
   `packages/marketplace/src/matching.ts` still ranks on price with a
@@ -707,9 +726,13 @@ Stated here rather than discovered, on this section's standing habit.
   reconcile sweep stamps `expires_at` when an engagement ends. The module doc
   says "time-boxed" and this is the honest reading of it in a slice with no
   deadlines.
-- **Nobody is notified of anything, still.** Notifications remain specified and
+- ~~**Nobody is notified of anything, still.** Notifications remain specified and
   unbuilt, so an owner learns their step was taken from a system message in their
-  room, and a node learns nothing until they open `/node`.
+  room, and a node learns nothing until they open `/node`.~~ **Closed by
+  notifications slice 1.** Eleven moments across this domain now derive an inbox
+  row for the person they concern, in-app only. The sentence above had appeared,
+  in one form or another, at the end of every slice from 4 to 8, which is what
+  made it the next thing to build rather than the next thing to restate.
 - ~~**`held → released` is declared and refused.**~~ **Closed by slice 7**, whose
   `public.settle_payout` is the producer that let `20260907120000` permit the arc.
   The refusal was pinned **descriptively** rather than promissorily, so this is a
@@ -917,9 +940,12 @@ both paid, so the in-repo fake verifier is the only registered one and
 claimed and never confirmed. **No node can be suspended**, because that would be
 a terminal state with no exit until a moderation console exists. **The matcher
 still ranks on price alone**, though `trust_score` and `completed_engagements`
-now move. **Nobody is notified of anything**, so an offer, an acceptance and a
-dispute are all discovered by looking, which is what sets the 48-hour offer
-window and the seven-day work deadline.
+now move. **Nobody is notified outside the app**: notifications slice 1
+(`20260909120000`…`122000`) gives every moment in this domain an in-app inbox row
+for the person it concerns, and push, email and SMS remain unbuilt because each
+needs a paid provider. The 48-hour offer window and the seven-day work deadline
+are **unchanged**: the absence that justified them is gone, but shortening them
+is its own decision ([ADR-0028](../40-adr/0028-a-notification-is-derived-from-the-event.md)).
 
 ### The slice sequence
 

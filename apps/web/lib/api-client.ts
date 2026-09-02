@@ -6,6 +6,9 @@ import type {
   ChannelConnection,
   EmbedActionResponse,
   ListMessagesResponse,
+  ListNotificationsResponse,
+  MarkAllNotificationsReadResponse,
+  MarkNotificationReadResponse,
   MarketingChannel,
   Message,
   NodeCredential,
@@ -588,4 +591,31 @@ export function resolveOpsDispute(disputeId: string, body: ResolveDisputeBody) {
     `/ops/disputes/${disputeId}/resolve`,
     { method: 'POST', body: JSON.stringify(body) },
   );
+}
+
+/* ---------------------------------------------------------------------------
+ * The inbox.
+ *
+ * Called from both browser surfaces, `/app` and `/node`, which is unusual here
+ * and is the reason these routes are in the ts-rest router while the node and
+ * ops groups are not. Authorisation is total and uniform: the table returns the
+ * caller their own rows, so there is no id to pass and nothing to scope.
+ * ------------------------------------------------------------------------- */
+
+export function listNotifications(q: { unread?: boolean; limit?: number; before?: string } = {}) {
+  const params = new URLSearchParams();
+  if (q.unread) params.set('unread', '1');
+  if (q.limit !== undefined) params.set('limit', String(q.limit));
+  if (q.before) params.set('before', q.before);
+  const qs = params.toString();
+  return bff<ListNotificationsResponse>(qs ? `/notifications?${qs}` : '/notifications');
+}
+
+/** Idempotent: a second click returns the row with its original timestamp. */
+export function markNotificationRead(id: string) {
+  return bff<MarkNotificationReadResponse>(`/notifications/${id}/read`, { method: 'POST' });
+}
+
+export function markAllNotificationsRead() {
+  return bff<MarkAllNotificationsReadResponse>('/notifications/read-all', { method: 'POST' });
 }

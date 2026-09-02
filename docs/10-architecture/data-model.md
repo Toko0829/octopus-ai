@@ -1225,6 +1225,7 @@ Details worth knowing before touching this schema:
 
 - `events` is an append-only table: `(id, actor_id, actor_kind, verb, subject_type, subject_id, payload JSONB, created_at)`.
 - Task transitions, tool calls, escalations, approvals, and money movements all emit events. Immutability is enforced (no `UPDATE`/`DELETE` grants; append-only).
+- **`events` now has a reader as well as writers.** `20260909121000` hangs `private.notify_from_event()` off it as an `AFTER INSERT` trigger, which derives `public.notifications` for eleven verbs and ignores every other one ([ADR-0028](../40-adr/0028-a-notification-is-derived-from-the-event.md)). That makes this table the place a moment cannot be recorded without the person it concerns being told, including by writers that do not exist yet. It also makes a defect in that trigger able to abort the transaction that wrote the event, which is stated in the migration and bounded by left-joined enrichment and a per-verb pgTAP suite.
 
 ## Migration conventions
 
@@ -1368,3 +1369,69 @@ ending the engagement closes the pair again.
 
 **`node_profiles` and `offers` stay closed**, deliberately. What opens is
 `profiles`: a display name and the basics a chat surface needs.
+
+## `notifications` (notifications slice 1, `20260909120000`)
+
+One row per person per moment. **Derived, never written by a caller**: the only
+writer is `private.notify_from_event()`, an `AFTER INSERT` trigger on
+`public.events` ([ADR-0028](../40-adr/0028-a-notification-is-derived-from-the-event.md)).
+Six of the eleven moments it maps are written by SQL functions (`accept_offer`,
+`reassign_engagement`, `settle_payout`, `raise_dispute`, the dispute-resolve
+guard, the KYC audit trigger), which is the whole argument: a helper called from
+`apps/api` would reach none of them.
+
+```
+notifications(id, user_id, recipient_role, kind, subject_type, subject_id,
+              project_id, event_id, key, payload, created_at, read_at)
+```
+
+**No status column.** `read_at is null` is the only distinction anybody makes, so
+a column would be a second way to say it — `disputes`' derivation argument at a
+much smaller scale.
+
+**`key` is the dedup, and it exists because `events` has none.** Format
+`<verb>:<subject_id>:<user_id>`, unique, inserted `on conflict do nothing`. A
+replay can write the same event twice (`match.ts:478-481` says so about
+`offer.created` in particular), so this column is the only thing between a
+retried sweep and a doubled inbox. Two people told about one moment get one row
+each, because the user id is in the key.
+
+**`payload` is an allow-list, not a copy of the event's.** Each branch of the
+trigger names the keys it forwards, and that is a disclosure decision rather than
+tidiness: forwarding `new.payload` wholesale would have shown both parties
+`resolved_by`, the operator who decided their dispute. `payout.settled` likewise
+drops `platform_fee` and `transfer_id`, the fee because showing it beside the
+amount would imply it had been deducted ([ADR-0024](../40-adr/0024-the-take-rate-is-not-deducted-from-an-agreed-price.md)).
+
+**`project_id` is nullable and the null case is real:** `node.kyc_status_changed`
+is written with a null project, because becoming a verified node is not about a
+project.
+
+**Access.** Two own-row policies and nothing else: no counterparty policy, no
+member policy, no ops policy, because a notification is addressed to exactly one
+person. `authenticated` holds `select` plus a **column grant on `read_at` alone**;
+RLS filters rows and not columns, so the grant is the control and
+`private.guard_notification_read` is the backstop. That trigger refuses every
+other column, refuses unread-again explicitly rather than ignoring it, writes
+`read_at` once, and stamps it with `now()` so a browser cannot backdate the one
+fact the row is asked to prove.
+
+**`DELETE` and `TRUNCATE` are revoked from `service_role` too**, the
+`disputes` / `offers` / `node_verifications` posture: this row is the record that
+somebody was told, and the first place that matters is a dispute where one party
+says they never heard.
+
+**No backfill.** The trigger is `AFTER INSERT` and 757 events predate it, so every
+inbox started empty.
+
+## `notify:user:<uid>` (the third realtime topic, `20260909122000`)
+
+`private.broadcast_notification()` emits each new row to its recipient's own
+topic, read through a **third policy** on `realtime.messages` rather than a third
+`OR` inside the two chat policies. `20260906120000` refused a third policy to
+avoid a second copy of the `expires_at` time-box; this topic has no membership row
+and no time-box, so there is nothing to duplicate, and its predicate is
+`auth.uid()` alone. There is **no send policy**: nobody is present in their
+notifications, so the client subscribes and never tracks. `thread_scope.sql`'s
+exactly-two-policies assertion is amended in the same push and the total of three
+is asserted in `notifications.sql`.

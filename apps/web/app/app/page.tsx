@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import './chat.css';
+import '../inbox.css';
 import { ChatApp } from '../../components/chat/ChatApp';
 import { EmptyWorkspace } from '../../components/chat/EmptyWorkspace';
 import { createClient } from '../../lib/supabase/server';
@@ -9,6 +10,7 @@ import {
   fetchMembers,
   fetchMessages,
   fetchNode,
+  fetchNotifications,
   fetchRooms,
 } from '../../lib/api-server';
 
@@ -27,7 +29,11 @@ export const metadata: Metadata = {
 export const dynamic = 'force-dynamic';
 
 /** Reads happen here (RSC), so the shell renders with real data already in place. */
-export default async function WorkspacePage() {
+export default async function WorkspacePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ room?: string }>;
+}) {
   const supabase = await createClient();
   const {
     data: { user },
@@ -65,11 +71,24 @@ export default async function WorkspacePage() {
     );
   }
 
-  const active = rooms[0]!;
-  const [channels, members, messages] = await Promise.all([
+  /**
+   * `?room=` opens a named room, and a notification is the first thing that
+   * needs it: an owner's inbox row points at the room its project is announced
+   * in, which is not necessarily the first one in their list.
+   *
+   * Falls back rather than 404s when the id is unknown or not theirs. `rooms`
+   * is already the set this person may see, so an id that is not in it is either
+   * stale or somebody else's, and both should land in the workspace rather than
+   * on an error: the alternative confirms which room ids exist.
+   */
+  const { room: requested } = await searchParams;
+  const active = rooms.find((r) => r.id === requested) ?? rooms[0]!;
+
+  const [channels, members, messages, inbox] = await Promise.all([
     fetchChannels(active.id),
     fetchMembers(active.id),
     fetchMessages(active.id),
+    fetchNotifications(),
   ]);
 
   return (
@@ -82,6 +101,7 @@ export default async function WorkspacePage() {
       initialChannels={channels?.channels ?? []}
       initialMembers={members?.members ?? []}
       initialMessages={messages?.messages ?? []}
+      initialInbox={inbox}
     />
   );
 }

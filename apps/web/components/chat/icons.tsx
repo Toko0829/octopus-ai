@@ -123,3 +123,21 @@ export function IconLink(p: P) {
     </svg>
   );
 }
+
+/**
+ * The inbox.
+ *
+ * A drawn bell rather than an emoji, on the same rule as every other icon here:
+ * emoji-as-UI is on the never-ship list (design-system.md), and an emoji renders
+ * as somebody else's artwork at a size we do not control. Stroked and open like
+ * its neighbours, with no dot in the drawing itself, because the unread state is
+ * a badge with a word beside it rather than a change of glyph (rule 15).
+ */
+export function IconBell(p: P) {
+  return (
+    <svg {...base(p)}>
+      <path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7" />
+      <path d="M13.7 20a2 2 0 0 1-3.4 0" />
+    </svg>
+  );
+}

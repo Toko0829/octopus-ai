@@ -13,6 +13,7 @@ import { embedRoutes } from './routes/embeds';
 import { sourceRoutes } from './routes/sources';
 import { connectionRoutes } from './routes/connections';
 import { nodeRoutes } from './routes/nodes';
+import { notificationRoutes } from './routes/notifications';
 import { opsRoutes } from './routes/ops';
 import { createAuthVerifier } from './plugins/auth';
 import { stateConfigFrom } from './lib/oauth-state';
@@ -140,6 +141,14 @@ export async function buildServer(): Promise<FastifyInstance> {
   // `requireOps` because the JWT does not carry it, and granted only by
   // `scripts/grant-ops.mjs`.
   await app.register(opsRoutes, { verify, supabase });
+
+  // The inbox. Registered without a flag and without a role check, because it is
+  // the one route group whose authorisation is total and uniform: every caller
+  // reads their own rows and writes one column of them, decided by RLS rather
+  // than by anything here. A deployment without it is one where an offer, a
+  // handover and a dispute are all discovered by looking, which is the condition
+  // `20260909121000` exists to end.
+  await app.register(notificationRoutes, { verify, supabase });
 
   // The durable backbone (ADR-0010). Started here rather than as a separate
   // process because there is nothing to separate yet: a run's state is rows, so

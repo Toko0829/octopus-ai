@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
-import type { Channel, Message, Room, RoomMember } from '@octopus/contracts';
+import type {
+  Channel,
+  ListNotificationsResponse,
+  Message,
+  Room,
+  RoomMember,
+} from '@octopus/contracts';
 import type { Presence, UiMember, UiMessage } from '../../lib/types';
 import {
   fromBroadcastRecord,
@@ -32,6 +38,8 @@ import { CommandPalette } from './CommandPalette';
 import { AddSourcePanel } from './AddSourcePanel';
 import { CreateBusinessPanel } from './CreateBusinessPanel';
 import { ProjectPanel } from './ProjectPanel';
+import { InboxBell } from '../inbox/InboxBell';
+import { useInbox } from '../inbox/useInbox';
 
 interface Props {
   viewerId: string;
@@ -50,6 +58,11 @@ interface Props {
   initialChannels: Channel[];
   initialMembers: RoomMember[];
   initialMessages: Message[];
+  /**
+   * The inbox as the server saw it, so the count is right on the first frame
+   * rather than zero until the socket connects.
+   */
+  initialInbox?: ListNotificationsResponse | null;
 }
 
 export function ChatApp({
@@ -61,6 +74,7 @@ export function ChatApp({
   initialChannels,
   initialMembers,
   initialMessages,
+  initialInbox,
 }: Props) {
   const [roomId, setRoomId] = useState(initialRoomId);
   const [channels, setChannels] = useState<Channel[]>(initialChannels);
@@ -78,6 +92,14 @@ export function ChatApp({
   const [roomList, setRoomList] = useState(rooms);
   const [toast, setToast] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
+
+  /**
+   * The inbox. Subscribed per person rather than per room, which is what makes
+   * the count correct for somebody running two businesses: the chat topics are
+   * scoped to the room on screen, and being told only about the room you are
+   * already looking at is most of the way back to not being told at all.
+   */
+  const inbox = useInbox(viewerId, initialInbox);
 
   // Read inside the Realtime callback without making it a dependency, which would
   // tear down and rebuild the subscription on every message.
@@ -383,6 +405,26 @@ export function ChatApp({
           onOpenWork={() => setWorkOpen(true)}
           waitingOnYou={waitingOnYou}
           isNode={isNode}
+          inbox={
+            <InboxBell
+              inbox={inbox}
+              onOpen={(href) => {
+                // An owner's notification names the room its project is
+                // announced in. Switching in place rather than navigating keeps
+                // the socket and the scroll position, and a full reload to reach
+                // a room this shell is already holding would be a page flash for
+                // nothing.
+                const room = new URL(href, window.location.origin).searchParams.get('room');
+                if (room && roomList.some((r) => r.id === room)) {
+                  if (room !== roomId) void selectRoom(room);
+                  setWorkOpen(true);
+                  return;
+                }
+                if (!href.startsWith('/app')) window.location.assign(href);
+                else setWorkOpen(true);
+              }}
+            />
+          }
         />
         {banner && (
           <div className="banner" role="status">

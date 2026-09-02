@@ -32,6 +32,23 @@ mappings:
     owner: 'docs/30-modules/admin-ops.md'
     also_touch: ['docs/20-design/design-system.md']
 
+  # The inbox, ahead of `apps/web/**` for the reason the ops entry is: it is one
+  # component rendered by two surfaces with different owners, and the thing a
+  # change to it is most likely to get wrong is the recipient map or the badge
+  # rule, both of which notifications.md holds. The design doc stays on
+  # `also_touch` because the badge rule is a design-system decision recorded in
+  # both places.
+  - path: 'apps/web/components/inbox/**'
+    owner: 'docs/30-modules/notifications.md'
+    also_touch: ['docs/30-modules/design-system-frontend.md']
+
+  # The sentences themselves. Owned by notifications.md rather than by the design
+  # doc because what a notification says is a product decision, and because
+  # AGENTS.md rule 22 is enforced over this file by its own test.
+  - path: 'apps/web/lib/notification-copy.ts'
+    owner: 'docs/30-modules/notifications.md'
+    also_touch: ['docs/20-design/brand.md']
+
   - path: 'apps/web/**'
     owner: 'docs/30-modules/design-system-frontend.md'
     also_touch: ['docs/30-modules/chat-discord.md', 'docs/20-design/design-system.md']
@@ -46,6 +63,15 @@ mappings:
 
   - path: 'apps/api/src/plugins/require-ops.ts'
     owner: 'docs/30-modules/admin-ops.md'
+    also_touch: ['docs/30-modules/auth-identity.md']
+
+  # The inbox routes, ahead of the general `apps/api/**` entry. They are the only
+  # route group in this system whose authorisation is entirely the table's, so a
+  # change here that reached for the service client would be changing the
+  # security model rather than the code, and notifications.md is where that is
+  # written down.
+  - path: 'apps/api/src/routes/notifications.ts'
+    owner: 'docs/30-modules/notifications.md'
     also_touch: ['docs/30-modules/auth-identity.md']
 
   - path: 'apps/api/**'
@@ -190,7 +216,13 @@ manual_review:
   # `apps/api/**`, and any future Stripe webhook.
   - area: 'payments / escrow / ledger outside packages/payments'
     owner: 'docs/30-modules/payments-billing.md'
-  - area: 'notifications fan-out'
+  # **Narrowed by notifications slice 1.** The in-app channel is real code now and
+  # is mapped above (the routes, the inbox components, the copy module), so it is
+  # enforced rather than reviewed. What stays manual is everything that needs a
+  # paid provider and therefore has no code to map: web push, email, SMS, mobile
+  # push, `delivery_log`, preferences and digests. The deriving trigger itself
+  # lives in `supabase/migrations/**`, which data-model.md owns.
+  - area: 'notification channels other than in-app, plus preferences and digests'
     owner: 'docs/30-modules/notifications.md'
   # **Narrowed by slice 8.** The dispute console is real code now and is mapped
   # above, so it is enforced rather than reviewed. What stays manual is the six
