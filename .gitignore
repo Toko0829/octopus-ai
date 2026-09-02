@@ -62,3 +62,6 @@ tools/art/out/
 
 # Supabase CLI scratch (version probe, branch refs) — never part of the repo.
 supabase/.temp/
+
+# Engraving masters (generated; the prompt and tools/art/engrave.mjs are the reproducible part)
+tools/art/engravings/src/

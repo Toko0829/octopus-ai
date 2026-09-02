@@ -23,7 +23,7 @@ import { useState } from 'react';
  *   own words about their business; it does not belong in a query parameter.
  * - **The placeholder is the theatre's example.** You type the thing, and the
  *   section below shows that exact goal becoming a plan. The continuity is the
- *   point, so this string and `PlanTheatre`'s opening message are deliberately
+ *   point, so this string and `ProductFrame`'s opening message are deliberately
  *   the same sentence.
  */
 
@@ -62,7 +62,7 @@ export function GoalComposer({ id = 'goal' }: { id?: string }) {
         value={value}
         onChange={(e) => setValue(e.target.value)}
       />
-      <button className="btn btn-pill btn-primary goal-send" type="submit">
+      <button className="btn btn-primary goal-send" type="submit">
         {ready ? 'Start' : 'Open the app'}
       </button>
     </form>
