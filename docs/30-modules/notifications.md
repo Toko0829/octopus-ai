@@ -58,6 +58,29 @@ The alternative was one amber count for everything unread. Refused on design-sys
 - **Shortening `OFFER_TTL_MS` and `WORK_TTL_HOURS`.** Now **unblocked, not changed.** The reason they are 48 hours and 7 days no longer holds, but shortening them is its own decision with its own reasoning about time zones and about what somebody who is asleep is entitled to.
 - **An inbox on `/ops`.** Operators work a queue, and a queue is not an inbox.
 
+### A repeat of the same moment tells you once, and that is the key's cost
+
+The dedup key is `<verb>:<subject_id>:<user_id>`, with no occurrence counter in
+it. So a step that is sent to the market, exhausts, is sent again and exhausts
+again produces **one** notification, not two. Measured on the live database
+rather than reasoned about: three `matching -> escalated` events exist for one
+step there, and the owner has one row.
+
+This is the direct cost of the property the key buys. `public.events` has no
+unique key and a retried sweep can write the same moment twice, so something has
+to collapse repeats, and anything that distinguishes a genuine second occurrence
+from a replay has to count prior events per notification.
+
+`match.ts` solved the same problem for the room's system message by putting a
+`returnEpoch` in its key, which is a `count(*)` over `events` per message. That
+is affordable in a sweep and less so in a trigger that runs inside
+`settle_payout`. The honest summary is that **the inbox is a "what is waiting"
+surface rather than a log**: the step is still escalated and still on the owner's
+panel, so the state is not lost, only the second nudge. If somebody hits this in
+practice the fix is an epoch in the key for the repeatable kinds only
+(`task.transitioned` is the only one where a genuine repeat is likely), not a
+change to the whole scheme.
+
 ## Responsibilities
 
 - Reliably notify **nodes** of offers (with expiry + cascade) so tasks never stall.
