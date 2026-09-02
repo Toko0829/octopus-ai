@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { IconHash } from './icons';
 import { ThemeToggle } from './ui';
 
@@ -5,6 +6,15 @@ interface Props {
   channel: string;
   memberCount: number;
   onOpenWork: () => void;
+  /**
+   * The inbox bell, passed in rather than built here.
+   *
+   * A slot because the bell needs a live subscription and this component has no
+   * state of its own: giving it one would make the whole header re-render on
+   * every arriving notification, and the header is the part of this page that
+   * must never flicker.
+   */
+  inbox?: ReactNode;
   /**
    * Steps waiting on the person, across every project in this room. Shown only
    * when it is non-zero: a badge reading 0 is noise, and the point of the number
@@ -24,7 +34,7 @@ interface Props {
  * omitted until projects carry a budget ceiling, because a number on a trust
  * surface has to be real.
  */
-export function TopBar({ channel, memberCount, onOpenWork, waitingOnYou, isNode }: Props) {
+export function TopBar({ channel, memberCount, onOpenWork, waitingOnYou, isNode, inbox }: Props) {
   return (
     <header className="topbar">
       <div className="topbar-chan">
@@ -52,6 +62,7 @@ export function TopBar({ channel, memberCount, onOpenWork, waitingOnYou, isNode 
           Your node profile
         </a>
       )}
+      {inbox}
       <ThemeToggle />
     </header>
   );

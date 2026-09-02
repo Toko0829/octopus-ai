@@ -515,3 +515,60 @@ no rules at all, so an offer rendered as bare stacked text. They land here rathe
 than in a separate tidy-up because this slice adds a second list of the same shape
 with a money figure inside it, and half-styling one of the two would be worse than
 the gap it started from.
+
+## The inbox (notifications slice 1)
+
+`components/inbox/{InboxBell,InboxPanel,useInbox}.tsx` + `app/inbox.css`, mounted
+in the chat top bar and in the `/node` header. Its own stylesheet rather than a
+block in `chat.css`, because it is the first component both surfaces render and
+they run different skins; everything in it resolves from semantic tokens, so
+neither needs an override. It carries its own `@keyframes inbox-pop` and its own
+`.sr-only`, because `chat.css` holds both and `/node` does not load it: an
+animation naming a keyframe that is not there is a rule that silently does
+nothing on one of its two surfaces.
+
+### The badge rule, which is about hue and not about notifications
+
+**Amber `--warn` with the visible word "need you" when something is waiting on
+the reader. A neutral count saying "new" otherwise. Hidden at zero.**
+
+design-system.md:69 is the whole argument: a hue carries a word, teal is the
+agent, coral is a person, amber is "this needs your approval", and "never a hue
+asserting two of them: that is how a badge stops meaning anything". So amber is
+spent only where the reader is the blocker, which is five slots out of fifteen:
+an offer, a bounced handover and a rejected handover to a node, and a submitted
+handover and an exhausted cascade to an owner.
+
+The alternative, one amber count for everything unread, was rejected on that
+rule's own terms. An owner whose badge is permanently amber because an expert was
+paid last week stops reading the one that says work is waiting.
+
+A dispute raised against somebody is deliberately **not** amber, and it is the
+case that makes the predicate clear: it matters enormously, and an operator
+decides it, so the reader has no button. The predicate is "nothing moves until
+they do", not "this is important".
+
+**Rule 15 in three places**, because a count is exactly the kind of thing that
+gets encoded in colour alone: the word rides beside the number in the badge, each
+row carries a "Needs you" or "Update" chip, and unread rows take a `--accent`
+rule down the leading edge as well as a background. None of the three is the only
+signal.
+
+**No glow.** `--glow-agent` and `breathe` belong to live agent presence and to
+nothing else (rule 14). A pulsing bell would be the second glowing thing on the
+page and the first one that is not alive.
+
+**Not in a corner.** The panel is anchored under the bell that opened it. A
+floating box in the bottom right is the chatbot bubble on the never-ship list
+wearing a different hat, and it would teach people that the corner is where the
+machine talks to them. Below 520px it pins to both frame edges instead, which
+keeps it off the viewport edge without moving it to a corner.
+
+### Copy lives in TypeScript, and that is testable
+
+`lib/notification-copy.ts` composes every title, body and link from the row's
+facts. The point is `lib/notification-copy.test.ts`: it walks every kind, every
+recipient role, every dispute resolution and every KYC outcome and asserts no em
+dash appears in any of them. **AGENTS.md rule 22 names notifications explicitly**,
+and this is the first place in the repository where that rule is checked by a
+machine rather than by a reviewer noticing.

@@ -1,0 +1,291 @@
+/* The inbox: the bell, its count, and the panel under it.
+ *
+ * Imported by both `app/app/page.tsx` and `app/node/page.tsx`, which is why it
+ * is its own file rather than a block in `chat.css`. The two surfaces run
+ * different skins (Light Editorial on `/node`, the shell's own on `/app`) and
+ * everything here resolves from semantic tokens, so neither needs an override.
+ *
+ * Three rules this file follows, all from design-system.md:
+ *   1. A hue carries a word. The amber count says "need you" in text beside the
+ *      number, and the neutral one says "new". Nothing here is legible by colour
+ *      alone (AGENTS.md rule 15).
+ *   2. No glow. `--glow-agent` and `breathe` belong to the live agent and to
+ *      nothing else (rule 14). The bell is a button.
+ *   3. Not in a corner. The panel hangs off the bell that opened it, because a
+ *      floating box in the bottom right is the chatbot bubble on the never-ship
+ *      list wearing a different hat.
+ */
+
+.inbox-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.inbox-bell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: var(--r-sm);
+  padding: 4px 10px;
+  height: 30px;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.inbox-bell:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.inbox-bell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Hidden at zero by the component, on the rule the work badge beside it set:
+   a badge reading 0 is noise. */
+.inbox-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-full);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* Amber, and only when something is actually waiting on this person. The hue
+   asserts one thing here and the same thing on the work button next to it. */
+.inbox-count-needs {
+  background: var(--warn-quiet);
+  color: var(--warn);
+}
+
+/* Everything else that is merely new. Neutral on purpose: an owner whose badge
+   is permanently amber because an expert was paid last week stops reading the
+   one that says work is waiting. */
+.inbox-count-new {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+
+.inbox-count-word {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.inbox-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(520px, 70vh);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  animation: inbox-pop var(--dur-slow) var(--ease-out);
+}
+
+/* Its own keyframe rather than chat.css's `pop`. This file is loaded by `/node`
+   too, where chat.css is not, and an animation naming a keyframe that is not
+   there is a rule that silently does nothing on one of its two surfaces. */
+@keyframes inbox-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.inbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.inbox-title {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.inbox-clear {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: var(--text-xs);
+  color: var(--accent-text);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.inbox-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The socket, when it is not working. Says what is wrong and what fixes it,
+   because a silent dead subscription is the defect ChatApp recorded. */
+.inbox-live {
+  margin: 0;
+  padding: 10px 14px;
+  background: var(--human-quiet);
+  color: var(--human);
+  font-size: var(--text-xs);
+  border-bottom: 1px solid var(--border);
+}
+
+.inbox-empty {
+  margin: 0;
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.inbox-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.inbox-item + .inbox-item {
+  border-top: 1px solid var(--border);
+}
+
+/* Unread carries a rule down its leading edge as well as its chip, so the
+   distinction survives both a monochrome display and a reader who does not
+   separate the two hues. */
+.inbox-item-unread {
+  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--surface-2);
+}
+
+.inbox-row {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: 12px 14px;
+  font-family: inherit;
+  cursor: pointer;
+  color: var(--text);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.inbox-row:hover {
+  background: var(--surface-hover);
+}
+.inbox-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.inbox-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.inbox-row-title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.inbox-row-when {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.inbox-row-body {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.inbox-chip {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 2px 6px;
+  border-radius: var(--r-full);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.inbox-chip-needs {
+  background: var(--warn-quiet);
+  color: var(--warn);
+}
+.inbox-chip-update {
+  background: var(--surface-2);
+  color: var(--text-faint);
+}
+.inbox-item-unread .inbox-chip-update {
+  background: var(--surface-hover);
+}
+
+/* The panel is a popover rather than a modal, so it does not trap or dim. On a
+   narrow viewport it still has to fit: pinned to the right edge of the frame
+   rather than to the button, which would push it off-screen. */
+@media (max-width: 520px) {
+  .inbox-panel {
+    position: fixed;
+    top: 56px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inbox-panel {
+    animation: none;
+  }
+}
+
+/* `/node` is Light Editorial and sets no `.sr-only`, which lives in chat.css.
+   Declared here so the panel's close control stays reachable and invisible on
+   both surfaces rather than on one. Matches the chat definition exactly; two
+   copies that drift is a lesson this stylesheet set has already learned, so if a
+   third appears the right move is to lift it into globals.css. */
+.inbox-panel .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

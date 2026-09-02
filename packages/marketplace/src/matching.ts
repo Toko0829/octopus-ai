@@ -39,6 +39,16 @@ import { bestCoveringJurisdiction, jurisdictionExactness } from './jurisdiction'
  * is full-funnel marketing rather than a notarization with a closing date, so
  * two days costs the owner little. It shortens when offers are actually
  * delivered to somebody.
+ *
+ * **Amended 2026-09-09 by notifications slice 1: the first fact is now half
+ * true, and the number is unchanged anyway.** An offer derives an in-app inbox
+ * row for the node it was made to, and their bell moves without a reload
+ * (ADR-0028). Push, email and SMS are still unbuilt, so a node who is not
+ * looking at the page is still not reached, which is most of what "had not
+ * looked yet" meant. Shortening this is now possible and is deliberately not
+ * done here: it is a decision about time zones and about what somebody asleep is
+ * entitled to, and it belongs in the change that makes it rather than as a side
+ * effect of building a bell.
  */
 export const OFFER_TTL_MS = 48 * 60 * 60 * 1000;
 
@@ -63,6 +73,12 @@ export const OFFER_TTL_MS = 48 * 60 * 60 * 1000;
  * not a notarization with a closing date. It shortens when offers are actually
  * delivered to somebody and when the first real deadline is missed for a reason
  * other than silence.
+ *
+ * **Amended 2026-09-09, same as `OFFER_TTL_MS`:** the node now gets an in-app
+ * row when the deadline nears and when the step is taken back, so the first
+ * condition is met and the second is not. The second half of that sentence is
+ * the one that still holds hardest here: seven days is about the shape of the
+ * work, not about the doorbell.
  *
  * **Hours rather than milliseconds, unlike `OFFER_TTL_MS`**, because this one is
  * written into `offers.work_deadline_hours` and the arithmetic happens in SQL:

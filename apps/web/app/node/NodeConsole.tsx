@@ -2,10 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
-import type { NodeCredential, NodeEngagement, NodeOffer, NodeProfile } from '@octopus/contracts';
+import type {
+  ListNotificationsResponse,
+  NodeCredential,
+  NodeEngagement,
+  NodeOffer,
+  NodeProfile,
+} from '@octopus/contracts';
 import type { UiMessage } from '../../lib/types';
 import { fromBroadcastRecord, mergeMessages, toMessage } from '../../lib/adapt';
 import { createClient } from '../../lib/supabase/client';
+import { InboxBell } from '../../components/inbox/InboxBell';
+import { useInbox } from '../../components/inbox/useInbox';
 import {
   NO_OPEN_OFFERS,
   SKILL_TAXONOMY,
@@ -86,9 +94,28 @@ interface Props {
   initialOffers: NodeOffer[];
   initialEngagements: NodeEngagement[];
   email: string | null;
+  /** Who is looking, for their own notification topic. */
+  viewerId: string;
+  initialInbox?: ListNotificationsResponse | null;
 }
 
-export function NodeConsole({ initial, initialOffers, initialEngagements, email }: Props) {
+export function NodeConsole({
+  initial,
+  initialOffers,
+  initialEngagements,
+  email,
+  viewerId,
+  initialInbox,
+}: Props) {
+  /**
+   * The reason this page stops being one somebody has to remember to open.
+   *
+   * An offer, a rejected handover, a payout and a dispute all reach a node here
+   * and nowhere else, and until now every one of them was found by visiting.
+   * That is what set the 48 hour offer window (`matching.ts`); the window has
+   * not changed in this slice, but the reason it was that wide has.
+   */
+  const inbox = useInbox(viewerId, initialInbox);
   const [node, setNode] = useState(initial);
   const [offers, setOffers] = useState(initialOffers);
   const [engagements, setEngagements] = useState(initialEngagements);
@@ -113,8 +140,31 @@ export function NodeConsole({ initial, initialOffers, initialEngagements, email 
 
   return (
     <main className="node">
-      <p className="node-eyebrow">Octopus marketplace</p>
-      <h1 className="node-title">Your expert profile</h1>
+      <div className="node-head">
+        <div>
+          <p className="node-eyebrow">Octopus marketplace</p>
+          <h1 className="node-title">Your expert profile</h1>
+        </div>
+        <InboxBell
+          inbox={inbox}
+          onOpen={async () => {
+            // Every node notification points at this page, so there is nowhere
+            // to navigate. What the reader actually wants is for the thing they
+            // were just told about to be on screen, and both lists move
+            // together for the reason the offer handlers already give: accepting
+            // one changes both.
+            try {
+              const [fresh, live] = await Promise.all([getNodeOffers(), getNodeEngagements()]);
+              setOffers(fresh.offers);
+              setEngagements(live.engagements);
+            } catch {
+              // The lists on screen are the ones the server sent. Saying "could
+              // not refresh" over data that is probably still right would be
+              // louder than the problem.
+            }
+          }}
+        />
+      </div>
       {email && <p className="node-body mono">{email}</p>}
 
       {error && (

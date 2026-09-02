@@ -2,6 +2,7 @@ import 'server-only';
 import type {
   Channel,
   ListMessagesResponse,
+  ListNotificationsResponse,
   NodeEngagement,
   NodeOffer,
   NodeProfile,
@@ -114,4 +115,19 @@ export function fetchOpsIdentity() {
 /** The operator's queue. Open disputes oldest-first; see the route for why. */
 export function fetchOpsDisputes(status: 'open' | 'resolved' = 'open') {
   return get<{ disputes: OpsDisputeSummary[] }>(`/ops/disputes?status=${status}`);
+}
+
+/**
+ * The inbox, for the first paint.
+ *
+ * Seeded server-side so the badge is right before any JavaScript runs. The
+ * client subscribes after mount and re-reads on connect, so this is the answer
+ * for the first frame rather than the only answer: a reader who arrives with two
+ * unread rows sees two, not zero briefly and then two.
+ *
+ * Thirty is the page the panel shows. The count that rides beside it is over the
+ * whole inbox, so a badge is never limited by the page.
+ */
+export function fetchNotifications() {
+  return get<ListNotificationsResponse>('/notifications?limit=30');
 }
