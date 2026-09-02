@@ -16,8 +16,19 @@ import type { ProjectSummary } from '@octopus/contracts';
  * which does the same and says why: waiting for `paid` would hold a whole graph
  * on a bank transfer. The number a person reads and the number the scheduler acts
  * on should not disagree about what "done" means.
+ *
+ * **`payout_pending` was missing, and the comment above claimed it was not.** The
+ * SQL predicate is `state not in ('approved','payout_pending','paid','done')`, so
+ * for the whole life of the payout slice a step between "the owner approved it"
+ * and "the transfer landed" was counted as unfinished on the project list while
+ * the panel beside it read "Done, payment pending" and the scheduler let its
+ * dependents run. Three surfaces, two answers. Fixed here rather than in the SQL
+ * because the SQL was right; this set is the copy that drifted.
+ *
+ * This is now the single definition of "satisfied" on the TypeScript side, and
+ * `blockedBy` in `routes/projects.ts` reads it rather than restating it.
  */
-export const DONE_STATES = new Set(['approved', 'done', 'paid']);
+export const DONE_STATES = new Set(['approved', 'payout_pending', 'paid', 'done']);
 
 export interface TaskStateRow {
   project_id: string;

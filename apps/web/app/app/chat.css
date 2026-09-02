@@ -1678,6 +1678,34 @@
   color: var(--text-muted);
 }
 
+/* What a step is waiting for.
+
+   Set immediately under the owner line and above the engagement, because it is
+   a fact about the step rather than about the deal, and because on a `pending`
+   step there is no engagement to sit above. Muted like the other secondary
+   lines: it explains a state the badge has already announced, so it must not
+   compete with the title.
+
+   The `stopped` variant is a dependency that was cancelled or failed, and it is
+   lifted to full-strength text rather than to the red the stopped badge uses.
+   **Measured rather than assumed:** `--red-500` (#d9524a) is 4.00 against
+   `--surface` on the light skin and 4.53 on the dark one, so as small text it
+   fails WCAG AA on the skin most people read. The sentence carries the
+   distinction in words, which is what rule 15 actually asks for, so the second
+   signal is weight and not a colour that cannot be read. The two lines that
+   already spend that budget, `.work-error` and `.work-resolve-error`, are
+   pre-existing debt recorded in design-system-frontend.md rather than widened
+   here. */
+.work-waiting {
+  margin: 4px 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+.work-waiting.stopped {
+  color: var(--text);
+}
+
 /* Who took a step, for how much, and when.
 
    The only place the owner learns who is doing their work: `offers` stays closed

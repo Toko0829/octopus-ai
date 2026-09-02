@@ -804,6 +804,42 @@ export const Task = z.object({
   /** What this step delivered. Empty while it has not run or has not passed review. */
   artifacts: z.array(Artifact).default([]),
   /**
+   * The steps this one is still waiting for. Empty when nothing blocks it.
+   *
+   * **Resolved rather than raw, and that is the whole point of the field.** The
+   * DAG has had edges since `20260828120000`, and the panel has never been able
+   * to say anything about them: a step waiting on another rendered as `pending`,
+   * which reads identically to a step that is merely next in the queue. That is
+   * accurate and uninformative, and it is uninformative in the one situation
+   * where the owner has something to do, because the way to unblock five steps
+   * is to deal with the one they all point at.
+   *
+   * Shipping `dependsOn` ids instead would put the decision on the client: it
+   * would have to join back to `tasks` and re-encode which states count as
+   * satisfied, which is a second copy of `private.task_deps_satisfied` living in
+   * a component. The server owns that rule once (`DONE_STATES`), applies it, and
+   * sends only the edges that are actually still holding this step up.
+   *
+   * **Hard dependencies only**, matching the SQL: `soft` and `resource` edges are
+   * declared in `task_dep_kind` and are ignored by `task_deps_satisfied`, so a
+   * step is never described as waiting for something the scheduler would not wait
+   * for either.
+   *
+   * `state` travels with each entry because a dependency that is `cancelled` or
+   * `failed` is not a wait, it is a dead end: `private.tasks_ready` will never
+   * clear this step until a replan rewires the edge, and the panel says so in
+   * different words rather than promising progress that cannot arrive.
+   */
+  blockedBy: z
+    .array(
+      z.object({
+        taskId: z.string().uuid(),
+        title: z.string(),
+        state: TaskState,
+      }),
+    )
+    .default([]),
+  /**
    * Who took this step, at what price, when. Null unless a node accepted it and
    * the deal is still live.
    *

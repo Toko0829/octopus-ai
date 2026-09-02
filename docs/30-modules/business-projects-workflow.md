@@ -14,7 +14,7 @@
 >
 > **The scheduler and router are live** in `packages/core` (`20260813150000` adds their selection query). Approving a plan runs one tick immediately, so a person who just approved something sees where each step went.
 >
-> **The AI executor and the checker are live too** (`20260813160000` adds `artifacts`). An AI-owned task now runs end to end: `ROUTING → AI_RUNNING → AI_SELF_CHECK → APPROVED`, producing a cited artifact, and **an approved task satisfies its dependents**, so the graph actually moves. 32 Node tests; `supabase/tests/artifacts.sql` 12/12 against the live database.
+> **The AI executor and the checker are live too** (`20260813160000` adds `artifacts`). An AI-owned task now runs end to end: `ROUTING → AI_RUNNING → AI_SELF_CHECK → APPROVED → DONE`, producing a cited artifact, and **an approved task satisfies its dependents**, so the graph actually moves. The last hop is the newest: `APPROVED` is not terminal, so until the executor walked on, a step that had produced its artifact and passed its own check could still be cancelled by a replan and recorded as abandoned. 42 Node tests, including the first suite this loop has ever had; `supabase/tests/artifacts.sql` 15/15 against the live database.
 >
 > **The ticker is live** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)): a periodic pass reclaims runs whose worker died and walks every active project's graph, holding a lease so only one instance ticks. Approving a plan still ticks inline, so the interactive path never waits on the interval.
 >
@@ -76,7 +76,15 @@ Two properties of the view are decisions rather than presentation:
   follows.
 - **Progress counts `APPROVED` as done**, matching `task_deps_satisfied` rather
   than waiting for `PAID`. If the number a person reads disagreed with the one the
-  scheduler acts on, one of them would be lying.
+  scheduler acts on, one of them would be lying. It did disagree, for the whole
+  life of the payout slice: `DONE_STATES` was missing `PAYOUT_PENDING` while
+  claiming in its own comment to mirror the SQL, so a step the scheduler had
+  already unblocked and the panel already labelled "Done, payment pending" was
+  counted as unfinished on the list. All four states are counted now, and the set
+  is spelled out in a test rather than described.
+- **A step that is waiting says what it is waiting for.** `blockedBy` on `Task`
+  names the unfinished `hard` dependencies, resolved server-side, and the panel
+  renders them on `PENDING` and `BLOCKED` only. See the panel paragraph above.
 
 ## Changing a plan that is already running
 
@@ -205,10 +213,47 @@ into logging refused transitions that are not failures. The cost is that a chain
 of N dependent steps takes up to N ticker intervals longer than it used to, which
 is recorded here rather than left for somebody to measure and call a regression.
 
-**Also not built, and named rather than implied:** the project panel shows a
-blocked step as `pending` with no indication of what it is waiting for. That is
-accurate and uninformative, and fixing it needs the API to return each task's
-dependencies, which is a wider change than this one.
+**And the panel now says what a blocked step is waiting for**, which it could not
+until the detail read returned the DAG's edges. A step waiting on another
+rendered as `pending`, which is the same sentence a step that is merely next in
+the queue gets: accurate, uninformative, and uninformative in exactly the
+situation where the owner has something to do, since the way to unblock five
+steps is to deal with the one they all point at. Measured on a live project, that
+was twelve of fifteen steps reading "Not started" with nothing to distinguish
+them.
+
+`Task` carries `blockedBy`, and it is **resolved rather than raw**. Shipping
+`dependsOn` ids would have put the decision on the client, which would then have
+to join back to `tasks` and re-encode which states count as satisfied: a second
+copy of `private.task_deps_satisfied` living in a component, drifting silently,
+because a step wrongly described as blocked renders as a perfectly plausible
+sentence. The server applies the rule once and sends only the edges still holding
+the step up. `hard` edges only, filtered in the query, so the panel never claims
+the plan is waiting for something the scheduler would not wait for either.
+
+**The rule had already drifted, and closing that is part of this.**
+`DONE_STATES` in `project-progress.ts` claimed in its own comment to mirror the
+SQL predicate and was missing `payout_pending`, so for the whole life of the
+payout slice a step between "the owner approved it" and "the transfer landed" was
+counted as unfinished on the project list while the panel beside it read "Done,
+payment pending" and the scheduler let its dependents run. Three surfaces, two
+answers, nothing failing. The set is fixed here rather than in the SQL, because
+the SQL was right, and `projects.test.ts` now spells the four states out so the
+next drift fails by name.
+
+**A cancelled or failed dependency is not a wait and does not read as one.**
+`private.tasks_ready` requires `task_deps_satisfied`, which such a dependency can
+never satisfy, so the step is stranded until `apply_plan_diff` rewires the edge.
+Saying "Waiting on" there would promise progress that cannot arrive, so the copy
+names the dead end and says the plan has to change. The sentence carries the
+distinction on its own, which is what rule 15 asks for; the second signal is
+weight rather than the stopped badge's red, because `--red-500` measures 4.00
+against the light panel and fails AA as small text (see
+[design-system-frontend.md](design-system-frontend.md)).
+
+The line shows only on `pending` and `blocked`. From `ready` onward
+`private.tasks_ready` has already proved every hard dependency satisfied, so it
+would be describing a queue that has already cleared.
 
 ## Per-task state machine
 
@@ -461,10 +506,10 @@ Worth stating plainly, because it is this module's gap rather than the
 marketplace's, and because somebody reading `task_state` would reasonably assume
 otherwise.
 
-Until slice 7 **nothing in this system had ever reached `done`**. AI work stops at
-`approved`, where the executor leaves it after the checker passes; owner-resolved
-work stops at `approved` too; and `task_deps_satisfied` counts `approved` as
-satisfied, so the graph never needed anything further. The panel labels `approved`
+Until slice 7 **nothing in this system had ever reached `done`**. AI work stopped
+at `approved`, where the executor left it after the checker passed;
+owner-resolved work stopped at `approved` too; and `task_deps_satisfied` counts
+`approved` as satisfied, so the graph never needed anything further. The panel labels `approved`
 as "Done" and `DONE_STATES` in `project-progress.ts` includes it. So `done` was
 vestigial rather than missing — until a step could be paid for, at which point
 stopping at `paid` would have left a finished, settled step non-terminal forever.
@@ -481,8 +526,56 @@ step it is — but the audit trail can record a finished piece of work as cancel
 It was deliberately **not** closed from a marketplace slice. `approved → done` on
 an AI step involves no money, its producer would be `executor.ts`, and closing
 another module's arc from inside one whose subject is a state machine is how a
-repository ends up with two half-owners of one map. The trigger to build it is the
-first cancellation that lands on an already-approved AI step, or the first reader
-who needs "finished" to mean one state rather than two.
-`supabase/tests/marketplace_payout.sql` asserts the absence, so the gap fails a
-test's description rather than being rediscovered.
+repository ends up with two half-owners of one map. The trigger to build it was
+named as the first cancellation landing on an already-approved AI step, or the
+first reader who needs "finished" to mean one state rather than two.
+
+**The second trigger arrived, and this module has produced the arc.** The panel
+line above is that reader: a step could not be described as "waiting on" another
+while "finished" meant `approved` here and `done` one table over. `executeTask`
+now walks `approved → done` in a second write immediately after the first, and
+the owner-answer paths do the same, so every arm of this state machine ends
+somewhere terminal.
+
+**No migration**, which makes it the third consecutive change whose answer to
+"which migration adds the arc" is "none". `approved → done` has been declared and
+unrestricted since `20260813120000`; it had no walker. The producer is the
+missing half, not the permission.
+
+**Two hops rather than one, because the map says so.** `ai_self_check` reaches
+`approved` and nothing else, and `approved` is where `task_deps_satisfied`
+unblocks dependents, so no dependent waits a moment longer for the second write.
+
+**The second write is conditional and a miss is a race.** It is `.eq('state',
+'approved')`, and the only way it finds no row is that something walked the task
+out of `approved` in between, which `approved → cancelled` legally may. So a miss
+is logged and the artifact is **not** delivered: the step was cancelled, and
+announcing the work would tell the room otherwise. The order is
+`approved → done → deliver` for that reason, and because the artifact row already
+exists by then, so announcing first would only widen the window.
+
+**`approve_work` deliberately does not finish the step.** It lands on the same
+state and means something different: it is the payout authorisation, and
+`PAYABLE_TASK_STATES` selects on `approved`, so walking it on would take the step
+out from under the sweep that pays the expert. `Resolution.completes` is where
+that distinction lives, required rather than optional so a seventh action has to
+answer the question rather than inherit an answer.
+
+**Not backfilled.** Sixty-six steps sit at `approved` on the live database and
+stay there. Some are AI steps this change would now finish, and some are human
+steps whose expert is still owed the escrow; a blanket walk would pay nobody and
+strand those. Rewriting historical rows to make a new invariant look older than
+it is would also be the wrong kind of tidy.
+
+`supabase/tests/artifacts.sql` asserts the walk where the AI path already lives:
+`approved → done`, `done` terminal, and the kill switch refused with `23514` on a
+finished step. `marketplace_payout.sql` keeps the other half of the boundary,
+that `approved` itself stays non-terminal, because the payout sweep reads it.
+`20260907122000_settle_payout.sql`'s header still says this arm has no producer;
+it is an applied migration and is left alone, and this paragraph is where that is
+recorded as superseded.
+
+**Still not durable, and the crash symptom is named rather than implied.** A
+crash between the two writes strands the step at `approved`, which is exactly
+today's behaviour rather than a new failure. The sweep that would heal it belongs
+beside `reclaimLostRuns` on the ticker and is not built.

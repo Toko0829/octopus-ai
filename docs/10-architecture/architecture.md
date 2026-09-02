@@ -73,6 +73,16 @@ keeps scrolling. The artifact card answers "did this one step deliver something"
 these answer "where is the whole thing up to", which is the question people
 actually ask.
 
+`Task` carries **`blockedBy`**: the step's unfinished `hard` dependencies,
+resolved to `{ taskId, title, state }` rather than shipped as raw ids.
+`buildProjectDetail` reads `task_deps` as the caller, scoped by the ids the task
+read just returned, because that table carries no `project_id` of its own. The
+filtering rule is `DONE_STATES`, the TypeScript copy of
+`private.task_deps_satisfied`, applied once on the server: sending ids instead
+would put a second copy of that predicate in a React component, where it would
+drift silently. See
+[business-projects-workflow.md](../30-modules/business-projects-workflow.md).
+
 **The room resolves to its projects through the plan card, never through
 `rooms.project_id`**, for the reason `roomForProject` already records and
 `20260827110000` has now applied to the RLS predicate as well: that column is

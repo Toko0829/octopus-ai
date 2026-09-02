@@ -133,8 +133,31 @@ describe('summariseProjects', () => {
     expect(p.doneCount).toBe(0);
   });
 
+  /**
+   * The set is a copy of `private.task_deps_satisfied`, whose predicate is
+   * `state not in ('approved','payout_pending','paid','done')`. It is spelled
+   * out here rather than described, because the copy drifted once already:
+   * `payout_pending` was missing for the whole life of the payout slice, so a
+   * step the scheduler had already unblocked and the panel already labelled
+   * "Done, payment pending" was counted as unfinished on the project list.
+   * Three surfaces, two answers, and nothing failing.
+   */
   it('keeps DONE_STATES aligned with what the scheduler unblocks on', () => {
-    expect([...DONE_STATES].sort()).toEqual(['approved', 'done', 'paid']);
+    expect([...DONE_STATES].sort()).toEqual(['approved', 'done', 'paid', 'payout_pending']);
+  });
+
+  it('counts a step whose payout is still moving as done', () => {
+    const p = one(
+      summariseProjects(
+        [project('p1', '2026-08-01T00:00:00Z')],
+        [
+          { project_id: 'p1', state: 'payout_pending' },
+          { project_id: 'p1', state: 'pending' },
+        ],
+        [],
+      ),
+    );
+    expect(p.doneCount).toBe(1);
   });
 });
 
