@@ -1979,6 +1979,62 @@ a.work-action {
   color: var(--red-500);
 }
 
+/* A dispute freezes somebody's fee, so the consequence is stated before the
+   click rather than discovered after it. Amber is "this needs your attention"
+   and the sentence carries the meaning on its own (rule 15). */
+.work-resolve-note {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--lh-ui, 1.4);
+  color: var(--warn);
+}
+
+/* ---------------------------------------------- rating a finished deal
+
+   Only after the money moved, which is the same gate `submit_rating` enforces.
+   The scale is numbers rather than glyph shapes, so a screen reader announces a
+   rating instead of counting stars, and so the pressed state is legible without
+   relying on a fill colour. */
+
+.work-stars {
+  display: flex;
+  gap: 4px;
+}
+
+.work-star {
+  appearance: none;
+  min-width: 32px;
+  padding: 4px 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-state),
+    color var(--dur-fast) var(--ease-state);
+}
+
+.work-star:hover:not(:disabled) {
+  background: var(--state-hover);
+  color: var(--text);
+}
+
+.work-star[aria-pressed='true'] {
+  background: var(--state-selected);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.work-rated {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
 /* ---------------------------------------------- connected accounts
 
    Sits in the room rail (`.context`) rather than in the project panel. It was

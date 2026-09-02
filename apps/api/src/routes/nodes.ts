@@ -60,6 +60,7 @@ import { ARTIFACTS_BUCKET } from '../lib/artifact-files';
 import { SIGNED_URL_TTL_SECONDS, signedUrlExpiresAt } from './projects';
 import { postSystemMessage } from '../lib/system-message';
 import { roomForProject } from '../lib/room-for-project';
+import { DISPUTABLE_BY_NODE } from '../lib/task-resolution';
 
 /**
  * A node's own record, and nothing else in the marketplace.
@@ -1175,6 +1176,182 @@ export async function nodeRoutes(app: FastifyInstance, opts: NodeRoutesOptions):
       } catch (err) {
         request.log.error({ err, artifactId: params.data.artifactId }, 'proof file url failed');
         return fail(reply, 500, 'internal_error', 'Could not make a link for that file.');
+      }
+    },
+  );
+
+  /**
+   * **The node contests a rejection**, and it is the only act in this system a
+   * node performs against the owner.
+   *
+   * `rejected` is the one state where a person has told a node no. Until this
+   * route their options were to redo the work they believe was fine, or to stop
+   * — and stopping is read by the no-show sweep as their failure, which
+   * reassigns the step and loses them both the work and the fee. That is the
+   * asymmetry this closes: the owner has had a dispute path since the same push,
+   * from three states, and a market where only one side can escalate is one
+   * where the other side's only argument is to walk away.
+   *
+   * The state list is `DISPUTABLE_BY_NODE` rather than a literal, so this route
+   * and `public.raise_dispute` cannot drift about which states qualify.
+   */
+  app.post(
+    '/api/node/engagements/:engagementId/dispute',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = z.object({ engagementId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'Bad engagement id.');
+
+      const body = z
+        .object({ reason: z.string().trim().min(1).max(4000) })
+        .safeParse(request.body ?? {});
+      if (!body.success) {
+        return fail(
+          reply,
+          400,
+          'bad_request',
+          'Say why you disagree. An operator reads this, and so does the client.',
+        );
+      }
+
+      const found = await requireNode(request, reply);
+      if (!found) return reply;
+
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+      const admin = createServiceClient(opts.supabase);
+
+      try {
+        // Read as the caller: an engagement that is not theirs is a 404, never a
+        // 403, on this route group's standing rule.
+        const engagement = await readOwnEngagement(db, params.data.engagementId, found.userId);
+        if (!engagement) return fail(reply, 404, 'not_found', 'Engagement not found.');
+        if (engagement.ended_at) {
+          return fail(
+            reply,
+            409,
+            'conflict',
+            'That deal has already ended, so there is nothing to dispute.',
+          );
+        }
+
+        const task = await readEngagedTask(admin, engagement.task_id);
+        if (!task) return fail(reply, 404, 'not_found', 'Step not found.');
+        if (!DISPUTABLE_BY_NODE.has(task.state)) {
+          return fail(
+            reply,
+            409,
+            'conflict',
+            'Only work the client has sent back can be disputed. If it is still with you, finish it or hand it over.',
+          );
+        }
+
+        const { data: disputeId, error: rpcError } = await admin.rpc('raise_dispute', {
+          p_task_id: task.id,
+          p_raised_by: found.userId,
+          p_raised_role: 'node',
+          p_reason: body.data.reason,
+          p_evidence: null,
+        });
+        if (rpcError) {
+          if (pgCode(rpcError) === PG_CHECK_VIOLATION) {
+            return fail(reply, 409, 'conflict', rpcError.message);
+          }
+          throw rpcError;
+        }
+
+        // **The room is told, and the node's thread is not**, because a dispute
+        // is decided by an operator rather than negotiated between the parties,
+        // and a line in the working thread would invite exactly that
+        // negotiation. The owner learns it where they read everything else about
+        // the project.
+        const roomId = await roomForProject(admin, engagement.project_id);
+        if (roomId) {
+          await postSystemMessage(
+            admin,
+            request.log,
+            roomId,
+            `dispute-raised:${disputeId as string}`,
+            'The expert has disputed the decision on this step. An operator is reviewing it, and payment is on hold.',
+          );
+        }
+
+        request.log.info(
+          { engagementId: engagement.id, nodeId: found.userId, disputeId },
+          'node disputed a rejection',
+        );
+        return reply.code(200).send({ disputeId });
+      } catch (err) {
+        request.log.error(
+          { err, engagementId: params.data.engagementId },
+          'could not raise a node dispute',
+        );
+        return fail(reply, 500, 'internal_error', 'Could not raise that dispute.');
+      }
+    },
+  );
+
+  /**
+   * **The node rates the client**, on a deal that finished cleanly.
+   *
+   * The owner's half lives on the project panel; this is the other side of the
+   * same table. Both land in this slice because a market where only the buyer
+   * rates puts all the reputational risk on the individual being paid.
+   *
+   * Every rule that matters is in `public.submit_rating` and is not repeated
+   * here: the direction and the ratee are **derived from the engagement**, so
+   * this route cannot mislabel a score even if it tried, and the
+   * `outcome = 'completed'` gate is enforced there. What this route adds is a
+   * readable refusal before the round trip.
+   */
+  app.post(
+    '/api/node/engagements/:engagementId/rating',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = z.object({ engagementId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'Bad engagement id.');
+
+      const body = z
+        .object({
+          score: z.number().int().min(1).max(5),
+          comment: z.string().trim().max(2000).optional(),
+        })
+        .safeParse(request.body ?? {});
+      if (!body.success) return fail(reply, 400, 'bad_request', 'Give a rating from 1 to 5.');
+
+      const found = await requireNode(request, reply);
+      if (!found) return reply;
+
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+      const admin = createServiceClient(opts.supabase);
+
+      try {
+        const engagement = await readOwnEngagement(db, params.data.engagementId, found.userId);
+        if (!engagement) return fail(reply, 404, 'not_found', 'Engagement not found.');
+
+        const { data: ratingId, error: rpcError } = await admin.rpc('submit_rating', {
+          p_engagement_id: engagement.id,
+          p_rater: found.userId,
+          p_score: body.data.score,
+          p_comment: body.data.comment ?? null,
+        });
+        if (rpcError) {
+          if (pgCode(rpcError) === PG_CHECK_VIOLATION) {
+            return fail(reply, 409, 'conflict', rpcError.message);
+          }
+          throw rpcError;
+        }
+
+        request.log.info(
+          { engagementId: engagement.id, nodeId: found.userId, score: body.data.score },
+          'node rated a client',
+        );
+        return reply.code(200).send({ ratingId });
+      } catch (err) {
+        request.log.error(
+          { err, engagementId: params.data.engagementId },
+          'could not record a node rating',
+        );
+        return fail(reply, 500, 'internal_error', 'Could not record that rating.');
       }
     },
   );

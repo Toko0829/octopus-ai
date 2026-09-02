@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { escrowKey, payoutKey, refundKey } from './keys';
+import { disputeReleaseKey, escrowKey, payoutKey, refundKey } from './keys';
 
 const OFFER = 'e0000000-0000-4000-8000-000000000001';
 const HOLD = '11111111-1111-4111-8111-111111111111';
@@ -66,5 +66,41 @@ describe('payoutKey', () => {
 
   it('is stable across calls, which is the whole mechanism', () => {
     expect(payoutKey(ENGAGEMENT)).toBe(payoutKey(ENGAGEMENT));
+  });
+});
+
+describe('disputeReleaseKey', () => {
+  const DISPUTE = 'a0000000-0000-4000-8000-00000000000d';
+
+  it('is prefixed apart from every other key in the namespace', () => {
+    // `escrow_holds.idempotency_key` is one namespace shared by every writer, so
+    // a bare uuid would let two different acts collide on the same string.
+    expect(disputeReleaseKey(DISPUTE)).toBe(`dispute-release:${DISPUTE}`);
+    expect(disputeReleaseKey(DISPUTE)).not.toBe(escrowKey(DISPUTE));
+    expect(disputeReleaseKey(DISPUTE)).not.toBe(refundKey(DISPUTE));
+    expect(disputeReleaseKey(DISPUTE)).not.toBe(payoutKey(DISPUTE));
+  });
+
+  it('matches the string public.resolve_dispute builds in SQL', () => {
+    // The insert has to happen inside the resolution's transaction, so the
+    // arithmetic exists in two languages and the two have to agree. The pgTAP
+    // half is in `marketplace_disputes.sql`; this is the other half.
+    expect(disputeReleaseKey(DISPUTE)).toBe('dispute-release:' + DISPUTE);
+  });
+
+  it('is derived from the dispute rather than the task, so a re-dispute cannot replay', () => {
+    // The case that decides this, and the reason it is not keyed on the task or
+    // the engagement. A step can be disputed, resolved back to `in_progress`
+    // through `rejected`, worked again and disputed a SECOND time, all under one
+    // engagement. A key derived from either id would collide on that second
+    // settlement and read back the first one's hold, paying against money that
+    // was already settled. `disputes` has a partial unique index on
+    // `(task_id) where resolved_at is null`, so every new grievance is a new row
+    // and the epoch is inherited rather than counted.
+    expect(disputeReleaseKey('dispute-first')).not.toBe(disputeReleaseKey('dispute-second'));
+  });
+
+  it('is stable across calls, which is the whole mechanism', () => {
+    expect(disputeReleaseKey(DISPUTE)).toBe(disputeReleaseKey(DISPUTE));
   });
 });

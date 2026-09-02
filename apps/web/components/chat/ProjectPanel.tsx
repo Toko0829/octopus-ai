@@ -9,9 +9,11 @@ import type {
   TaskState,
 } from '@octopus/contracts';
 import {
+  disputeStep,
   getArtifactFileUrl,
   getProject,
   getProjects,
+  rateExpert,
   requestReplan,
   resolveStep,
   resumeCampaign,
@@ -802,6 +804,23 @@ function TaskRow({
   // different questions: `stuck` means the plan cannot continue without you,
   // this means somebody is waiting to be paid.
   const reviewable = task.state === 'proof_submitted';
+  // **The three states an owner can freeze from**, and the list is the one
+  // `DISPUTABLE_BY_OWNER` holds in `apps/api/src/lib/task-resolution.ts` and
+  // `public.raise_dispute` holds in SQL. All three sit before the transfer,
+  // which is what makes disputing them mean anything: `payouts.transfer_id` is
+  // write-once and money that has left cannot be recalled by a state change.
+  //
+  // `proof_submitted` is deliberately absent even though the step is contested
+  // there too: that is what "Send it back" is for, and offering both on one
+  // screen would invite escalating to an operator what a sentence would fix.
+  const disputable =
+    task.state === 'escrow_funded' ||
+    task.state === 'in_progress' ||
+    task.state === 'payout_pending';
+  // A finished deal this owner has not scored yet. `paidAt` is set only when the
+  // engagement ended `completed`, which is exactly the gate `submit_rating`
+  // enforces, so the button never appears on a deal the RPC would refuse.
+  const rateable = task.engagement?.paidAt != null;
 
   return (
     <li className="work-task">
@@ -872,6 +891,16 @@ function TaskRow({
       {canAct && stuck && <ResolveStep task={task} projectId={projectId} onResolved={onResolved} />}
       {canAct && reviewable && (
         <ReviewWork task={task} projectId={projectId} onResolved={onResolved} />
+      )}
+      {canAct && disputable && (
+        <DisputeStep task={task} projectId={projectId} onResolved={onResolved} />
+      )}
+      {canAct && rateable && task.engagement && (
+        <RateExpert
+          projectId={projectId}
+          engagementId={task.engagement.engagementId}
+          who={task.engagement.nodeDisplayName ?? 'the expert'}
+        />
       )}
 
       {delivered && (
@@ -1119,6 +1148,188 @@ function ReviewWork({
           disabled={busy !== null || text.trim().length === 0}
         >
           {busy === 'reject_work' ? 'Sending back' : 'Send it back'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The owner says the deal has gone wrong, and the money stops.
+ *
+ * **Closed by default and two clicks deep**, unlike every other action on a
+ * step. `ResolveStep` and `ReviewWork` both put their primary action on the
+ * surface, because those are ordinary things to do to a step. Raising a dispute
+ * is not: it freezes somebody's fee, pulls a stranger into the project to read
+ * both sides, and is the only owner action here that another person has to
+ * resolve. A button somebody could hit while meaning to hit "Send it back"
+ * would be the wrong shape for that.
+ *
+ * The reason is required and the button stays disabled without it, which is the
+ * same rule `reject_work` follows and for a stronger version of its reason: an
+ * operator decides on this text, and the expert answers it.
+ */
+function DisputeStep({
+  task,
+  projectId,
+  onResolved,
+}: {
+  task: Task;
+  projectId: string;
+  onResolved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <div className="work-resolve">
+        <button type="button" className="work-action quiet" onClick={() => setOpen(true)}>
+          Something is wrong
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="work-resolve">
+      <label className="work-resolve-label" htmlFor={`dispute-${task.id}`}>
+        What has gone wrong? An operator reads this and decides, and the expert can answer it.
+      </label>
+      <textarea
+        id={`dispute-${task.id}`}
+        className="work-resolve-input"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={4}
+        disabled={busy}
+      />
+      <p className="work-resolve-note">
+        Payment stops while this is open. Nobody is paid and nothing is refunded until it is
+        decided.
+      </p>
+      {error && (
+        <p className="work-resolve-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="work-resolve-actions">
+        <button type="button" className="btn-ghost" onClick={() => setOpen(false)} disabled={busy}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={busy || text.trim().length === 0}
+          onClick={async () => {
+            setBusy(true);
+            setError(null);
+            try {
+              await disputeStep(projectId, task.id, text.trim());
+              onResolved();
+            } catch (err) {
+              // Their writing stays on screen, for `ResolveStep`'s reason.
+              setError(err instanceof Error ? err.message : 'That did not go through.');
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'Raising' : 'Raise a dispute'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The owner scores the expert on a deal that finished cleanly.
+ *
+ * **Only after `paidAt`**, which is set only for an engagement that ended
+ * `completed`. That is the same gate `public.submit_rating` enforces, so this
+ * never offers a control the RPC would refuse: a cancelled or reassigned deal
+ * delivered nothing, and a `disputed_resolved` one has already been decided by
+ * an operator, whose finding is a better record than a number out of five.
+ *
+ * Once submitted the form is replaced rather than left editable, because
+ * `ratings` is append-only including for `service_role`: there is no edit to
+ * offer, and a control that looked editable would be lying.
+ */
+function RateExpert({
+  projectId,
+  engagementId,
+  who,
+}: {
+  projectId: string;
+  engagementId: string;
+  who: string;
+}) {
+  const [score, setScore] = useState<number | null>(null);
+  const [comment, setComment] = useState('');
+  const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (done) {
+    return <p className="work-rated">Thank you. Your rating is recorded.</p>;
+  }
+
+  return (
+    <div className="work-resolve">
+      <p className="work-resolve-label">How did {who} do?</p>
+      <div className="work-stars" role="group" aria-label="Rating out of five">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button
+            key={n}
+            type="button"
+            className="work-star"
+            aria-pressed={score === n}
+            aria-label={`${n} out of 5`}
+            disabled={busy}
+            onClick={() => setScore(n)}
+          >
+            {/* The number is the label, not only the shape: a rating read out by
+                a screen reader should not be a count of glyphs. */}
+            {n}
+          </button>
+        ))}
+      </div>
+      <textarea
+        className="work-resolve-input"
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        rows={2}
+        placeholder="Anything worth adding (optional)"
+        disabled={busy}
+      />
+      {error && (
+        <p className="work-resolve-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="work-resolve-actions">
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={busy || score === null}
+          onClick={async () => {
+            if (score === null) return;
+            setBusy(true);
+            setError(null);
+            try {
+              await rateExpert(projectId, engagementId, {
+                score,
+                ...(comment.trim() ? { comment: comment.trim() } : {}),
+              });
+              setDone(true);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : 'That did not go through.');
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'Recording' : 'Record rating'}
         </button>
       </div>
     </div>

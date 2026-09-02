@@ -23,9 +23,30 @@ readme_triggers:
   - 'apps/**/src/routes/**' # public API surface
 
 mappings:
+  # **More specific than `apps/web/**` and listed before it**, because the ops
+  # console is not a workspace surface: it renders other people's money to
+  # somebody who is party to none of it, and its owning doc is admin-ops.md
+  # rather than the design-system pair. The design docs stay on `also_touch`
+  # because it is still the first Dark Command Deck surface in the repository.
+  - path: 'apps/web/app/ops/**'
+    owner: 'docs/30-modules/admin-ops.md'
+    also_touch: ['docs/20-design/design-system.md']
+
   - path: 'apps/web/**'
     owner: 'docs/30-modules/design-system-frontend.md'
     also_touch: ['docs/30-modules/chat-discord.md', 'docs/20-design/design-system.md']
+
+  # The ops routes and the role check that guards them, ahead of the general
+  # `apps/api/**` entry for the same reason the web one is. `require-ops.ts` is
+  # the first authorisation in this system that reads `profiles.role`, so
+  # auth-identity.md is an owner here rather than a courtesy touch.
+  - path: 'apps/api/src/routes/ops.ts'
+    owner: 'docs/30-modules/admin-ops.md'
+    also_touch: ['docs/30-modules/payments-billing.md']
+
+  - path: 'apps/api/src/plugins/require-ops.ts'
+    owner: 'docs/30-modules/admin-ops.md'
+    also_touch: ['docs/30-modules/auth-identity.md']
 
   - path: 'apps/api/**'
     owner: 'docs/10-architecture/architecture.md'
@@ -171,7 +192,12 @@ manual_review:
     owner: 'docs/30-modules/payments-billing.md'
   - area: 'notifications fan-out'
     owner: 'docs/30-modules/notifications.md'
-  - area: 'admin / ops consoles'
+  # **Narrowed by slice 8.** The dispute console is real code now and is mapped
+  # above, so it is enforced rather than reviewed. What stays manual is the six
+  # consoles admin-ops.md still specifies and nothing has built: moderation, node
+  # ops, payments reconciliation, task-queue ops, RAG source ops and the
+  # audit-trail explorer.
+  - area: 'admin / ops consoles other than disputes'
     owner: 'docs/30-modules/admin-ops.md'
   - area: 'analytics / metrics'
     owner: 'docs/30-modules/analytics.md'

@@ -55,6 +55,8 @@ let threadRows: Record<string, unknown>[];
 let embedRow: Record<string, unknown> | null;
 /** What `accept_offer` answers. Set to an error to exercise the raise path. */
 let rpcResult: { data: unknown; error: { code: string; message: string } | null };
+/** Per-rpc failures, keyed by function name. Used by the dispute and rating routes. */
+let rpcFailures: Record<string, { code: string; message: string }>;
 
 function client() {
   return {
@@ -165,6 +167,11 @@ function client() {
     async rpc(name: string, args: Record<string, unknown>) {
       rpcCalls.push({ name, args });
       if (name === 'accept_offer') return rpcResult;
+      // Per-function failure injection, added for the two slice-8 rpcs. Every
+      // deliberate refusal in this domain arrives as a check violation, and the
+      // routes are supposed to hand that message back rather than summarise it.
+      const failure = rpcFailures[name];
+      if (failure) return { data: null, error: failure };
       return { data: 'verified', error: null };
     },
   };
@@ -227,6 +234,7 @@ beforeEach(() => {
   threadRows = [];
   embedRow = null;
   rpcResult = { data: null, error: null };
+  rpcFailures = {};
 });
 
 describe('who can reach any of this', () => {
@@ -1008,5 +1016,289 @@ describe('GET /api/node/engagements', () => {
     });
 
     expect(res.statusCode).toBe(404);
+  });
+});
+
+/**
+ * Slice 8. The node's two new routes, and the first of them is the only act in
+ * this system a node performs **against** the owner.
+ */
+
+/** An engagement this node holds, live, on the step below. */
+function anEngagement(over: Record<string, unknown> = {}) {
+  return {
+    id: ENGAGEMENT,
+    task_id: TASK_ID,
+    project_id: PROJECT_ID,
+    node_id: NODE,
+    ended_at: null,
+    ...over,
+  };
+}
+
+/** The step behind it, in whatever state a test needs. */
+function aStep(state: string) {
+  return [
+    {
+      id: TASK_ID,
+      project_id: PROJECT_ID,
+      state,
+      title: 'Write the launch emails',
+      acceptance_criteria: [],
+    },
+  ];
+}
+
+describe('POST /api/node/engagements/:engagementId/dispute', () => {
+  function world(state = 'rejected') {
+    profileRow = anAcceptingNode();
+    engagementRow = anEngagement();
+    taskRows = aStep(state);
+    projectRow = { source_embed_id: 'embed-1' };
+    embedRow = { room_id: ROOM };
+  }
+
+  const payload = { reason: 'The brief asked for three variants and I delivered three.' };
+
+  it('lets a node contest work the client sent back', async () => {
+    world('rejected');
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/dispute`,
+      headers: as(NODE),
+      payload,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const call = rpcCalls.find((c) => c.name === 'raise_dispute');
+    expect(call?.args.p_raised_role).toBe('node');
+    expect(call?.args.p_raised_by).toBe(NODE);
+    expect(call?.args.p_task_id).toBe(TASK_ID);
+  });
+
+  it('refuses from every state but rejected', async () => {
+    // `rejected` is the only point where a person has told the node no. Widening
+    // this would let a node freeze work nobody has judged yet, including work
+    // they simply have not finished.
+    for (const state of [
+      'escrow_funded',
+      'in_progress',
+      'proof_submitted',
+      'in_review',
+      'approved',
+      'payout_pending',
+      'paid',
+      'done',
+    ]) {
+      world(state);
+      rpcCalls = [];
+      const app = await build();
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/node/engagements/${ENGAGEMENT}/dispute`,
+        headers: as(NODE),
+        payload,
+      });
+      expect(res.statusCode, state).toBe(409);
+      expect(rpcCalls, state).toEqual([]);
+    }
+  });
+
+  it('answers 404 for an engagement that belongs to somebody else', async () => {
+    // Read as the caller through `engagements_select_node`, so a stranger's deal
+    // returns no row and the route never has to tell "not yours" from "not
+    // there". Neither answer confirms the other person's deal exists.
+    world();
+    engagementRow = null;
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/dispute`,
+      headers: as(STRANGER),
+      payload,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it('refuses a deal that has already ended', async () => {
+    world();
+    engagementRow = anEngagement({ ended_at: '2026-09-08T10:00:00Z' });
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/dispute`,
+      headers: as(NODE),
+      payload,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it('requires a stated grievance', async () => {
+    // An operator reads this to decide and the client has to be able to answer
+    // it. A dispute with no words is a freeze nobody can resolve.
+    world();
+    const app = await build();
+    for (const reason of ['', '   ']) {
+      rpcCalls = [];
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/node/engagements/${ENGAGEMENT}/dispute`,
+        headers: as(NODE),
+        payload: { reason },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(rpcCalls).toEqual([]);
+    }
+  });
+
+  it('tells the room and not the working thread', async () => {
+    // A dispute is decided by an operator rather than negotiated between the
+    // parties, and a line in the shared thread would invite exactly that
+    // negotiation. The owner learns it where they read everything else.
+    world();
+    const app = await build();
+    await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/dispute`,
+      headers: as(NODE),
+      payload,
+    });
+
+    const messages = written.filter((w) => w.table === 'messages');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.values?.room_id).toBe(ROOM);
+    expect(messages[0]!.values?.thread_id).toBeUndefined();
+    expect(messages[0]!.values?.author_kind).toBe('system');
+    expect(String(messages[0]!.values?.body)).not.toContain('—');
+  });
+
+  it('hands back the database refusal rather than a summary of it', async () => {
+    world();
+    rpcFailures.raise_dispute = {
+      code: '23514',
+      message: 'a node may only dispute from rejected',
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/dispute`,
+      headers: as(NODE),
+      payload,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toContain('a node may only dispute from rejected');
+  });
+
+  it('is refused to somebody who is not a node at all', async () => {
+    world();
+    profileRow = null;
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/dispute`,
+      headers: as(STRANGER),
+      payload,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(rpcCalls).toEqual([]);
+  });
+});
+
+describe('POST /api/node/engagements/:engagementId/rating', () => {
+  function world() {
+    profileRow = anAcceptingNode();
+    engagementRow = anEngagement({ ended_at: '2026-09-08T10:00:00Z' });
+  }
+
+  it('records a score the node gave the client', async () => {
+    world();
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/rating`,
+      headers: as(NODE),
+      payload: { score: 5, comment: 'Clear brief, quick answers.' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const call = rpcCalls.find((c) => c.name === 'submit_rating');
+    expect(call?.args.p_engagement_id).toBe(ENGAGEMENT);
+    expect(call?.args.p_rater).toBe(NODE);
+    expect(call?.args.p_score).toBe(5);
+  });
+
+  it('sends no direction and no ratee, because the database derives both', async () => {
+    // The whole reason this route cannot mislabel a score. `submit_rating` reads
+    // the engagement to decide which side is rating which, so there is no
+    // argument a caller could get wrong or lie about.
+    world();
+    const app = await build();
+    await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/rating`,
+      headers: as(NODE),
+      payload: { score: 4, direction: 'owner_of_node', rateeId: STRANGER },
+    });
+
+    const call = rpcCalls.find((c) => c.name === 'submit_rating');
+    expect(Object.keys(call?.args ?? {}).sort()).toEqual([
+      'p_comment',
+      'p_engagement_id',
+      'p_rater',
+      'p_score',
+    ]);
+  });
+
+  it('refuses a score outside one to five, and a fractional one', async () => {
+    world();
+    const app = await build();
+    for (const score of [0, 6, 3.5, -1]) {
+      rpcCalls = [];
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/node/engagements/${ENGAGEMENT}/rating`,
+        headers: as(NODE),
+        payload: { score },
+      });
+      expect(res.statusCode, String(score)).toBe(400);
+      expect(rpcCalls, String(score)).toEqual([]);
+    }
+  });
+
+  it('answers 404 for an engagement that belongs to somebody else', async () => {
+    world();
+    engagementRow = null;
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/rating`,
+      headers: as(STRANGER),
+      payload: { score: 5 },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it('passes the completed-deal gate through rather than second-guessing it', async () => {
+    // `submit_rating` gates on `outcome = 'completed'`, which is what keeps a
+    // `disputed_resolved` deal readable and unrateable. The route does not
+    // duplicate that check; it hands back the refusal.
+    world();
+    rpcFailures.submit_rating = {
+      code: '23514',
+      message: 'only a completed engagement can be rated',
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/node/engagements/${ENGAGEMENT}/rating`,
+      headers: as(NODE),
+      payload: { score: 5 },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toContain('only a completed engagement can be rated');
   });
 });

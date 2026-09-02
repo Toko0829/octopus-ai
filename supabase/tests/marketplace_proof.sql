@@ -54,7 +54,7 @@
 
 begin;
 
-select extensions.plan(34);
+select extensions.plan(35);
 
 -- ---------------------------------------------------------------- fixtures
 
@@ -186,13 +186,30 @@ select extensions.ok(not private.task_transition_allowed('claimed', 'matching'),
   'claimed to matching is still dropped (ADR-0019). Slice 6 is where that question reopened, '
   'and the producer leaves from escrow_funded or in_progress exactly as the ADR predicted');
 
+-- **Split, and half of it inverted, because slice 8 changed the fact.** This was
+-- one four-way conjunction asserting that neither `failed` nor `disputed` was
+-- reachable from the two working states. The `failed` half is unchanged and
+-- still right. The `disputed` half stopped being true when `20260908120000`
+-- restored the arcs and `20260908124000` gave them a producer, so it is
+-- **inverted rather than deleted** (`20260904121000:113-119`): an assertion that
+-- pinned a decision should still be here saying the decision was taken.
+--
+-- The conjunction had to be split to do it. That is the cost of asserting four
+-- facts in one `ok`, recorded here rather than repeated: a conjunction cannot be
+-- half-inverted, so the whole thing has to be rewritten the first time any part
+-- of it changes.
+
 select extensions.ok(
   not private.task_transition_allowed('escrow_funded', 'failed')
-  and not private.task_transition_allowed('in_progress', 'failed')
-  and not private.task_transition_allowed('escrow_funded', 'disputed')
-  and not private.task_transition_allowed('in_progress', 'disputed'),
-  'no new path to failed or disputed: failed is terminal and blocks dependents (ADR-0018), and '
-  'a disputed task with no ops console is the escalated defect on purpose (slice 8)');
+  and not private.task_transition_allowed('in_progress', 'failed'),
+  'no path to failed from the working states: failed is terminal and blocks dependents (ADR-0018)');
+
+select extensions.ok(
+  private.task_transition_allowed('escrow_funded', 'disputed')
+  and private.task_transition_allowed('in_progress', 'disputed'),
+  'both working states now reach disputed, because slice 8 built the ops console that can move a '
+  'task out of it. Before that console existed these arcs were deliberately absent, which is the '
+  'escalated defect this repository refuses to reproduce');
 
 -- ------------------------------------- acceptance freezes the deadline (3)
 

@@ -32,7 +32,9 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const gated =
-    request.nextUrl.pathname.startsWith('/app') || request.nextUrl.pathname.startsWith('/node');
+    request.nextUrl.pathname.startsWith('/app') ||
+    request.nextUrl.pathname.startsWith('/node') ||
+    request.nextUrl.pathname.startsWith('/ops');
 
   if (!user && gated) {
     const signIn = request.nextUrl.clone();
@@ -55,5 +57,12 @@ export const config = {
   // `/node` is gated the same way `/app` is. It is a signed-in surface for a
   // person somebody invited, not a public sign-up: the invite is a row only an
   // operator can create, so there is nothing here for a stranger to reach.
-  matcher: ['/app/:path*', '/node/:path*', '/sign-in', '/api/bff/:path*'],
+  //
+  // `/ops` is gated here for the session and **again, differently, in the page**:
+  // this layer only knows whether somebody is signed in, and being an operator is
+  // `profiles.role`, which the session cookie does not carry. The page asks the
+  // API, which reads the column. Neither check is sufficient alone and the
+  // ordering is deliberate: a signed-out visitor is sent to sign in rather than
+  // being told an ops surface exists and refused.
+  matcher: ['/app/:path*', '/node/:path*', '/ops/:path*', '/sign-in', '/api/bff/:path*'],
 };

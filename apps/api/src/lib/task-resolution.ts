@@ -11,7 +11,8 @@ import type { TaskState } from '@octopus/contracts';
  * rather than a 500 carrying a Postgres error.
  */
 
-export type TaskAction = 'answer' | 'retry' | 'find_expert' | 'approve_work' | 'reject_work';
+export type TaskAction =
+  'answer' | 'retry' | 'find_expert' | 'approve_work' | 'reject_work' | 'dispute';
 
 /**
  * `answer` means the owner did the work themselves, so the step is done.
@@ -75,6 +76,56 @@ const MATCHABLE: ReadonlySet<string> = new Set<TaskState>(['escalated']);
  */
 const REVIEWABLE: ReadonlySet<string> = new Set<TaskState>(['proof_submitted']);
 
+/**
+ * `dispute` means the owner says the deal has gone wrong, and the money stops.
+ *
+ * **Three states, and each is a different grievance the owner can still act on.**
+ * `escrow_funded` is paid for and never started, `in_progress` is happening and
+ * going wrong, and `payout_pending` is the last moment before the sweep sends
+ * the fee. All three sit before the transfer, which is what makes disputing them
+ * meaningful: `payouts.transfer_id` is write-once and money that has left cannot
+ * be recalled by a state change.
+ *
+ * **`proof_submitted` is deliberately absent, and it is the interesting
+ * omission.** Work handed over and not yet judged is not a dispute, it is a
+ * review, and the owner already has `reject_work` with a required note — a
+ * cheaper, more informative act that returns the step to the node with something
+ * to fix. Offering "dispute" beside "send back" on the same screen would invite
+ * an owner to escalate to an operator what a sentence would have solved. If the
+ * rejection is then contested, `rejected -> disputed` is the node's arc.
+ *
+ * **`approved` is absent for the same family of reasons.** It is the state the
+ * payout sweep picks up first, and an owner who changes their mind has
+ * `payout_pending` one tick later. The window is narrow on purpose: approving is
+ * the payout authorisation ([ADR-0013](../../../../docs/40-adr/0013-approving-a-campaign-publishes-it.md)),
+ * and a long undo on an authorisation weakens what the authorisation means.
+ *
+ * The database enforces the same list in `public.raise_dispute`, on ADR-0011's
+ * two-layer rule: this exists so a person gets a readable refusal before
+ * anything is written, and that exists because it is the layer binding
+ * `service_role`.
+ */
+const DISPUTABLE_BY_OWNER: ReadonlySet<string> = new Set<TaskState>([
+  'escrow_funded',
+  'in_progress',
+  'payout_pending',
+]);
+
+/**
+ * The node's side of the same arc, and the only action in this system a node
+ * takes **against** the owner.
+ *
+ * One state, `rejected`, because that is the only point where a person has told
+ * a node no. Without it a node whose work was wrongly sent back has no recourse
+ * but to stop responding, which the no-show sweep then reads as their failure
+ * and reassigns the step away from them — losing them both the work and the fee
+ * for a decision they disagreed with and could not contest.
+ *
+ * Exported for the node routes, which check it the way the owner routes check
+ * the set above.
+ */
+export const DISPUTABLE_BY_NODE: ReadonlySet<string> = new Set<TaskState>(['rejected']);
+
 export interface Resolution {
   /** The state to move the task to. */
   to: TaskState;
@@ -134,6 +185,34 @@ export function resolveTask(state: TaskState, action: TaskAction, text: string):
       };
     }
     return { ok: true, resolution: { to: 'rejected', writesArtifact: true } };
+  }
+
+  if (action === 'dispute') {
+    if (!DISPUTABLE_BY_OWNER.has(state)) {
+      return {
+        ok: false,
+        reason:
+          state === 'proof_submitted'
+            ? 'That work is waiting for your review. Send it back with a note if it is not right, and raise a dispute only if that is contested.'
+            : 'That step is not at a point where a dispute would stop anything.',
+      };
+    }
+    // **A dispute must say what is wrong**, for the reason a rejection must.
+    // This one is stronger: the text freezes somebody's fee, an operator reads it
+    // to decide, and the other party has to be able to answer it. A dispute with
+    // no grievance is a freeze nobody can resolve.
+    if (!text.trim()) {
+      return {
+        ok: false,
+        reason:
+          'Say what has gone wrong. An operator reads this to decide, and so does the expert.',
+      };
+    }
+    // `to` is `disputed`, and `writesArtifact` is false: the grievance is a
+    // column on `disputes`, not a deliverable on the step. The route calls
+    // `raise_dispute` rather than moving the task itself, because the freeze and
+    // the record have to be one transaction.
+    return { ok: true, resolution: { to: 'disputed', writesArtifact: false } };
   }
 
   if (action === 'find_expert') {

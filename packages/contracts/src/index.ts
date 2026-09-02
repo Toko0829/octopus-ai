@@ -833,6 +833,15 @@ export const Task = z.object({
    */
   engagement: z
     .object({
+      /**
+       * The deal's own id, which the rating route is keyed on.
+       *
+       * Not the task's: a step that was taken, abandoned past its deadline and
+       * reassigned has **two** engagements with two different experts at two
+       * possibly different prices, and a rating belongs to the deal it is about
+       * rather than to the step both happened on.
+       */
+      engagementId: z.string().uuid(),
       nodeDisplayName: z.string().nullable(),
       agreedPrice: z.number(),
       currency: z.string(),
@@ -1443,9 +1452,214 @@ export const NodeEngagementResponse = z.object({
 });
 export type NodeEngagementResponse = z.infer<typeof NodeEngagementResponse>;
 
+/* ------------------------------------------------------------------------- *
+ * Disputes and ratings, and the operator's view of a dispute
+ *
+ * Mirrors `public.disputes`, `public.ratings` and the `/api/ops` reads. The
+ * vocabularies here are the SQL check constraints in `20260908122000` and
+ * `20260908127000`; if one of those constraints changes, this is the other place
+ * to change.
+ * ------------------------------------------------------------------------- */
+
 /**
- * **None of the `/api/node` routes appear in the ts-rest router below, and that
- * is deliberate rather than an omission.** The router is partial: it covers the
+ * The five ways a dispute ends. The four in admin-ops.md plus `rejection_upheld`,
+ * which that list predates because it answers a dispute only a node can raise.
+ */
+export const DisputeResolution = z.enum([
+  'released',
+  'refunded',
+  'partial',
+  'reassigned',
+  'rejection_upheld',
+]);
+export type DisputeResolution = z.infer<typeof DisputeResolution>;
+
+/** Which side raised it. Both parties can, from different states. */
+export const DisputeRaisedRole = z.enum(['owner', 'node']);
+export type DisputeRaisedRole = z.infer<typeof DisputeRaisedRole>;
+
+/**
+ * A dispute as either party sees it on their own surface.
+ *
+ * **`open` is derived, not stored** (`resolved_at is null`), matching the table:
+ * ADR-0016 keeps `tasks.state` as the only machine, so a status field here would
+ * be a second one that could disagree with it.
+ */
+export const Dispute = z.object({
+  id: z.string().uuid(),
+  taskId: z.string().uuid(),
+  engagementId: z.string().uuid(),
+  raisedRole: DisputeRaisedRole,
+  reason: z.string(),
+  /** Where the task was when it was raised. A resolution is unreadable without it. */
+  fromState: TaskState,
+  resolution: DisputeResolution.nullable(),
+  /** The deal's currency, both. Null on the resolutions that move no money. */
+  releaseAmount: z.number().nullable(),
+  refundAmount: z.number().nullable(),
+  resolutionNote: z.string().nullable(),
+  resolvedAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type Dispute = z.infer<typeof Dispute>;
+
+/** What the owner sends to freeze a step, and the node to contest a rejection. */
+export const RaiseDisputeBody = z.object({
+  reason: z.string().trim().min(1).max(4000),
+});
+export type RaiseDisputeBody = z.infer<typeof RaiseDisputeBody>;
+
+/**
+ * What an operator sends to end one.
+ *
+ * **Only the release amount is entered**, on a partial and nowhere else. The
+ * refund is derived as `hold − release` and shown before the operator confirms:
+ * two fields that must sum to a third are two ways to type a number that does
+ * not add up.
+ */
+export const ResolveDisputeBody = z.object({
+  resolution: DisputeResolution,
+  /** Required. `ops_actions.reason` is not null, so an unexplained decision cannot be recorded. */
+  reason: z.string().trim().min(1).max(4000),
+  releaseAmount: z.number().positive().optional(),
+});
+export type ResolveDisputeBody = z.infer<typeof ResolveDisputeBody>;
+
+/**
+ * One side's score on a finished deal.
+ *
+ * `direction` is derived by `public.submit_rating` from the engagement rather
+ * than sent, so a caller cannot mislabel a score. It appears here because both
+ * consoles render it.
+ */
+export const Rating = z.object({
+  id: z.string().uuid(),
+  engagementId: z.string().uuid(),
+  direction: z.enum(['owner_of_node', 'node_of_owner']),
+  score: z.number().int().min(1).max(5),
+  comment: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type Rating = z.infer<typeof Rating>;
+
+export const SubmitRatingBody = z.object({
+  score: z.number().int().min(1).max(5),
+  comment: z.string().trim().max(2000).optional(),
+});
+export type SubmitRatingBody = z.infer<typeof SubmitRatingBody>;
+
+/** A row in the operator's queue. */
+export const OpsDisputeSummary = z.object({
+  id: z.string().uuid(),
+  taskId: z.string().uuid(),
+  taskTitle: z.string(),
+  taskState: z.string().nullable(),
+  raisedRole: DisputeRaisedRole,
+  reason: z.string(),
+  fromState: z.string(),
+  resolution: DisputeResolution.nullable(),
+  releaseAmount: z.number().nullable(),
+  refundAmount: z.number().nullable(),
+  resolvedAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type OpsDisputeSummary = z.infer<typeof OpsDisputeSummary>;
+
+/**
+ * Everything an operator needs to decide one, without leaving the page.
+ *
+ * **The roster includes ended memberships**, and that is the point rather than
+ * an oversight: thread access is stamped with `expires_at` rather than deleted,
+ * "so the roster still records that this person was here, which is what a
+ * dispute reads" (`20260906124000`). This is the reader that was written for.
+ *
+ * **`ledger` is the first client-visible read of `ledger_entries` in this
+ * system.** That table has RLS with no policy and no client grant at all; these
+ * rows reach the browser only through `/api/ops`, as `service_role`, behind the
+ * `profiles.role` check in `require-ops.ts`.
+ */
+export const OpsDisputeDetail = z.object({
+  dispute: Dispute.extend({
+    projectId: z.string().uuid(),
+    raisedBy: z.string().uuid(),
+    raisedByName: z.string().nullable(),
+    evidence: z.string().nullable(),
+  }),
+  task: z
+    .object({
+      id: z.string().uuid(),
+      title: z.string(),
+      state: z.string(),
+      stage: z.string().nullable(),
+    })
+    .nullable(),
+  engagement: z
+    .object({
+      id: z.string().uuid(),
+      nodeId: z.string().uuid(),
+      nodeName: z.string().nullable(),
+      agreedPrice: z.number(),
+      currency: z.string(),
+      acceptedAt: z.string(),
+      deadlineAt: z.string().nullable(),
+      endedAt: z.string().nullable(),
+      outcome: z.string().nullable(),
+    })
+    .nullable(),
+  /** Every hold on the step, including the one a partial settlement minted. */
+  holds: z.array(
+    z.object({
+      id: z.string().uuid(),
+      amount: z.number(),
+      currency: z.string(),
+      state: z.string(),
+      createdAt: z.string(),
+    }),
+  ),
+  payouts: z.array(
+    z.object({
+      id: z.string().uuid(),
+      state: z.string(),
+      amount: z.number(),
+      currency: z.string(),
+      transferId: z.string().nullable(),
+      createdAt: z.string(),
+    }),
+  ),
+  ledger: z.array(
+    z.object({
+      account: z.string(),
+      debit: z.number(),
+      credit: z.number(),
+      currency: z.string(),
+      refId: z.string().uuid(),
+      createdAt: z.string(),
+    }),
+  ),
+  roster: z.array(
+    z.object({
+      userId: z.string().uuid(),
+      name: z.string().nullable(),
+      role: z.string(),
+      scope: z.string(),
+      /** Non-null means this person's access was ended. Shown, never filtered. */
+      expiresAt: z.string().nullable(),
+    }),
+  ),
+});
+export type OpsDisputeDetail = z.infer<typeof OpsDisputeDetail>;
+
+/** The role echo the `/ops` page gates on. */
+export const OpsIdentity = z.object({
+  userId: z.string().uuid(),
+  role: z.enum(['ops', 'admin']),
+});
+export type OpsIdentity = z.infer<typeof OpsIdentity>;
+
+/**
+ * **Neither the `/api/node` routes nor the `/api/ops` routes appear in the
+ * ts-rest router below, and that is deliberate rather than an omission.** The
+ * router is partial: it covers the
  * surfaces the browser client is generated from, and the node console calls its
  * three endpoints through the same BFF with the schemas above as the shared
  * shape. Adding them means deciding what the generated client should do about a
@@ -1453,6 +1667,13 @@ export type NodeEngagementResponse = z.infer<typeof NodeEngagementResponse>;
  * which is a decision worth taking on its own rather than as a side effect of
  * shipping acceptance. Every route still validates against these schemas in
  * `apps/api`, so there is one source of truth either way.
+ *
+ * The ops routes are out for a second reason on top of that one. Their
+ * authorisation is `profiles.role`, read from the database rather than carried
+ * by the token, and a generated client implies a caller who can hold that role
+ * — which every browser client can not. Leaving them as schemas keeps the type
+ * shared and the reachability an API-layer question, which is where
+ * `require-ops.ts` answers it.
  */
 
 const ProjectParams = z.object({ projectId: z.string().uuid() });

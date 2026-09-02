@@ -19,6 +19,7 @@ import {
   addNodeCredential,
   addNodeSkill,
   declineOffer,
+  disputeRejection,
   getMessages,
   getNodeEngagements,
   getNodeOffers,
@@ -26,6 +27,7 @@ import {
   submitProof,
   patchNode,
   postMessage,
+  rateClient,
   removeNodeSkill,
   revokeNodeCredential,
 } from '../../lib/api-client';
@@ -592,6 +594,16 @@ function WorkPanel({
           >
             {busy ? 'Starting' : state === 'rejected' ? 'Pick this back up' : 'Start work'}
           </button>
+          {/* **The only act in this system a node takes against the client**, and
+              it sits beside redoing the work rather than replacing it, because
+              redoing it is usually the right answer. `rejected` is the one state
+              where a person has told this node no; before this arc existed their
+              alternatives were to redo work they believe was fine, or to stop
+              answering, which the no-show sweep reads as their failure and
+              reassigns the step away from them. */}
+          {state === 'rejected' && (
+            <DisputeRejection engagementId={engagement.id} onChanged={onChanged} />
+          )}
         </div>
       )}
 
@@ -790,12 +802,160 @@ function Engagements({
                     {money(engagement.agreedPrice)} {engagement.currency}
                   </span>
                 )}
+                {/* **Rating is offered on `completed` and nothing else**, which
+                    is the gate `public.submit_rating` enforces rather than a
+                    guess this component makes. A reassigned or cancelled deal
+                    delivered nothing, and a `disputed_resolved` one has already
+                    been decided by an operator whose finding is a better record
+                    than a score collected from whoever lost. */}
+                {engagement.outcome === 'completed' && <RateClient engagementId={engagement.id} />}
               </li>
             ))}
           </ul>
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * The node contests a rejection.
+ *
+ * Closed by default and two clicks deep, on the same reasoning the owner's
+ * dispute control follows: this pulls an operator into the deal and freezes
+ * everything, and the ordinary answer to being sent back is to pick the work up
+ * again, which is the button beside it.
+ */
+function DisputeRejection({
+  engagementId,
+  onChanged,
+}: {
+  engagementId: string;
+  onChanged: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <button type="button" className="btn" onClick={() => setOpen(true)}>
+        I disagree with this
+      </button>
+    );
+  }
+
+  return (
+    <div className="node-dispute">
+      <label className="node-label" htmlFor={`node-dispute-${engagementId}`}>
+        Why do you disagree? An operator reads this and decides, and the client can answer it.
+      </label>
+      <textarea
+        id={`node-dispute-${engagementId}`}
+        className="node-input"
+        rows={3}
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        disabled={busy}
+      />
+      <p className="node-note">
+        Nothing moves while this is open. You are not paid and the client is not refunded until it
+        is decided.
+      </p>
+      {error && (
+        <p className="node-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="node-row">
+        <button type="button" className="btn" onClick={() => setOpen(false)} disabled={busy}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || reason.trim().length === 0}
+          onClick={async () => {
+            setBusy(true);
+            setError(null);
+            try {
+              await disputeRejection(engagementId, reason.trim());
+              await onChanged();
+            } catch (err) {
+              setError(err instanceof Error ? err.message : 'Could not raise that.');
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'Raising' : 'Raise a dispute'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The node scores the client, on a deal that finished cleanly.
+ *
+ * The other half of the owner's control on the project panel. Both land in this
+ * slice because a market where only the buyer rates puts all the reputational
+ * risk on the individual being paid, and the individuals being paid here are the
+ * whole supply side.
+ *
+ * Replaced rather than left editable once submitted: `ratings` is append-only
+ * including for `service_role`, so there is no edit to offer.
+ */
+function RateClient({ engagementId }: { engagementId: string }) {
+  const [score, setScore] = useState<number | null>(null);
+  const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (done) return <span className="node-history-rated">Rated</span>;
+
+  return (
+    <span className="node-history-rate">
+      <span className="node-stars" role="group" aria-label="Rate this client out of five">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button
+            key={n}
+            type="button"
+            className="node-star"
+            aria-pressed={score === n}
+            aria-label={`${n} out of 5`}
+            disabled={busy}
+            onClick={() => setScore(n)}
+          >
+            {n}
+          </button>
+        ))}
+      </span>
+      <button
+        type="button"
+        className="btn btn-small"
+        disabled={busy || score === null}
+        onClick={async () => {
+          if (score === null) return;
+          setBusy(true);
+          setError(null);
+          try {
+            await rateClient(engagementId, { score });
+            setDone(true);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Could not record that.');
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? 'Saving' : 'Rate'}
+      </button>
+      {error && (
+        <span className="node-error" role="alert">
+          {error}
+        </span>
+      )}
+    </span>
   );
 }
 
