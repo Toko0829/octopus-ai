@@ -13,7 +13,7 @@ import { planContextForProject, roomForProject } from './room-for-project';
  * state, because the scheduler only picks up `pending` tasks and would never see
  * this one again.
  *
- *     ai_running -> [draft] -> ai_self_check -> [review] -> approved
+ *     ai_running -> [draft] -> ai_self_check -> [review] -> approved -> done
  *                                                        -> ai_running (bounded re-do)
  *                                                        -> escalated
  *
@@ -32,9 +32,18 @@ import { planContextForProject, roomForProject } from './room-for-project';
  * failure is worth another attempt, and it refuses to retry a fabricated citation
  * on the grounds that asking again is how you get a second one.
  *
+ * **`done` is reached here and only here on the AI arm.** `settle_payout`
+ * produces it for a human step once the money has moved; an AI step owes nobody
+ * anything, so the same terminal state is two conditional writes apart. Without
+ * the second one an already-approved step stayed cancellable forever, which is
+ * the gap slice 7 recorded and declined to close from a marketplace slice.
+ *
  * NOT DURABLE. This runs in-process, like agent runs, so a crash mid-task leaves
  * it in `ai_running` with a `running` task_run. ADR-0001 puts it on a durable
- * backbone; until then a stuck `ai_running` task is the expected symptom.
+ * backbone; until then a stuck `ai_running` task is the expected symptom, and so
+ * is a step stranded at `approved` by a crash between the two writes above. That
+ * second symptom is exactly today's behaviour rather than a new one, and the
+ * sweep that would heal it belongs beside `reclaimLostRuns` on the ticker.
  */
 
 const MAX_ATTEMPTS = 2;
@@ -201,6 +210,40 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
 
     if (next === 'approved') {
       await transition(admin, taskId, 'approved', 'Output passed review.');
+
+      // **And then finished, which nothing on this arm had ever done.**
+      // `approved` is not terminal, and "anything non-terminal may be cancelled"
+      // is a universal rule of this map, so until now a step that produced its
+      // artifact and passed its own check could still be cancelled by a replan
+      // and recorded in the audit trail as abandoned work. `settle_payout` gave
+      // `done` a producer for human steps in slice 7 and said, in its own
+      // header, that the AI arm was this module's to close.
+      //
+      // **Two hops rather than one, because the map says so.** `ai_self_check`
+      // reaches `approved` and nothing else; `approved` is where the graph
+      // decides dependents may move, and `task_deps_satisfied` counts both, so
+      // no dependent waits a moment longer for the second write.
+      //
+      // **A miss here is a race, not a failure.** The only way the conditional
+      // write finds no row is that something walked the task out of `approved`
+      // in between, and `approved -> cancelled` is exactly that arc. Losing that
+      // race means the step was cancelled, so the artifact must not then be
+      // announced as delivered work.
+      const finished = await transition(
+        admin,
+        taskId,
+        'done',
+        'AI step complete, no payout owed.',
+        'approved',
+      );
+      if (!finished) {
+        log.warn(
+          { taskId, attempt },
+          'task left approved without reaching done; it moved underneath us',
+        );
+        return;
+      }
+
       // The work is only delivered once somebody can read it. Until this existed
       // an approved step wrote a full artifact into a table nobody but a
       // developer with SQL could reach, so the product planned visibly and
@@ -217,7 +260,7 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
         citations: draft.citations,
         log,
       });
-      log.info({ taskId, attempt, artifactId: artifact?.id }, 'task approved');
+      log.info({ taskId, attempt, artifactId: artifact?.id }, 'task approved and done');
       return;
     }
 
@@ -235,23 +278,39 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
   }
 }
 
+/**
+ * Move the task, and record why.
+ *
+ * `from` makes the write conditional on the state this loop believes the task is
+ * in, which is the same `.eq('state', ...)` idiom `settle_payout` and the task
+ * actions use. It is optional because most hops here are unconditional by
+ * design: this loop owns the task from `ai_running` onward, so a refused
+ * transition is a defect and throwing is correct.
+ *
+ * The one hop that passes `from` is `approved -> done`, and it is also the one
+ * hop where a miss is **not** a defect. `approved -> cancelled` is a legal arc
+ * that a replan may walk in exactly that window, so a zero-row result there
+ * means somebody cancelled the step between the two writes rather than that the
+ * machine refused us. `returns false` so the caller can tell the two apart.
+ */
 async function transition(
   admin: SupabaseClient,
   taskId: string,
   to: string,
   reason: string,
-): Promise<void> {
-  const { data, error } = await admin
-    .from('tasks')
-    .update({ state: to })
-    .eq('id', taskId)
-    .select('id, project_id')
-    .maybeSingle();
+  from?: string,
+): Promise<boolean> {
+  let q = admin.from('tasks').update({ state: to }).eq('id', taskId);
+  if (from !== undefined) q = q.eq('state', from);
+  const { data, error } = await q.select('id, project_id').maybeSingle();
 
   // Not caught. The state machine in Postgres is the authority, and a loop that
   // swallowed a refused transition would carry on as though the task had moved.
   if (error) throw error;
-  if (!data) throw new Error(`task ${taskId} did not transition to ${to}`);
+  if (!data) {
+    if (from !== undefined) return false;
+    throw new Error(`task ${taskId} did not transition to ${to}`);
+  }
 
   await admin.from('events').insert({
     project_id: data.project_id,
@@ -261,6 +320,7 @@ async function transition(
     subject_id: taskId,
     payload: { to, reason },
   });
+  return true;
 }
 
 async function finishRun(

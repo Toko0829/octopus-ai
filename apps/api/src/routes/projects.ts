@@ -16,7 +16,7 @@ import {
 import type { CampaignSummary } from '@octopus/contracts';
 import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
 import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
-import { citationTitles, summariseProjects } from '../lib/project-progress';
+import { citationTitles, summariseProjects, DONE_STATES } from '../lib/project-progress';
 import { resolveProjectOwner } from '../lib/project-owner';
 import { rollupOutcomes, type OutcomeReadRow } from '../lib/metrics';
 import { markConnectionExpired, readPublishableConnections } from '../lib/connections';
@@ -160,7 +160,7 @@ export function projectCommitments(input: {
   return { committedBudget: campaignCommitted + escrowHeld, escrowHeld };
 }
 
-const TaskRow = z.object({
+export const TaskRow = z.object({
   id: z.string(),
   project_id: z.string(),
   title: z.string(),
@@ -173,6 +173,82 @@ const TaskRow = z.object({
   created_at: z.string(),
   updated_at: z.string(),
 });
+
+/**
+ * Every column a read of `tasks` must select, in one place.
+ *
+ * `PROJECT_COLUMNS`'s reasoning, applied before the next schema change rather
+ * than after the next outage: the select was an inline string in
+ * `buildProjectDetail` and nothing compared it to `TaskRow`, which is the exact
+ * shape that broke `listProjects` in `6fcd0d6`. `projects.test.ts` pins the two
+ * against each other.
+ */
+export const TASK_COLUMNS =
+  'id, project_id, title, detail, stage, owner_type, state, risk_tier, position, created_at, updated_at';
+
+/** One `hard` edge of the DAG, as `task_deps` stores it. */
+export interface TaskDepRow {
+  task_id: string;
+  depends_on_task_id: string;
+}
+
+/** A step that is holding another one up, as the panel needs to name it. */
+export interface Blocker {
+  taskId: string;
+  title: string;
+  state: string;
+}
+
+/**
+ * Which steps each step is still waiting for.
+ *
+ * **The rule is `private.task_deps_satisfied`, and it is applied here exactly
+ * once.** A dependency counts as cleared when its state is in `DONE_STATES`,
+ * which is this repository's TypeScript copy of that predicate and is asserted
+ * against it in `project-progress.test.ts`. Sending the client raw edges instead
+ * would mean shipping the rule to the browser as well, where it would drift the
+ * first time the SQL changed and would drift silently, because a step wrongly
+ * described as waiting still renders perfectly.
+ *
+ * **An edge whose endpoint is not in `tasks` is skipped rather than thrown.**
+ * `private.guard_task_dep_acyclic` refuses a cross-project edge, so in practice
+ * both endpoints are always in the same project, but this read is caller-scoped
+ * and RLS is entitled to return one row and withhold another. A panel that 500s
+ * because a dependency was filtered would turn a visibility rule into an outage;
+ * an unnameable blocker is simply not named.
+ *
+ * Blockers come back in the dependency's own `position` order, taken from the
+ * order of `tasks`, so "Waiting on: A, B" lists them the way the plan reads
+ * rather than the way Postgres happened to return the edges.
+ */
+export function blockedBy(
+  tasks: { id: string; title: string; state: string }[],
+  deps: TaskDepRow[],
+): Map<string, Blocker[]> {
+  const indexById = new Map(tasks.map((t, i) => [t.id, i]));
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const out = new Map<string, { blocker: Blocker; at: number }[]>();
+
+  for (const dep of deps) {
+    if (!byId.has(dep.task_id)) continue;
+    const upstream = byId.get(dep.depends_on_task_id);
+    if (!upstream) continue;
+    if (DONE_STATES.has(upstream.state)) continue;
+    const list = out.get(dep.task_id) ?? [];
+    list.push({
+      blocker: { taskId: upstream.id, title: upstream.title, state: upstream.state },
+      at: indexById.get(upstream.id) ?? 0,
+    });
+    out.set(dep.task_id, list);
+  }
+
+  return new Map(
+    [...out].map(([taskId, list]) => [
+      taskId,
+      list.sort((a, b) => a.at - b.at).map((entry) => entry.blocker),
+    ]),
+  );
+}
 
 const ArtifactRow = z.object({
   id: z.string(),
@@ -783,9 +859,7 @@ export async function projectRoutes(
         await Promise.all([
           db
             .from('tasks')
-            .select(
-              'id, project_id, title, detail, stage, owner_type, state, risk_tier, position, created_at, updated_at',
-            )
+            .select(TASK_COLUMNS)
             .eq('project_id', projectId)
             .order('position', { ascending: true }),
           db
@@ -798,6 +872,33 @@ export async function projectRoutes(
         ]);
       if (taskErr) throw taskErr;
       if (artErr) throw artErr;
+
+      // **The edges, read as the caller and after the tasks rather than beside
+      // them.** `task_deps` carries no `project_id` — it is two foreign keys and
+      // a kind — so the only way to scope it to this project is by the ids the
+      // read above just returned. That is the same shape as the `profiles` read
+      // further down, which also waits for the ids it filters on.
+      //
+      // `task_deps_select_member` resolves through `task_id` to
+      // `private.is_project_member`, so a non-member gets nothing and this
+      // handler adds no membership logic of its own.
+      //
+      // **`hard` only, filtered in the query.** `soft` and `resource` edges
+      // exist in `task_dep_kind` and are ignored by `private.task_deps_satisfied`
+      // and `private.tasks_ready`. Describing a step as waiting for an edge the
+      // scheduler will not wait for would be a panel disagreeing with the runner
+      // about whether anything is wrong.
+      const taskIds = (taskRows ?? []).map((row) => (row as { id: string }).id);
+      let depRows: TaskDepRow[] = [];
+      if (taskIds.length > 0) {
+        const { data, error: depErr } = await db
+          .from('task_deps')
+          .select('task_id, depends_on_task_id')
+          .in('task_id', taskIds)
+          .eq('dep_kind', 'hard');
+        if (depErr) throw depErr;
+        depRows = (data ?? []) as TaskDepRow[];
+      }
 
       const byTask = new Map<string, Artifact[]>();
       for (const row of artifactRows ?? []) {
@@ -915,8 +1016,12 @@ export async function projectRoutes(
         ]),
       );
 
-      const tasks: Task[] = (taskRows ?? []).map((row) => {
-        const t = TaskRow.parse(row);
+      // Parsed once, because `blockedBy` names one task from inside another's
+      // row and needs the whole set to do it.
+      const parsedTasks = (taskRows ?? []).map((row) => TaskRow.parse(row));
+      const blockedByTask = blockedBy(parsedTasks, depRows);
+
+      const tasks: Task[] = parsedTasks.map((t) => {
         return {
           id: t.id,
           projectId: t.project_id,
@@ -930,6 +1035,7 @@ export async function projectRoutes(
           createdAt: t.created_at,
           updatedAt: t.updated_at,
           artifacts: byTask.get(t.id) ?? [],
+          blockedBy: (blockedByTask.get(t.id) ?? []) as Task['blockedBy'],
           engagement: engagementByTask.get(t.id) ?? null,
         };
       });

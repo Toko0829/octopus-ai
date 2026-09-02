@@ -5,19 +5,46 @@ import { DISPUTABLE_BY_NODE, resolveTask } from './task-resolution';
 describe('resolveTask · answer', () => {
   it('completes a step that was waiting on the person', () => {
     const out = resolveTask('needs_user', 'answer', 'I set the ceiling at 2000 a month.');
-    expect(out).toEqual({ ok: true, resolution: { to: 'approved', writesArtifact: true } });
+    expect(out).toEqual({
+      ok: true,
+      resolution: { to: 'approved', writesArtifact: true, completes: true },
+    });
   });
 
   it('completes a step that was escalated to an expert who cannot be brought in', () => {
     // The whole point of the change. Before it, `escalated` had one arc and it
     // led to a marketplace that does not exist.
     const out = resolveTask('escalated', 'answer', 'I checked the categories myself.');
-    expect(out).toEqual({ ok: true, resolution: { to: 'approved', writesArtifact: true } });
+    expect(out).toEqual({
+      ok: true,
+      resolution: { to: 'approved', writesArtifact: true, completes: true },
+    });
   });
 
-  it('lands on approved rather than done, because approved unblocks dependents', () => {
+  /**
+   * The step still goes through `approved`, because that is the state
+   * `private.task_deps_satisfied` unblocks dependents on and the only arc
+   * `needs_user` and `escalated` have to it. `completes` is what carries it the
+   * rest of the way, in a second conditional write in the route: an owner who
+   * did the work themselves owes nobody a payout, so leaving it at `approved`
+   * left finished work cancellable by a later replan.
+   */
+  it('routes through approved, and marks the step as finished there', () => {
     const out = resolveTask('escalated', 'answer', 'done it');
     expect(out.ok && out.resolution.to).toBe('approved');
+    expect(out.ok && out.resolution.completes).toBe(true);
+  });
+
+  /**
+   * The distinction `completes` exists for. Both actions name `approved`, and
+   * only one of them means the step is over: `PAYABLE_TASK_STATES` selects on
+   * `approved`, so finishing an expert's step here would take it out from under
+   * the sweep that pays them.
+   */
+  it('does not finish a step whose expert is still owed the escrow', () => {
+    const out = resolveTask('proof_submitted', 'approve_work', '');
+    expect(out.ok && out.resolution.to).toBe('approved');
+    expect(out.ok && out.resolution.completes).toBe(false);
   });
 
   it('refuses an empty write-up instead of storing an artifact with no content', () => {
@@ -42,7 +69,10 @@ describe('resolveTask · answer', () => {
 describe('resolveTask · retry', () => {
   it('sends an escalated step back through the router', () => {
     const out = resolveTask('escalated', 'retry', '');
-    expect(out).toEqual({ ok: true, resolution: { to: 'routing', writesArtifact: false } });
+    expect(out).toEqual({
+      ok: true,
+      resolution: { to: 'routing', writesArtifact: false, completes: false },
+    });
   });
 
   it('never writes an artifact, because nothing was produced', () => {
@@ -112,12 +142,18 @@ describe('resolveTask · the owner verdict on expert work', () => {
 
   it('approves work that an expert handed over', () => {
     const out = resolveTask('proof_submitted', 'approve_work', '');
-    expect(out).toEqual({ ok: true, resolution: { to: 'approved', writesArtifact: false } });
+    expect(out).toEqual({
+      ok: true,
+      resolution: { to: 'approved', writesArtifact: false, completes: false },
+    });
   });
 
   it('sends work back with the note as the deliverable', () => {
     const out = resolveTask('proof_submitted', 'reject_work', NOTE);
-    expect(out).toEqual({ ok: true, resolution: { to: 'rejected', writesArtifact: true } });
+    expect(out).toEqual({
+      ok: true,
+      resolution: { to: 'rejected', writesArtifact: true, completes: false },
+    });
   });
 
   it('refuses to send work back with no reason', () => {

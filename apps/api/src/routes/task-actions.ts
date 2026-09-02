@@ -417,8 +417,33 @@ export async function taskActionRoutes(
             return fail(reply, 409, 'conflict', 'That step moved while you were writing.');
           }
 
+          // **And finished, when the owner did the work themselves.** `approved`
+          // is not terminal, so without this the step they just completed stayed
+          // cancellable by a later replan and would be recorded in the audit
+          // trail as abandoned. `approve_work` never reaches here (it returns
+          // above) precisely because approving an expert's work is a payout
+          // authorisation and must stay at `approved` for the sweep.
+          //
+          // A miss is a race rather than a defect, on the executor's reasoning:
+          // the only way the conditional write finds nothing is that something
+          // walked the task out of `approved` in between, which is a legal arc.
+          // The owner's answer is committed either way, so this is logged and
+          // never turned into a 409 about a step they already resolved.
+          let finalState: string = outcome.resolution.to;
+          if (outcome.resolution.completes) {
+            const { data: finished, error: finishErr } = await admin
+              .from('tasks')
+              .update({ state: 'done' })
+              .eq('id', task.id)
+              .eq('state', 'approved')
+              .select('id');
+            if (finishErr) throw finishErr;
+            if (finished && finished.length > 0) finalState = 'done';
+            else request.log.warn({ taskId, userId }, 'answered step did not reach done');
+          }
+
           request.log.info({ taskId, userId, action }, 'owner resolved a step');
-          return reply.code(200).send({ state: outcome.resolution.to, ranExecutor: false });
+          return reply.code(200).send({ state: finalState, ranExecutor: false });
         }
 
         // Retry. The scheduler only selects PENDING tasks, so nothing would ever

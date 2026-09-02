@@ -40,13 +40,23 @@ let rpcFailures: Record<string, { code: string; message: string }>;
 /** Every write a request made, so a refusal can be asserted to have made none. */
 let written: { table: string; op: string; values?: Record<string, unknown> }[];
 
+/**
+ * Runs after a `tasks` update lands, so a test can move the row underneath the
+ * route the way a concurrent replan would.
+ */
+let onTaskStateWrite: (() => void) | null;
+
 function client() {
   return {
     from(table: string) {
       const b: Record<string, unknown> = {};
+      const applied: Record<string, unknown> = {};
       Object.assign(b, {
         select: () => b,
-        eq: () => b,
+        eq: (column: string, value: unknown) => {
+          applied[column] = value;
+          return b;
+        },
         is: () => b,
         in: () => b,
         not: () => b,
@@ -58,10 +68,33 @@ function client() {
             then: (resolve: (v: unknown) => unknown) => resolve({ data: null, error: null }),
           });
         },
+        /**
+         * **`tasks` is the one table modelled as a row that a filter can miss.**
+         * Every state write on this route is conditional on the state it read,
+         * so a fake that always matched could not tell a committed move from one
+         * that lost a race, and the second hop this suite exists to pin is
+         * exactly a conditional write that is allowed to find nothing.
+         *
+         * Applied at the end of the chain rather than here, because PostgREST
+         * builders read `.update(...).eq(...).eq(...)` and no filter has been
+         * declared yet at this point. Every other table keeps the old behaviour:
+         * the write is recorded and nothing is returned.
+         */
         update: (values: Record<string, unknown>) => {
           written.push({ table, op: 'update', values });
+          const apply = () => {
+            if (table !== 'tasks' || !taskRow) return null;
+            if (applied.state !== undefined && taskRow.state !== applied.state) return [];
+            Object.assign(taskRow, values);
+            onTaskStateWrite?.();
+            return [{ id: TASK }];
+          };
           return Object.assign(b, {
-            then: (resolve: (v: unknown) => unknown) => resolve({ data: null, error: null }),
+            select: () =>
+              Object.assign(b, {
+                then: (resolve: (v: unknown) => unknown) => resolve({ data: apply(), error: null }),
+              }),
+            then: (resolve: (v: unknown) => unknown) => resolve({ data: apply(), error: null }),
           });
         },
         maybeSingle: async () => {
@@ -130,6 +163,79 @@ beforeEach(() => {
   rpcCalls = [];
   rpcFailures = {};
   written = [];
+  onTaskStateWrite = null;
+});
+
+/**
+ * The owner does the step themselves, and the step **finishes**.
+ *
+ * `approved` is not terminal, and "anything non-terminal may be cancelled" is a
+ * universal rule of the task map, so before the second hop existed a step the
+ * owner had just completed stayed cancellable by a later replan and would be
+ * recorded in the audit trail as abandoned. The distinction this route has to
+ * keep is that `approve_work` lands on the same state and must **not** finish:
+ * `PAYABLE_TASK_STATES` selects on `approved`, so walking it on would take the
+ * step out from under the sweep that pays the expert. That half is pinned in
+ * `task-resolution.test.ts`, where the decision is made.
+ */
+describe('the owner answers a step themselves', () => {
+  const url = `/api/projects/${PROJECT}/tasks/${TASK}/resolution`;
+  const payload = { action: 'answer', text: 'I set the ceiling at 2000 a month.' };
+
+  const stateWrites = () =>
+    written.filter((w) => w.table === 'tasks' && w.op === 'update').map((w) => w.values?.state);
+
+  beforeEach(() => {
+    taskRow = aTask('needs_user');
+  });
+
+  it('walks the step through approved to done', async () => {
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url, headers: as(OWNER), payload });
+    expect(res.statusCode).toBe(200);
+    // Through `approved`, not around it: that is the arc `needs_user` has and
+    // the state `task_deps_satisfied` unblocks dependents on.
+    expect(stateWrites()).toEqual(['approved', 'done']);
+  });
+
+  it('reports the state it actually left the step in', async () => {
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url, headers: as(OWNER), payload });
+    expect(res.json().state).toBe('done');
+  });
+
+  it('stores the write-up as the deliverable before moving anything', async () => {
+    const app = await build();
+    await app.inject({ method: 'POST', url, headers: as(OWNER), payload });
+    const artifact = written.find((w) => w.table === 'artifacts');
+    expect(artifact?.values).toMatchObject({ kind: 'answer', created_by: 'user', citations: [] });
+    expect(written.indexOf(artifact!)).toBeLessThan(
+      written.findIndex((w) => w.table === 'tasks' && w.op === 'update'),
+    );
+  });
+
+  it('keeps the answer when the step moves underneath it', async () => {
+    // `approved -> cancelled` is a legal arc and a replan may walk it in exactly
+    // this window. The owner's answer is already committed, so losing the race
+    // is reported as the state the step is in, never as a 409 about work they
+    // already did.
+    onTaskStateWrite = () => {
+      if (taskRow?.state === 'approved') taskRow.state = 'cancelled';
+    };
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url, headers: as(OWNER), payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().state).toBe('approved');
+    expect(written.some((w) => w.table === 'artifacts')).toBe(true);
+  });
+
+  it('still refuses when the step is not waiting on anybody', async () => {
+    taskRow = aTask('in_progress');
+    const app = await build();
+    const res = await app.inject({ method: 'POST', url, headers: as(OWNER), payload });
+    expect(res.statusCode).toBe(409);
+    expect(written).toEqual([]);
+  });
 });
 
 describe('the owner disputes a step', () => {

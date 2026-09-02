@@ -21,7 +21,9 @@ export type TaskAction =
  * `needs_user` the plan asked them a question only they can answer, so answering
  * is the step. From `escalated` the plan gave the work to an expert who cannot be
  * brought in, so the owner taking it on is the step. Both land on `approved`,
- * which is what satisfies dependents.
+ * which is what satisfies dependents, and both then walk on to `done`, because
+ * an owner who did the work themselves owes nobody a payout and a step that is
+ * finished should not stay cancellable. See `completes` on `Resolution`.
  */
 const ANSWERABLE: ReadonlySet<string> = new Set<TaskState>(['needs_user', 'escalated']);
 
@@ -131,6 +133,24 @@ export interface Resolution {
   to: TaskState;
   /** Whether the owner's text is stored as the step's deliverable. */
   writesArtifact: boolean;
+  /**
+   * Whether the step is finished by this action, and should walk on from
+   * `approved` to `done`.
+   *
+   * **`approved` is not terminal, and that is the whole reason this flag
+   * exists.** Two actions here land on it and they mean different things.
+   * `answer` is the owner doing the work themselves: nobody is owed anything and
+   * the step is over, so leaving it at `approved` left finished work cancellable
+   * by a later replan and recorded in the audit trail as abandoned. `approve_work`
+   * lands on the same state and is emphatically **not** finished: it is the
+   * payout authorisation, `PAYABLE_TASK_STATES` reads exactly that state, and
+   * walking it to `done` here would take the step out from under the sweep that
+   * pays the expert.
+   *
+   * Required rather than optional, so a seventh action has to answer the question
+   * rather than inherit an answer.
+   */
+  completes: boolean;
 }
 
 export type ResolutionOutcome =
@@ -157,7 +177,9 @@ export function resolveTask(state: TaskState, action: TaskAction, text: string):
     if (!text.trim()) {
       return { ok: false, reason: 'Tell me what you did, and I will record it against the step.' };
     }
-    return { ok: true, resolution: { to: 'approved', writesArtifact: true } };
+    // The owner did it themselves, so nobody is owed anything and the step is
+    // over. `completes` walks it past `approved` to a terminal state.
+    return { ok: true, resolution: { to: 'approved', writesArtifact: true, completes: true } };
   }
 
   if (action === 'approve_work' || action === 'reject_work') {
@@ -171,7 +193,11 @@ export function resolveTask(state: TaskState, action: TaskAction, text: string):
       };
     }
     if (action === 'approve_work') {
-      return { ok: true, resolution: { to: 'approved', writesArtifact: false } };
+      // **Not `completes`, and this is the one place that distinction earns its
+      // keep.** Approving an expert's work is the payout authorisation: the
+      // sweep selects on `approved`, and finishing the step here would pay
+      // nobody and strand the escrow.
+      return { ok: true, resolution: { to: 'approved', writesArtifact: false, completes: false } };
     }
     // **A rejection must say why**, unlike an approval. Sending work back with no
     // reason gives the node nothing to act on, and the arc they take next
@@ -184,7 +210,7 @@ export function resolveTask(state: TaskState, action: TaskAction, text: string):
           'Say what needs to change. Sending work back with no reason gives them nothing to fix.',
       };
     }
-    return { ok: true, resolution: { to: 'rejected', writesArtifact: true } };
+    return { ok: true, resolution: { to: 'rejected', writesArtifact: true, completes: false } };
   }
 
   if (action === 'dispute') {
@@ -212,7 +238,7 @@ export function resolveTask(state: TaskState, action: TaskAction, text: string):
     // column on `disputes`, not a deliverable on the step. The route calls
     // `raise_dispute` rather than moving the task itself, because the freeze and
     // the record have to be one transaction.
-    return { ok: true, resolution: { to: 'disputed', writesArtifact: false } };
+    return { ok: true, resolution: { to: 'disputed', writesArtifact: false, completes: false } };
   }
 
   if (action === 'find_expert') {
@@ -222,7 +248,7 @@ export function resolveTask(state: TaskState, action: TaskAction, text: string):
         reason: 'Only a step that stopped because it needed an expert can be sent to one.',
       };
     }
-    return { ok: true, resolution: { to: 'matching', writesArtifact: false } };
+    return { ok: true, resolution: { to: 'matching', writesArtifact: false, completes: false } };
   }
 
   if (!RETRYABLE.has(state)) {
@@ -231,5 +257,5 @@ export function resolveTask(state: TaskState, action: TaskAction, text: string):
       reason: 'Only a step that stopped because it needed an expert can be tried again.',
     };
   }
-  return { ok: true, resolution: { to: 'routing', writesArtifact: false } };
+  return { ok: true, resolution: { to: 'routing', writesArtifact: false, completes: false } };
 }

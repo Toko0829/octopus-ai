@@ -21,7 +21,9 @@
 --     owner reads and the thing ADR-0020 says four places must agree on.
 --   * **A settled hold's four ledger entries sum to zero on every account**,
 --     which is what makes "settled" derivable rather than a column to trust.
---   * **`done` has a producer**, for the first time in this schema.
+--   * **`done` has a producer**, for the first time in this schema. The AI arm
+--     has one too now, in `executeTask`; this file pins only that `approved`
+--     itself stays non-terminal, because the payout sweep reads it.
 --   * **`completed_engagements` moves**, because slice 8 ranks on it.
 --   * **The node reads their own payout and nobody else's**, and `payouts` is
 --     append-and-settle even for `service_role`.
@@ -471,19 +473,27 @@ select extensions.is(
 
 -- ------------------------------------------------ the AI arm (2)
 --
--- Stated as an absence, because somebody could reasonably "fix" it later without
--- realising it belongs to a different module. `approved -> done` on an AI step
--- involves no money and is business-projects-workflow.md's to produce; this slice
--- deliberately did not close it from the marketplace side.
+-- **These two were stated as an absence and are now stated as a boundary.** Slice
+-- 7 left `approved -> done` with no AI-side producer on the grounds that it
+-- belongs to business-projects-workflow.md rather than to a marketplace slice.
+-- That module has since produced one, in `executeTask` and in the owner-answer
+-- routes, and no migration was needed because the arc was always legal.
+--
+-- What still has to hold from HERE is the other half of that boundary: the arc
+-- exists, and `approved` stays non-terminal, because `approve_work` lands on it
+-- and `PAYABLE_TASK_STATES` selects on it. A step whose expert is still owed the
+-- escrow must remain reachable by the payout sweep, so making `approved` itself
+-- terminal is the change this file exists to refuse. The AI arm's own walk is
+-- asserted where it belongs, in `artifacts.sql`.
 
 select extensions.ok(
   private.task_transition_allowed('approved', 'done'),
-  'approved -> done is in the map, and slice 7 deliberately gave it no AI-side producer'
+  'approved -> done is in the map, which is what the AI arm walks without a migration'
 );
 
 select extensions.ok(
   not private.task_state_is_terminal('approved'),
-  'so an approved AI step is still non-terminal, which is written down rather than left to be found'
+  'and approved stays non-terminal, because an expert waiting on escrow is read from that state'
 );
 
 select * from extensions.finish();

@@ -577,6 +577,27 @@ export async function agentRunRoutes(
           .eq('state', 'needs_user');
         if (moveError) throw moveError;
 
+        // **And on to `done`, the same second hop the panel's answer path
+        // takes.** This is the chat-side twin of `resolveTask`'s `answer`: the
+        // person answered a question only they could answer, so the step is
+        // finished and owes nobody a payout. Leaving it at `approved` would keep
+        // finished work cancellable, and would make "done" mean one thing when
+        // answered here and another when answered on the panel.
+        //
+        // Not thrown on a miss: the answer and its artifact are committed, and
+        // the only way this finds no row is that the step moved underneath us,
+        // which the message below already reports honestly by counting.
+        const { data: finished, error: finishError } = await admin
+          .from('tasks')
+          .update({ state: 'done' })
+          .eq('id', task.id)
+          .eq('state', 'approved')
+          .select('id');
+        if (finishError) throw finishError;
+        if (!finished || finished.length === 0) {
+          app.log.warn({ taskId: task.id, agentRunId: runId }, 'answered step did not reach done');
+        }
+
         completed += 1;
       } catch (err) {
         app.log.error(

@@ -14,7 +14,7 @@
 
 begin;
 
-select extensions.plan(12);
+select extensions.plan(15);
 
 create temporary table aids (k text primary key, v uuid);
 insert into aids (k, v) values
@@ -124,6 +124,33 @@ select extensions.is(
 select extensions.ok(
   private.task_deps_satisfied((select id from tsk)),
   'an approved task satisfies dependencies, which is what makes the graph move'
+);
+
+-- ------------------------------------------------- and then it is finished
+--
+-- `approved` is not terminal, and "anything non-terminal may be cancelled" is a
+-- universal rule of this map, so an AI step that had produced its artifact and
+-- passed its own check stayed cancellable forever. `settle_payout` gave `done` a
+-- producer for the human arm in slice 7 and recorded that this arm was
+-- business-projects-workflow.md's to close. `executeTask` closes it, in a second
+-- conditional write rather than a migration: the arc was already legal and had
+-- nobody to walk it.
+
+select extensions.is(
+  pg_temp.aerr(format('update public.tasks set state = ''done'' where id = %L', (select id from tsk))),
+  null::text,
+  'approved -> done, which the AI arm now has a producer for'
+);
+
+select extensions.ok(
+  private.task_state_is_terminal((select state from public.tasks where id = (select id from tsk))),
+  'and done is terminal, so a replan can no longer cancel work the checker passed'
+);
+
+select extensions.is(
+  pg_temp.aerr(format('update public.tasks set state = ''cancelled'' where id = %L', (select id from tsk))),
+  '23514',
+  'the kill switch is refused on a finished AI step, which is the hole this closes'
 );
 
 -- ---------------------------------------------------------------- access

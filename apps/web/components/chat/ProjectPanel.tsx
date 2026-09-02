@@ -822,6 +822,33 @@ function TaskRow({
   // enforces, so the button never appears on a deal the RPC would refuse.
   const rateable = task.engagement?.paidAt != null;
 
+  // **What this step is waiting for, shown only where it is news.** The server
+  // sends `blockedBy` for every task, but from `ready` onward
+  // `private.tasks_ready` has already proved every hard dependency satisfied, so
+  // a waiting line on a running step would be describing a queue that has
+  // already cleared. `pending` and `blocked` are the two states where a person
+  // reading "Not started" cannot otherwise tell whether the plan is stuck or
+  // merely early.
+  const waitingShown =
+    (task.state === 'pending' || task.state === 'blocked') && task.blockedBy.length > 0;
+  // A dependency that is `cancelled` or `failed` is not a wait, it is a dead
+  // end: `task_deps_satisfied` will never be true for it, so this step cannot
+  // start until a replan rewires the edge. Saying "Waiting on" there would
+  // promise progress that cannot arrive.
+  const deadEnds = task.blockedBy.filter((b) => b.state === 'cancelled' || b.state === 'failed');
+  const [firstDeadEnd] = deadEnds;
+  // `cancelled` and `failed` both read as the adjective they are, so one
+  // sentence covers a single dead end without a second copy per state.
+  const strandedNote = ' This step cannot start until the plan is changed.';
+  const waitingCopy =
+    deadEnds.length === 0
+      ? `Waiting on: ${task.blockedBy.map((b) => b.title).join(', ')}`
+      : firstDeadEnd && deadEnds.length === 1
+        ? `Blocked by a ${firstDeadEnd.state} step: ${firstDeadEnd.title}.${strandedNote}`
+        : `Blocked by steps that cannot finish: ${deadEnds
+            .map((b) => b.title)
+            .join(', ')}.${strandedNote}`;
+
   return (
     <li className="work-task">
       <div className="work-task-head">
@@ -843,6 +870,27 @@ function TaskRow({
           <span className="work-risk"> · Uses an outside service</span>
         )}
       </p>
+
+      {/* What is holding this step up.
+
+          **The panel could not answer this until the detail read returned the
+          DAG's edges.** A step waiting on another rendered as "Not started",
+          which is the same sentence a step that is merely next in the queue
+          gets, so the one screen that could tell an owner which step to deal
+          with told them nothing. Five blocked steps and one stuck upstream look
+          identical to six steps that have not started.
+
+          **Two sentences, not one style of sentence**, and the difference is the
+          point rather than decoration. A dependency still working is a wait and
+          will clear on its own. A dependency that was cancelled or failed will
+          never satisfy `task_deps_satisfied`, so this step is stranded until
+          somebody changes the plan, and the copy says that instead of naming a
+          queue position that will not arrive. The wording carries the
+          distinction on its own, so a reader who cannot tell the two colours
+          apart loses nothing (rule 15). */}
+      {waitingShown && (
+        <p className={`work-waiting${deadEnds.length > 0 ? ' stopped' : ''}`}>{waitingCopy}</p>
+      )}
 
       {/* Who took this step, at what price, when.
 

@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  blockedBy,
   CAMPAIGN_COLUMNS,
   CampaignRow,
   decideFileUrl,
@@ -19,6 +20,8 @@ import {
   PROJECT_COLUMNS,
   ProjectRow,
   SIGNED_URL_TTL_SECONDS,
+  TASK_COLUMNS,
+  TaskRow,
 } from './projects';
 
 /**
@@ -78,6 +81,96 @@ describe('the campaigns select and CampaignRow', () => {
         `"${column}" is selected and CampaignRow ignores it`,
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * And the same agreement for `tasks`, whose select was an inline string until
+ * the detail read grew a dependency beside it. `TaskRow` coerces nothing, so the
+ * failure would be a Zod parse error rather than a NaN, but it is the same
+ * failure `6fcd0d6` shipped: invisible to the type checker, and 500 on the
+ * panel's first call.
+ */
+describe('the tasks select and TaskRow', () => {
+  it('selects every column the schema requires', () => {
+    const selected = new Set(TASK_COLUMNS.split(',').map((c) => c.trim()));
+
+    for (const column of Object.keys(TaskRow.shape)) {
+      expect(selected.has(column), `TaskRow requires "${column}" and no read selects it`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('selects nothing the schema does not describe', () => {
+    for (const column of TASK_COLUMNS.split(',').map((c) => c.trim())) {
+      expect(column in TaskRow.shape, `"${column}" is selected and TaskRow ignores it`).toBe(true);
+    }
+  });
+});
+
+/**
+ * What each step is still waiting for.
+ *
+ * Pure and asserted rather than reviewed inside the handler, on
+ * `projectCommitments`'s reasoning: this is logic that fails silently. A step
+ * wrongly described as blocked, or wrongly described as clear, renders as a
+ * perfectly plausible sentence either way, and nothing downstream throws.
+ */
+describe('blockedBy', () => {
+  const task = (id: string, state: string, title = `step ${id}`) => ({ id, title, state });
+  const edge = (task_id: string, depends_on_task_id: string) => ({ task_id, depends_on_task_id });
+
+  it('names nothing when a step has no dependencies', () => {
+    expect(blockedBy([task('a', 'pending')], []).get('a')).toBeUndefined();
+  });
+
+  it('names an upstream step that has not finished', () => {
+    const out = blockedBy([task('a', 'ai_running'), task('b', 'pending')], [edge('b', 'a')]);
+    expect(out.get('b')).toEqual([{ taskId: 'a', title: 'step a', state: 'ai_running' }]);
+  });
+
+  /**
+   * The four states `private.task_deps_satisfied` treats as cleared, each one
+   * asserted rather than the set asserted once, so a state dropped from
+   * `DONE_STATES` fails here by name.
+   */
+  it.each(['approved', 'payout_pending', 'paid', 'done'])(
+    'treats an upstream step in %s as cleared',
+    (state) => {
+      const out = blockedBy([task('a', state), task('b', 'pending')], [edge('b', 'a')]);
+      expect(out.get('b')).toBeUndefined();
+    },
+  );
+
+  it('still names a cancelled or failed dependency, because it is a dead end', () => {
+    // Not cleared, and never will be: `tasks_ready` waits on a state this step
+    // can no longer reach, so the panel says so in different words rather than
+    // calling it a queue.
+    const out = blockedBy(
+      [task('a', 'cancelled'), task('b', 'failed'), task('c', 'pending')],
+      [edge('c', 'a'), edge('c', 'b')],
+    );
+    expect(out.get('c')?.map((b) => b.state)).toEqual(['cancelled', 'failed']);
+  });
+
+  it('lists blockers in the order the plan reads', () => {
+    // The edges arrive in whatever order Postgres returned them; the sentence
+    // has to name them the way the steps are numbered.
+    const out = blockedBy(
+      [task('a', 'pending'), task('b', 'pending'), task('c', 'pending')],
+      [edge('c', 'b'), edge('c', 'a')],
+    );
+    expect(out.get('c')?.map((b) => b.taskId)).toEqual(['a', 'b']);
+  });
+
+  it('skips an edge whose endpoint this caller cannot see', () => {
+    // RLS is entitled to return one row and withhold another. A panel that threw
+    // on the gap would turn a visibility rule into an outage; a blocker that
+    // cannot be named is simply not named.
+    const out = blockedBy([task('b', 'pending')], [edge('b', 'ghost'), edge('ghost', 'b')]);
+    expect(out.get('b')).toBeUndefined();
+    expect(out.get('ghost')).toBeUndefined();
   });
 });
 
