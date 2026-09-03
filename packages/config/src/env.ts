@@ -306,6 +306,37 @@ const EnvSchema = z.object({
   PAYOUT_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
 
   /**
+   * The heal sweep: an AI step the executor approved and did not finish, because
+   * the process died between the `approved` write and the `done` write, is
+   * walked on and its artifact is delivered.
+   *
+   * **On by default**, the polarity every sweep here has except `CRAWL_ENABLED`,
+   * and for the family's reason: it reaches nobody outside the system. What
+   * turning it off costs: a finished step stays at `approved`, which is not
+   * terminal, so any later replan may cancel work that passed its check, and
+   * the cited artifact it produced sits in a table nobody but a developer can
+   * read.
+   *
+   * **Doubly inert** until a worker actually dies in that window: it selects
+   * only AI-owned steps at `approved` for longer than the grace window, and it
+   * never touches a human step (that state is the payout authorisation there)
+   * or a campaign step (approved is where a campaign's own lifecycle begins).
+   */
+  HEAL_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
+  /**
+   * How many stranded steps one pass may finish.
+   *
+   * Three, matching its siblings, and it bounds steps FINISHED rather than
+   * examined. Each one is a delivery into a room, and the live database holds a
+   * backlog of them from before the executor walked on at all, so a large
+   * number here would post a burst of old deliverables into rooms at once.
+   */
+  HEAL_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
+
+  /**
    * Signing key for the OAuth `state` parameter.
    *
    * **Optional in this schema and required at the point of use**, which is a

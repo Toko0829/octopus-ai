@@ -381,7 +381,7 @@ Surface to the user **only**: irreversible/high-risk approvals, subjective/brand
 
 ## Key entities
 
-`task_runs` · `agent_steps` (event-sourced) · `tool_invocations` (idempotency keys, audit, risk tier) · `escalations` · `artifacts`. **No waitpoint tokens**: the waiting task row is the waitpoint ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). Full schema in [data-model.md](../10-architecture/data-model.md).
+`task_runs` · `agent_steps` (event-sourced) · `tool_invocations` (idempotency keys, audit, risk tier) · `artifacts`. An escalation is the `task.routed` event with its reason, not a table ([ADR-0030](../40-adr/0030-an-escalation-is-an-event-and-a-playbook-is-the-card.md)). **No waitpoint tokens**: the waiting task row is the waitpoint ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). Full schema in [data-model.md](../10-architecture/data-model.md).
 
 ## Observability
 

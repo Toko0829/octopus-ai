@@ -201,6 +201,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     // transferred whatever it is set to — the only registered provider is the
     // in-repo fake and `carriesRealMoney` refuses a real one at the writer.
     payout: env.PAYOUT_ENABLED ? { maxPerPass: env.PAYOUT_MAX_PER_TICK } : undefined,
+    // Finishing AI steps a dead worker left at `approved`, and delivering the
+    // work it never announced. Doubly inert until a process dies in that window;
+    // `false` leaves such a step cancellable forever and its artifact unseen.
+    heal: env.HEAL_ENABLED ? { maxPerPass: env.HEAL_MAX_PER_TICK } : undefined,
     // Offering escalated steps to expert nodes. Inert until an owner clicks, so
     // the same kill-switch shape again: `false` still lets a step be dispatched
     // and still shows "Finding an expert", and no offer is ever made.

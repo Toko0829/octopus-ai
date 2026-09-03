@@ -42,8 +42,10 @@ import { planContextForProject, roomForProject } from './room-for-project';
  * it in `ai_running` with a `running` task_run. ADR-0001 puts it on a durable
  * backbone; until then a stuck `ai_running` task is the expected symptom, and so
  * is a step stranded at `approved` by a crash between the two writes above. That
- * second symptom is exactly today's behaviour rather than a new one, and the
- * sweep that would heal it belongs beside `reclaimLostRuns` on the ticker.
+ * second symptom has a sweep now: `heal.ts` walks a step the executor left at
+ * `approved` on to `done` and delivers its artifact, using the two helpers this
+ * file exports for exactly that reason, so the crash recovery and the happy path
+ * write the same rows in the same order.
  */
 
 const MAX_ATTEMPTS = 2;
@@ -293,7 +295,7 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
  * means somebody cancelled the step between the two writes rather than that the
  * machine refused us. `returns false` so the caller can tell the two apart.
  */
-async function transition(
+export async function transition(
   admin: SupabaseClient,
   taskId: string,
   to: string,
@@ -348,7 +350,7 @@ async function finishRun(
  * announce it must not undo either, and the row remains the record. Logged loudly
  * rather than swallowed (rule 16).
  */
-async function postArtifact(
+export async function postArtifact(
   admin: SupabaseClient,
   input: {
     projectId: string;

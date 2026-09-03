@@ -22,7 +22,7 @@
 >
 > **Replan-by-diff is live** (`20260828130000`, `20260828140000`). An owner can ask for a running plan to be changed, and gets a card of add / cancel / modify ops to approve. See "Changing a plan that is already running" below.
 >
-> **Not built yet:** `playbook_versions` and `escalations`. **Consuming the question before the work succeeds is what makes a race safe and a failure silent.** The card is closed first so a second message cannot answer the same steps twice. The first live answer then hit an invalid enum value, every task failed, the failure was logged per task, and the room said **nothing at all**: the person had answered, the question had vanished, and no step had moved. The card is now **reopened** when nothing completes, so their next message is still read as an answer, and the run says so plainly. Losing a reply is bad; losing it without saying so is worse.
+> **The three remainders are closed** ([ADR-0030](../40-adr/0030-an-escalation-is-an-event-and-a-playbook-is-the-card.md)): a step the executor left at `approved` is finished by the heal sweep and its artifact delivered, `escalations` is derived from the `task.routed` event the scheduler already writes rather than being a second table, and `playbook_versions` waits in the roadmap's deferred table for the compiler that would give two of its columns a producer. **Consuming the question before the work succeeds is what makes a race safe and a failure silent.** The card is closed first so a second message cannot answer the same steps twice. The first live answer then hit an invalid enum value, every task failed, the failure was logged per task, and the room said **nothing at all**: the person had answered, the question had vanished, and no step had moved. The card is now **reopened** when nothing completes, so their next message is still read as an answer, and the run says so plainly. Losing a reply is bad; losing it without saying so is worse.
 
 **An answered step is a finished step, and the machine had to say so.** The only arc out of `NEEDS_USER` was back to `ROUTING`, where the router applies rule 2 to a `user`-owned task and returns it to `NEEDS_USER`: the answer had nowhere to land and the loop had no end. Nothing failed, the task simply waited forever. `20260815220000` adds `NEEDS_USER → APPROVED`, and the semantics are the point rather than a convenience: the plan gave that person work only they could do, so answering **is** doing it, and `APPROVED` is the state that satisfies dependents. The answer is stored as an artifact `created_by: 'user'` with **no citations**, deliberately, since a person's own decision rests on no retrieved source and attaching one would attribute their judgement to the corpus. The checker never sees it: a human answering is not a maker to be checked.
 
@@ -158,7 +158,7 @@ A task the plan asked about is answered on its card, one field per step, or from
 
 ## Playbook model
 
-A **playbook = Business Archetype × Jurisdiction Pack**, compiled by [rag-knowledge](rag-knowledge.md) into a **typed DAG**. Versioned (`playbook_versions`) so a plan is reproducible and auditable. The same compiler that outputs an Austin cafe outputs a Berlin online store or (future) a Tbilisi cafe.
+A **playbook = Business Archetype × Jurisdiction Pack**, compiled by [rag-knowledge](rag-knowledge.md) into a **typed DAG**. The same compiler that outputs an Austin cafe outputs a Berlin online store or (future) a Tbilisi cafe. **That compiler does not exist yet**, and until it does a plan's reproducible, auditable record is the approved card itself: `materialise_plan` builds from the card's own payload, a replan card carries `supersedes`, and a superseded plan is `expired` with the time stamped. `playbook_versions` is deferred to the compiler's arrival ([ADR-0030](../40-adr/0030-an-escalation-is-an-event-and-a-playbook-is-the-card.md), [roadmap.md](../10-architecture/roadmap.md)).
 
 ## Task node schema
 
@@ -416,7 +416,7 @@ The durable workflow honors a cancellation signal at the next safe checkpoint; i
 
 ## Key entities
 
-`projects` · `tasks` · `task_deps` · `task_runs` · `artifacts` · `escalations` · `playbook_versions`.
+`projects` · `tasks` · `task_deps` · `task_runs` · `artifacts` · the append-only `events` log. An escalation is a `task.routed` event with its reason, resolved by the next transition on the same task, and a plan's version history is its chain of cards; neither is a table ([ADR-0030](../40-adr/0030-an-escalation-is-an-event-and-a-playbook-is-the-card.md)). `playbook_versions` is deferred with a trigger.
 
 ## Relationship to the orchestrator
 
@@ -573,7 +573,62 @@ that `approved` itself stays non-terminal, because the payout sweep reads it.
 it is an applied migration and is left alone, and this paragraph is where that is
 recorded as superseded.
 
-**Still not durable, and the crash symptom is named rather than implied.** A
-crash between the two writes strands the step at `approved`, which is exactly
-today's behaviour rather than a new failure. The sweep that would heal it belongs
-beside `reclaimLostRuns` on the ticker and is not built.
+**Still not durable, and the crash symptom now has its sweep.** A crash between
+the two writes strands the step at `approved`, which was exactly the previous
+behaviour rather than a new failure. `healSweep` in `apps/api/src/lib/heal.ts`
+runs directly after `reclaimLostRuns` on every tick and finishes it.
+
+### The heal sweep
+
+It selects AI-owned steps at `approved` whose `updated_at` (bumped by the
+transition trigger, so it is the time the step reached `approved`) is older than
+a five-minute grace window, oldest first, and for each one walks
+`approved → done` conditionally on `approved`, writes a `task.healed` event
+naming the artifact, and delivers the artifact through the same `postArtifact`
+the executor uses, keyed on the artifact id so a delivery that already happened
+is not repeated. The order is the executor's order for the executor's reason:
+the step is finished before the room hears about it.
+
+**Narrowed on `owner_type`, and the narrowing is the design.** `approved` means
+three things on three arms. On a human step it is the payout authorisation and
+`payout.ts` selects on it, so a sweep that finished one would take the step out
+from under the sweep that pays the expert. On a user step the answer path walks
+it on in the same request. Only the executor writes the two hops as separate
+statements with no transaction around them, so only the AI arm can be stranded
+by a crash between them.
+
+**A campaign step is excluded by a second read.** `materialise_campaign` also
+lands a step at `approved`, from `needs_user`, whatever its owner type, and
+that step is not finished: the campaign it authorised has its own lifecycle and the step at
+`approved` is what a replan cancels to stop it. A `campaigns` row pointing at
+the task is the exclusion, read as its own query rather than inferred from a
+missing artifact, since "no artifact" is also what a crash before the artifact
+write looks like.
+
+**The grace window is generous on purpose.** The two writes are one round trip
+apart. If this sweep wrote `done` first, the executor's conditional write would
+miss, and that miss is documented as "somebody cancelled the step", so it would
+deliver nothing and warn about a cancellation that never happened. Five minutes
+costs one extra pass and removes the race.
+
+**A miss is the same race the executor names.** `approved → cancelled` is legal
+and so is the executor coming back and finishing; either way the step is
+somebody else's and nothing is announced. A stranded step with no artifact is
+finished and not delivered, with a warning naming the task, because `done` is
+still the true state of a step the machine approved.
+
+**The historical rows are healed by it**, bounded per pass. The paragraph above
+declined to backfill sixty-six `approved` steps in a migration because a
+blanket update would have caught human steps whose expert was owed the escrow.
+This sweep cannot touch a human step, so the AI steps among them are finished
+and their artifacts delivered a few per tick, and the event says `healed` so the
+audit trail does not pretend the invariant is older than it is.
+Measured on the live database before this landed: 48 AI-owned steps at
+`approved`, 46 with a draft artifact and 2 without, none with a campaign. **The
+17 user-owned steps at `approved` are a different strand and are left alone**:
+they were answered before the answer path walked on to `done`, the walk was
+deliberately not backfilled, and a sweep over the user arm would need the same
+argument this one makes for the AI arm, which nobody has yet had to make.
+`HEAL_ENABLED` and `HEAL_MAX_PER_TICK` are documented in
+[infra-devops.md](infra-devops.md). `apps/api/src/lib/heal.test.ts` pins the
+seven properties above.

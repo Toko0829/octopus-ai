@@ -323,6 +323,32 @@ small for a second reason its siblings do not have: each reassignment produces a
 offer on the next matcher pass, so a large number here would push a burst at a
 cold-start pool.
 
+### The heal sweep is recovery, and sits with the other recovery
+
+`HEAL_ENABLED` (default **on**) and `HEAL_MAX_PER_TICK` (default 3) control the
+sweep that finishes an AI step the executor approved and did not get to finish,
+because the process died between its `approved` write and its `done` write, and
+delivers the artifact it never announced
+([business-projects-workflow.md](business-projects-workflow.md) § "The heal
+sweep"). Same polarity as every key here except the crawler's, for the family's
+reason: it reaches nobody outside the system. **What turning it off costs is
+stated rather than implied:** a finished step stays at `approved`, which is not
+terminal, so any later replan may cancel work that passed its check, and the
+cited artifact it produced sits in a table nobody but a developer can read.
+
+**Doubly inert** in its siblings' sense: it selects only AI-owned steps at
+`approved` for longer than five minutes, never a human step (that state is the
+payout authorisation there) and never a campaign step, so on a deployment where
+no worker has died in that window it does one indexed read and stops.
+
+It runs directly after `reclaimLostRuns` and before the graph is walked, which
+is the one position on the pass that is not about who is waiting: both act on
+what a dead worker left behind, and finishing a step before the scheduler runs
+means a dependent waiting on nothing but that second write moves in the same
+pass. The cap bounds steps **finished**, and is small because each one is a
+delivery into a room and the live database holds a backlog from before the
+executor walked on at all.
+
 ### Measuring shares publishing's polarity, not crawling's
 
 `METRICS_ENABLED` (default **on**) and `METRICS_MAX_PER_TICK` (default 3) control

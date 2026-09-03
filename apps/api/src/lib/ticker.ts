@@ -10,6 +10,7 @@ import { matcherSweep } from './match';
 import { escrowReconcileSweep } from './escrow-reconcile';
 import { noShowSweep } from './no-show';
 import { payoutSweep } from './payout';
+import { healSweep } from './heal';
 import { notifyWaiting } from './waiting';
 import { produceCampaignCards } from './campaign-cards';
 import type { ExecutorDeps } from './executor';
@@ -106,6 +107,14 @@ export interface TickerOptions {
    * `PAYOUT_ENABLED`).
    */
   payout?: { maxPerPass: number };
+  /**
+   * Finish AI steps the executor left at `approved` when it died between its
+   * two writes, and deliver the artifact it never announced. Absent means this
+   * deployment does not heal, which is supported and is not the default: a
+   * finished step then stays cancellable by any replan forever, and the work it
+   * produced is never shown to anybody (see `HEAL_ENABLED`).
+   */
+  heal?: { maxPerPass: number };
   log: {
     info: (obj: unknown, msg: string) => void;
     warn: (obj: unknown, msg: string) => void;
@@ -215,6 +224,24 @@ export function startTicker(opts: TickerOptions): () => void {
       }
 
       const recovered = await reclaimLostRuns(opts.admin, opts.log);
+
+      // The other thing a dead worker leaves behind: a step it approved and did
+      // not finish. Directly after reclaiming lost runs and before the graph is
+      // walked, so a dependent waiting on nothing but that second write moves in
+      // this pass rather than the next. Its own try/catch, like every sweep
+      // here, and unlike `reclaimLostRuns` it is optional because it delivers
+      // into rooms, which a classify-only deployment should not do.
+      if (opts.heal) {
+        try {
+          await healSweep({
+            admin: opts.admin,
+            maxPerPass: opts.heal.maxPerPass,
+            log: opts.log,
+          });
+        } catch (err) {
+          opts.log.error({ err, worker }, 'heal sweep failed');
+        }
+      }
 
       const { data: projects, error: projectError } = await opts.admin
         .from('projects')
