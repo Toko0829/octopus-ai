@@ -184,7 +184,7 @@ export function ReplanCard({ embed, canAct, onAct }: Props) {
       </div>
 
       <div className="plan-stages">
-        <div className="stage">
+        <div className="stage stage-single">
           <div className="stage-body">
             <ul className="plan-steps">
               {diff.ops.map((op) => (

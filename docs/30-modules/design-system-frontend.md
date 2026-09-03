@@ -141,6 +141,14 @@ Posting a message also starts an agent run (`startAgentRun`), and the reply arri
 - **A failed agent run never invalidates a sent message.** The send and the run are separate awaits; if the run cannot start, the message stays sent and the failure surfaces in its own banner.
 - **Live updates failing is never silent.** If the browser cannot read the session, or the channel errors or times out, a banner says so. The page would otherwise look perfectly healthy while quietly showing stale data, since the server-rendered first paint succeeds regardless.
 
+## The campaign and replan cards are not numbered stages
+
+`.stage` is a three-column grid (`22px 1fr auto`) because a plan card numbers its stages down the left. `CampaignCard` and `ReplanCard` reuse the same wrapper for a **single unnumbered body**, so that body was laid into the 22px number column and every line wrapped to one word: the card rendered as a ribbon of single words down its left edge, with the citation pills stacked as narrow ovals. It was live in that state on the surface that asks somebody to authorise ad spend.
+
+`.stage-single` sets one column, and both cards carry it. A modifier rather than `:not(:has(.stage-num))`, because a selector that silently does nothing where `:has` is unsupported restores the bug rather than failing loudly.
+
+**The campaign card also printed one source five times.** Citations are per chunk and one document usually contributes several, so five pills reading "Organic social for a founder-led product" made a single source look like five agreeing. `PlanCard` already deduplicates by label with that exact reasoning, and `postArtifact` does the same server-side; the campaign card was the one place the rule had not been applied, which is the surface where "how many sources back this" matters most.
+
 ## The composer's mention list
 
 Typing `@` offers the four agent voices, name and one-line summary, in a listbox above the box because the composer sits at the bottom of the viewport and a list below it would open off screen. No dependency: `mentionQuery` in `lib/mention-query.ts` finds the `@word` the caret is in, and the component owns the keys.

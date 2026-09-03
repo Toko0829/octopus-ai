@@ -434,6 +434,23 @@
   color: var(--text-faint);
   padding-top: 2px;
 }
+/*
+  A stage with no number.
+
+  `.stage` is a three-column grid (`22px 1fr auto`) because a plan card numbers
+  its stages 01, 02, 03 down the left. The campaign and replan cards reuse the
+  same wrapper for a single unnumbered body, so that body landed in the **22px
+  number column** and every line wrapped to one word. It rendered as a ribbon of
+  single words down the left edge of the card, which is what a person saw when a
+  campaign was proposed to them.
+
+  A modifier rather than `:not(:has(.stage-num))`, because a selector that
+  silently does nothing where `:has` is unsupported restores the bug rather than
+  failing loudly, and this is the card that asks somebody to authorise spend.
+*/
+.stage-single {
+  grid-template-columns: 1fr;
+}
 .stage-title {
   font-weight: 600;
   font-size: var(--text-sm);

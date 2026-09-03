@@ -62,6 +62,14 @@ export function CampaignCard({ embed, canAct, onAct }: Props) {
   const pending = embed.state === 'pending';
   const approved = embed.state === 'approved';
 
+  // Deduplicated by label, the way `PlanCard` already does it and for the same
+  // reason: citations are per chunk, one document usually contributes several,
+  // and printing its title five times makes one source look like five agreeing.
+  // On the card that authorises spend, that is the reading that matters most.
+  const cited = campaign.citations.filter(
+    (c, i) => campaign.citations.findIndex((o) => o.label === c.label) === i,
+  );
+
   // Parsed once and used for both the guard and the request, so the number the
   // button checks is the number the server is sent.
   const typed = budget.trim();
@@ -102,7 +110,7 @@ export function CampaignCard({ embed, canAct, onAct }: Props) {
       </div>
 
       <div className="plan-stages">
-        <div className="stage">
+        <div className="stage stage-single">
           <div className="stage-body">
             <ul className="plan-steps">
               <li className="plan-step">
@@ -117,9 +125,9 @@ export function CampaignCard({ embed, canAct, onAct }: Props) {
               <li className="plan-step">
                 <div className="stage-title">Why this channel</div>
                 <div className="stage-detail">{campaign.summary}</div>
-                {campaign.citations.length > 0 ? (
+                {cited.length > 0 ? (
                   <div className="step-cites">
-                    {campaign.citations.map((c) => (
+                    {cited.map((c) => (
                       <span className="cite" key={c.sourceId}>
                         <span className="dot" aria-hidden />
                         {c.label}
