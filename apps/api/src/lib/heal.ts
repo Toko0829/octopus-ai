@@ -29,13 +29,12 @@ import { roomForProject } from './room-for-project';
  *
  * **Never a campaign step.** `materialise_campaign` also lands a step at
  * `approved`, from `needs_user`, when the owner approves the card, whatever
- * its owner type. That step
- * is not finished: the campaign it authorised is `ready`, then `live`, then
- * whatever the optimize sweep decides, and the step at `approved` is what a
- * replan cancels to stop it. A `campaigns` row pointing at the task is the
- * exclusion, read as its own query rather than inferred from the absence of an
- * artifact, because "no artifact" is also what a crash before the artifact
- * write looks like.
+ * its owner type. That step is not finished: the campaign it authorised is
+ * `ready`, then `live`, then whatever the optimize sweep decides, and the step
+ * at `approved` is what a replan cancels to stop it. A `campaigns` row pointing
+ * at the task is the exclusion, read as its own query rather than inferred from
+ * the absence of an artifact, because "no artifact" is also what a crash before
+ * the artifact write looks like.
  *
  * **Older than the executor's own gap.** The two writes are one round trip
  * apart, so a step approved in the last few minutes is far more likely to be
