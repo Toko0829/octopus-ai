@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
-import { AGENT_PERSONAS } from '@octopus/contracts';
+import { AGENT_PERSONAS, mentionRegex } from '@octopus/contracts';
 import type { AgentPersona, UiMember, UiMessage } from '../../lib/types';
 import { RoleBadge } from './ui';
 import { OctopusMark } from './icons';
@@ -115,6 +115,40 @@ function authorOf(m: UiMessage, membersById: Record<string, UiMember>): UiMember
   };
 }
 
+/**
+ * A message body with its mentions marked.
+ *
+ * Split on the same regex the server routes on, so what a reader sees marked is
+ * exactly what was acted on. A second pattern here would disagree with the
+ * server at `someone@ads.com`, and highlighting a mention the server ignored
+ * would promise a routing that never happened.
+ *
+ * The literal `@Name` is the pairing rule-15 asks for: the tint is decoration
+ * over text that already reads as an address.
+ */
+function renderBody(body: string) {
+  const parts: (string | { token: string })[] = [];
+  const re = mentionRegex();
+  let last = 0;
+  for (let m = re.exec(body); m !== null; m = re.exec(body)) {
+    if (m.index > last) parts.push(body.slice(last, m.index));
+    parts.push({ token: m[0] });
+    last = m.index + m[0].length;
+  }
+  if (parts.length === 0) return body;
+  if (last < body.length) parts.push(body.slice(last));
+
+  return parts.map((part, i) =>
+    typeof part === 'string' ? (
+      part
+    ) : (
+      <span className="mention" key={i}>
+        {part.token}
+      </span>
+    ),
+  );
+}
+
 /** Treat the reader as "following" if they are within this many px of the end. */
 const PINNED_THRESHOLD_PX = 80;
 
@@ -210,7 +244,7 @@ export function MessageStream({
                 {m.pending && <span className="msg-state mono">sending</span>}
                 {m.failed && <span className="msg-state mono failed">not sent</span>}
               </div>
-              {m.body && <div className="msg-text">{m.body}</div>}
+              {m.body && <div className="msg-text">{renderBody(m.body)}</div>}
               {/* The card is an enhancement of a readable message, never a
                   replacement for one: the body above still carries the plan in
                   plain text wherever this does not render. */}

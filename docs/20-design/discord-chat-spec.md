@@ -78,6 +78,7 @@ Rich cards embedded in the stream, **permission-gated by role**:
 ## Mentions, reactions, pins
 
 - `@user` / `@agent` / `@role` / `#channel` mentions with autocomplete.
+- **The agent half is built.** `@` in the composer offers the four voices, name and one line each, in a listbox above the box; Enter completes the mention rather than sending, and the stream marks the finished token. An owner's mention on a live project becomes a replan card signed by that voice, so the affordance is offered to the owner only. `@user`, `@role` and `#channel` are not built.
 - Reactions, pins, saved messages.
 - Mentions and unread/pending-action counts drive [notifications](../30-modules/notifications.md).
 

@@ -141,6 +141,16 @@ Posting a message also starts an agent run (`startAgentRun`), and the reply arri
 - **A failed agent run never invalidates a sent message.** The send and the run are separate awaits; if the run cannot start, the message stays sent and the failure surfaces in its own banner.
 - **Live updates failing is never silent.** If the browser cannot read the session, or the channel errors or times out, a banner says so. The page would otherwise look perfectly healthy while quietly showing stale data, since the server-rendered first paint succeeds regardless.
 
+## The composer's mention list
+
+Typing `@` offers the four agent voices, name and one-line summary, in a listbox above the box because the composer sits at the bottom of the viewport and a list below it would open off screen. No dependency: `mentionQuery` in `lib/mention-query.ts` finds the `@word` the caret is in, and the component owns the keys.
+
+- **Enter completes the mention rather than sending.** Sending a half-typed name because the list happened to be open is the one failure this component must not have, so `Enter` and `Tab` both choose and `preventDefault`, and only a closed list lets `Enter` submit. `Escape` closes without choosing, and `ArrowUp`/`ArrowDown` wrap.
+- **`mentionQuery` is deliberately looser than `mentionRegex`.** The shared one decides what counts as a mention in a finished message; this one decides whether to offer a list while somebody is still typing, so it matches a bare `@` and a partial name, which are not mentions. It still refuses to open inside `someone@ads.com`, which is the case an inline regex gets wrong first.
+- **Offered only to the owner** (`mentionable={canAct}`). A member's mention is an ordinary goal, so offering them the list would be the "affordance that only fails when used" the add-source button already avoids.
+- **The caret lands after the inserted name**, not at the end of the line, so completing a mention mid-sentence does not send the person back to the end of it.
+- **The stream marks mentions** with `renderBody`, splitting on the same `mentionRegex` the server routes on. The literal `@Name` is what carries the meaning and the tint is decoration over it, which is the rule-15 pairing.
+
 ## The members panel, and its second group
 
 `ContextPanel` renders two lists. The people come from `room_members` with Realtime Presence dots. Below them, under an "Octopus" label, the **four agent voices** from `AGENT_PERSONAS`, built by `activityByPersona` in `lib/persona-activity.ts` out of `ProjectSummary.working` on the project list `ChatApp` already refetches on every message.

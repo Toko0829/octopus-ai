@@ -82,6 +82,8 @@ than regeneration), `materialise_campaign`.
 | `POST /api/projects/:projectId/tasks/:taskId/resolution`      | The owner's verbs: `answer`, `retry`, `find_expert`, `approve_work`, `reject_work`, `dispute` |
 | `GET /api/projects/:projectId/artifacts/:artifactId/file-url` | A signed URL, read as the caller so RLS decides visibility                                    |
 
+**`packages/core` also holds the words a replan travels with.** `replanReason` builds the reason from a finished question card's answers, and `mentionReason` builds it from a mention, both templated rather than generated on the rule `INTAKE_COPY` records, and both capped to the exported `REPLAN_REASON_MAX`. One constant rather than two, because two limits that must agree can disagree and the one that loses is a 422 from the reasoning core in the middle of somebody's request.
+
 **What the project list reports.** `summariseProjects` in `apps/api/src/lib/project-progress.ts` is
 the one place task rows become the numbers a person reads, and it is pure so a miscount fails a
 test rather than rendering as a plausible figure. Alongside the counts it now returns

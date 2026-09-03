@@ -9,14 +9,18 @@ import {
   type ProposePlanProposal,
 } from './ai';
 import {
+  AGENT_PERSONAS,
+  parseMention,
   PlanEmbedPayload,
   QuestionEmbedPayload,
+  stripMention,
   type AgentPersona,
   type IntakeSlot,
   type IntakeQuestion,
 } from '@octopus/contracts';
-import { dismissableQuestion, profileSlots, replanReason } from '@octopus/core';
+import { dismissableQuestion, mentionReason, profileSlots, replanReason } from '@octopus/core';
 import { produceDiff } from './replan-diff';
+import { liveProjectForRoom } from './room-for-project';
 import { profileFieldsFromSlots, readProfile, writeProfileFields } from './room-profile';
 
 /**
@@ -147,6 +151,27 @@ export const INTAKE_COPY = {
   started: (goal: string) => `Working on a plan for: ${goal}. This usually takes a minute or two.`,
 
   updating: 'Updating the plan with what you said. This usually takes a minute or two.',
+} as const;
+
+/**
+ * What a mention says back, in the same templated voice as everything else here.
+ *
+ * **A mention is answered before it is worked on**, because the alternative is
+ * silence while a replan is written, and silence after somebody addresses one of
+ * the four by name reads as the mention not having been understood (rule 16).
+ */
+export const MENTION_COPY = {
+  ack: 'On it. I will put together a change to the plan for you to approve. This usually takes a minute or two.',
+
+  /**
+   * A specialist named in a room with no plan running.
+   *
+   * The Strategist says it, because it is the one whose work comes first, and it
+   * says what will happen rather than refusing: the message is still a goal and
+   * still starts an ordinary run.
+   */
+  noPlan: (name: string) =>
+    `${name} joins once a plan is running. No plan is running here yet, so I will start with one.`,
 } as const;
 
 /**
@@ -734,6 +759,75 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
     return data !== null;
   }
 
+  /**
+   * A message that names one of the four voices.
+   *
+   * **A mention becomes a card, never an act** ([ADR-0031](../../../../docs/40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)).
+   * "@Ads move the budget to Meta" does not move a budget: it produces a replan
+   * card the owner approves, through the same `produceDiff` an owner's own
+   * request from the project panel takes. A mention that dispatched work
+   * directly would let a sentence in a chat message reach a side effect without
+   * passing `routeTask` or an approval, which is what rule 7 forbids.
+   *
+   * Three outcomes, and only one of them ends the run.
+   *
+   * - **Not the owner** changes nothing. The cards are about the owner's own
+   *   business, so a member's sentence is a goal exactly as it was before.
+   * - **The owner, with a project running**, gets an acknowledgement in the
+   *   voice they addressed and a diff proposed by it. Handled: no intake, no
+   *   second plan.
+   * - **The owner, with nothing running**, is told the specialist joins once
+   *   there is a plan, and the message continues as an ordinary goal with the
+   *   token stripped so the planner is not asked to plan around "@Ads".
+   *
+   * `@Strategist` on a running project routes here too, and deliberately. A
+   * fresh intake on a project that is already running would produce a competing
+   * plan, which is the regeneration replan-by-diff exists to prevent, so the
+   * Strategist answers by diff like everybody else and skips the `noPlan` line
+   * it would otherwise be saying to itself.
+   */
+  async function answerMention(
+    roomId: string,
+    message: string,
+    persona: AgentPersona,
+    runId: string,
+    fromOwner: boolean,
+  ): Promise<{ handled: boolean; goal: string }> {
+    if (!fromOwner) return { handled: false, goal: message };
+
+    const admin = createServiceClient(opts.supabase);
+    const project = await liveProjectForRoom(admin, roomId);
+
+    if (!project) {
+      if (persona !== 'strategist') {
+        await postNotice(
+          roomId,
+          MENTION_COPY.noPlan(AGENT_PERSONAS[persona].name),
+          runId,
+          'ack',
+          persona,
+        );
+      }
+      return { handled: false, goal: stripMention(message, persona) };
+    }
+
+    log.info({ agentRunId: runId, roomId, persona, projectId: project.id }, 'mention routed to a replan');
+    await postNotice(roomId, MENTION_COPY.ack, runId, 'ack', persona);
+    await produceDiff(
+      admin,
+      { aiServiceUrl: opts.aiServiceUrl, aiTimeoutMs: opts.aiTimeoutMs, log },
+      {
+        projectId: project.id,
+        roomId,
+        goal: project.goal,
+        reason: mentionReason(persona, message),
+        runId,
+        persona,
+      },
+    );
+    return { handled: true, goal: message };
+  }
+
   async function startRun(roomId: string, message: string, runId: string, authorId: string) {
     try {
       // Every message is a goal. An owner's goal also closes the intake cards
@@ -742,6 +836,19 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
       // business and a member's message says nothing about it.
       const ownerId = await loadRoomOwner(roomId);
       const fromOwner = ownerId !== null && ownerId === authorId;
+
+      // Before anything else. A mention is a request about the plan that is
+      // already running, not a new goal, so closing the intake cards that are
+      // about the current goal would be wrong, and sending "@Ads" to the
+      // classifier would spend a call to learn nothing.
+      const mentioned = parseMention(message);
+      let text = message;
+      if (mentioned) {
+        const routed = await answerMention(roomId, message, mentioned, runId, fromOwner);
+        if (routed.handled) return;
+        text = routed.goal;
+      }
+
       if (fromOwner) await dismissOpenIntake(roomId, runId);
 
       // What the workspace already knows, as stated slots for round 0. Read
@@ -753,7 +860,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
         log.warn({ err, roomId }, 'could not read the workspace profile; asking instead');
       }
 
-      const goal = message.trim();
+      const goal = text.trim();
       const next = await runIntake(roomId, goal, runId, { slots: seed, round: 0 });
       // Intake declined the subject. This run is finished and the next message
       // starts another.

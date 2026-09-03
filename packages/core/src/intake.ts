@@ -102,7 +102,14 @@ function slotValue(slot: IntakeSlot): string {
   return slot.value.trim().replace(/\s+/g, ' ');
 }
 
-const REPLAN_REASON_MAX = 1000;
+/**
+ * The reason field's limit, mirroring `ReplanRequest.reason` in
+ * `services/ai/src/octopus_ai/schemas.py`. Exported because `mentionReason`
+ * builds the same field from different words and must cap it the same way; two
+ * numbers here would be two limits that can disagree, and the one that loses is
+ * a 422 from the reasoning core in the middle of somebody's request.
+ */
+export const REPLAN_REASON_MAX = 1000;
 
 /**
  * The reason a finished question card gives to the replan path.

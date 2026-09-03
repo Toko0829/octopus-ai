@@ -389,6 +389,8 @@ Non-negotiables (full list in [security-compliance.md](../10-architecture/securi
 
 `personaForStage` is **total**: `tasks.stage` is free text, so an unrecognised stage and a null one both fall to the Strategist rather than throwing. A thrown label would mean delivered work that never reaches the room, which is the failure `roomForProject` was written to fix.
 
+**A mention is a request to the single writer, not a second one.** Naming a voice in the chat resolves the project running in that room and produces a replan card through `produceDiff`, signed by the voice addressed. The ops come from the same `/replan` call an owner's own request makes, and `apply_plan_diff` behind an owner-gated card is still the only thing that changes a running DAG. `mentionReason` in `packages/core` turns the request into the reason field, templated and capped to the same `REPLAN_REASON_MAX` as `replanReason`, with one instruction asking the planner to stay in that voice's stages. **That instruction is guidance, not a guardrail:** a planner that ignores it produces a card whose ops the owner reads before anything is applied.
+
 **`services/ai` is untouched.** All five system prompts still open "You are Octopus", because a persona changes who a message is attributed to and not how it was written. Per-persona prompt voice is named-not-built; if it lands it is a prompt change with an eval pass, not a field on a request.
 
 ## Minimal-user-involvement policy

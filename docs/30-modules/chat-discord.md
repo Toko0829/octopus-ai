@@ -72,11 +72,14 @@ than assumes. Presence is Realtime Presence from the client and has no server-si
 **pgTAP suites and their counts**: `rls_membership.sql` (26), `thread_scope.sql` (55),
 `message_persona.sql` (10), `question_answers.sql` (12), `room_profiles.sql` (10).
 
+**Mentions.** Naming one of the four voices is live: the composer offers them from `@`, the stream
+marks them, and an owner's mention on a live project becomes a replan card signed by that voice.
+See the table under Mentions below. `@user`, `@role` and `#channel` are not built.
+
 **Not built.** A thread switcher in the owner's UI. `@user`, `@role` and `#channel` mentions,
-reactions, pins and saved messages. Agent mentions, which land in the next slice. The four
-unwritten embed components. Message editing or deletion of any kind. Typing indicators and the
-activity states the spec describes. A mention feeding [notifications](notifications.md). The top
-bar's presence avatars and live budget.
+reactions, pins and saved messages. The four unwritten embed components. Message editing or
+deletion of any kind. Typing indicators and the activity states the spec describes. A mention
+feeding [notifications](notifications.md). The top bar's presence avatars and live budget.
 
 ## 5-region layout
 
@@ -158,6 +161,22 @@ Threads per subtask; Zulip-style **named topics** for resumable subtasks. A node
 ## Mentions, reactions, pins
 
 `@user` / `@agent` / `@role` / `#channel` (autocomplete), reactions, pins, saved messages. Mentions + pending-action counts feed [notifications](notifications.md).
+
+**One of these is built: naming one of the four agent voices.** `@Strategist`, `@Content`, `@Ads` and `@Analyst` are offered by an autocomplete in the composer and marked in the stream. Everything else in the line above is still not built, including `@user`, `#channel`, and any notification from a mention.
+
+**A mention becomes a card, never an act** ([ADR-0031](../40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)). `@Ads move the budget to Meta` does not move a budget: `startRun` resolves the project running in the room, posts an acknowledgement in the voice that was addressed, and calls the same `produceDiff` an owner's own request from the project panel takes. The owner then approves the card or does not. A mention that dispatched work directly would let a sentence in a chat message reach a side effect without passing `routeTask` or an approval, which is what rule 7 forbids.
+
+Three outcomes, and only one ends the run.
+
+| Who, and what is running                 | What happens                                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| The owner, with a project live           | An acknowledgement in that voice, then a replan card it signs. No intake call, and the open question cards are left alone |
+| The owner, with nothing live             | One Strategist line saying the specialist joins once a plan is running, then the ordinary run on the message with the token stripped |
+| Anybody else                             | An ordinary goal, exactly as before. The cards are about the owner's own business                      |
+
+`@Strategist` on a live project routes the same way rather than starting a fresh intake, because a second plan competing with the running one is the regeneration replan-by-diff exists to prevent.
+
+**The grammar lives in `packages/contracts`** (`mentionRegex`, `parseMention`, `stripMention`) because two independent readers must agree on it: the composer decides what to highlight and offer, and `startRun` decides what to route. A second regex in `apps/web` would disagree at `someone@ads.com` and at `@Adsy`, and highlighting a mention the server ignored would promise a routing that never happened. `@Octopus` is deliberately not a mention: it addresses the whole thing, which is what every message already does.
 
 ## Presence
 

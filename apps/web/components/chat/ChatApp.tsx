@@ -577,6 +577,7 @@ export function ChatApp({
           channelName={activeChannel?.name ?? null}
           onSend={handleSend}
           onAddSource={canAct ? () => setSourceOpen(true) : undefined}
+          mentionable={canAct}
         />
       </div>
       <ContextPanel members={uiMembers} personas={personas} roomId={roomId} canAct={canAct} />

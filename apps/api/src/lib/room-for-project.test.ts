@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { roomForProject } from './room-for-project';
+import { liveProjectForRoom, roomForProject } from './room-for-project';
 
 type Row = Record<string, unknown> | null;
 
@@ -76,5 +76,118 @@ describe('the room a project delivers into', () => {
     await expect(roomForProject(client, 'project-1')).rejects.toMatchObject({
       message: 'timeout',
     });
+  });
+});
+
+
+/**
+ * Which project a mention in a room is about.
+ *
+ * Same argument as the function above, inverted: a room's projects are found
+ * through the plan cards posted in it, because `rooms.project_id` is claimed
+ * permanently by the first plan approved there. Resolving no project would turn
+ * a mention into a fresh intake, which is the regeneration a replan card exists
+ * to prevent, so "found nothing" has to mean nothing is running rather than
+ * "the lookup took the wrong route".
+ */
+function listStub(rows: Record<string, Row[]>) {
+  const seen: string[] = [];
+  const client = {
+    from(table: string) {
+      seen.push(table);
+      const filters: Record<string, unknown> = {};
+      const builder: Record<string, unknown> = {};
+      Object.assign(builder, {
+        select: () => builder,
+        eq: (col: string, val: unknown) => {
+          filters[col] = val;
+          return builder;
+        },
+        in: (col: string, vals: unknown[]) => {
+          filters[`in:${col}`] = vals;
+          return builder;
+        },
+        maybeSingle: async () => ({ data: (rows[table] ?? [])[0] ?? null, error: null }),
+        then: (resolve: (v: unknown) => unknown) => {
+          const all = rows[table] ?? [];
+          const matched = all.filter((r) =>
+            Object.entries(filters).every(([key, val]) => {
+              if (key.startsWith('in:')) {
+                return (val as unknown[]).includes((r as Record<string, unknown>)[key.slice(3)]);
+              }
+              return (r as Record<string, unknown>)[key] === val;
+            }),
+          );
+          return resolve({ data: matched, error: null });
+        },
+      });
+      return builder;
+    },
+  };
+  return { client: client as never, seen };
+}
+
+const proj = (id: string, status: string, createdAt: string, embed: string | null) => ({
+  id,
+  goal: `goal ${id}`,
+  status,
+  created_at: createdAt,
+  source_embed_id: embed,
+});
+
+describe('the project a mention is about', () => {
+  it('finds a project through a plan card posted in the room', async () => {
+    const { client } = listStub({
+      rooms: [{ project_id: null }],
+      action_embeds: [{ id: 'embed-1', room_id: 'room-1', component: 'plan' }],
+      projects: [proj('p1', 'active', '2026-09-01T00:00:00Z', 'embed-1')],
+    });
+
+    expect(await liveProjectForRoom(client, 'room-1')).toMatchObject({ id: 'p1', status: 'active' });
+  });
+
+  it('still finds one linked only by rooms.project_id', async () => {
+    // The legacy link. A room whose first plan predates the card lookup would
+    // otherwise answer "nothing running" and send a mention into a fresh plan.
+    const { client } = listStub({
+      rooms: [{ project_id: 'p-legacy' }],
+      action_embeds: [],
+      projects: [proj('p-legacy', 'active', '2026-08-01T00:00:00Z', null)],
+    });
+
+    expect(await liveProjectForRoom(client, 'room-1')).toMatchObject({ id: 'p-legacy' });
+  });
+
+  it('takes the newest when a room has run more than one venture', async () => {
+    const { client } = listStub({
+      rooms: [{ project_id: null }],
+      action_embeds: [
+        { id: 'e1', room_id: 'room-1', component: 'plan' },
+        { id: 'e2', room_id: 'room-1', component: 'plan' },
+      ],
+      projects: [
+        proj('old', 'active', '2026-07-01T00:00:00Z', 'e1'),
+        proj('new', 'active', '2026-09-01T00:00:00Z', 'e2'),
+      ],
+    });
+
+    expect((await liveProjectForRoom(client, 'room-1'))?.id).toBe('new');
+  });
+
+  it('ignores a project that is finished or cancelled', async () => {
+    // Proposing a change to a completed project is proposing a change to
+    // nothing. The mention falls through to an ordinary goal instead.
+    const { client } = listStub({
+      rooms: [{ project_id: null }],
+      action_embeds: [{ id: 'e1', room_id: 'room-1', component: 'plan' }],
+      projects: [proj('done', 'completed', '2026-09-01T00:00:00Z', 'e1')],
+    });
+
+    expect(await liveProjectForRoom(client, 'room-1')).toBeNull();
+  });
+
+  it('returns null for a room with nothing in it', async () => {
+    const { client } = listStub({ rooms: [{ project_id: null }], action_embeds: [], projects: [] });
+    expect(await liveProjectForRoom(client, 'room-1')).toBeNull();
   });
 });

@@ -40,8 +40,11 @@ export {
   profileSlots,
   remainingRequiredSlots,
   replanReason,
+  REPLAN_REASON_MAX,
   type RoomProfileFields,
 } from './intake';
+
+export { mentionReason } from './mention';
 
 export {
   tick,

@@ -94,3 +94,75 @@ export async function planContextForProject(
     .safeParse((embed?.payload as { context?: unknown } | null)?.context ?? []);
   return parsed.success ? parsed.data : [];
 }
+
+/**
+ * The project a mention in this room is about, or null.
+ *
+ * **The inverse of `roomForProject`, and it takes the same route for the same
+ * reason.** A room's projects are found through the plan cards posted in it,
+ * unioned with the one `rooms.project_id` happens to point at, because that
+ * column is claimed permanently by the first plan approved in a room and a
+ * second project is never linked. `listProjects` already discovers them exactly
+ * this way, and this reuses the argument rather than inventing a third answer to
+ * "which projects belong to this room".
+ *
+ * **Two plain reads, not one `.or()` filter string.** The same stance the route
+ * takes: a hand-built PostgREST filter fails silently when it is wrong, and
+ * silently resolving no project would turn a mention into a fresh intake, which
+ * is precisely the regeneration a replan card exists to prevent.
+ *
+ * **Live means `planning`, `active` or `paused`.** A completed or cancelled
+ * project is not something to propose a change to, and a `draft` has no DAG yet.
+ * Newest first, because a room that ran two ventures should answer about the one
+ * it is on.
+ *
+ * Runs under the secret key, so RLS decides nothing here. The caller has already
+ * established that the person is this room's owner, which is what a mention
+ * routing to a replan requires.
+ */
+export async function liveProjectForRoom(
+  admin: SupabaseClient,
+  roomId: string,
+): Promise<{ id: string; goal: string; status: string } | null> {
+  const LIVE = ['planning', 'active', 'paused'];
+  const COLUMNS = 'id, goal, status, created_at';
+  type Row = { id: string; goal: string; status: string; created_at: string };
+
+  const { data: room, error: roomError } = await admin
+    .from('rooms')
+    .select('project_id')
+    .eq('id', roomId)
+    .maybeSingle<{ project_id: string | null }>();
+  if (roomError) throw roomError;
+
+  const { data: embeds, error: embedError } = await admin
+    .from('action_embeds')
+    .select('id')
+    .eq('room_id', roomId)
+    .eq('component', 'plan');
+  if (embedError) throw embedError;
+
+  const embedIds = (embeds ?? []).map((e) => (e as { id: string }).id);
+
+  const byCard = embedIds.length
+    ? await admin.from('projects').select(COLUMNS).in('source_embed_id', embedIds).in('status', LIVE)
+    : { data: [] as Row[], error: null };
+  if (byCard.error) throw byCard.error;
+
+  const byRoom = room?.project_id
+    ? await admin.from('projects').select(COLUMNS).eq('id', room.project_id).in('status', LIVE)
+    : { data: [] as Row[], error: null };
+  if (byRoom.error) throw byRoom.error;
+
+  const found = new Map<string, Row>();
+  for (const row of [...(byCard.data ?? []), ...(byRoom.data ?? [])]) {
+    const p = row as Row;
+    found.set(p.id, p);
+  }
+  if (found.size === 0) return null;
+
+  // String compare is safe on the ISO timestamps PostgREST returns, which is the
+  // same assumption `summariseProjects` makes when it sorts a project list.
+  const newest = [...found.values()].sort((a, b) => b.created_at.localeCompare(a.created_at))[0]!;
+  return { id: newest.id, goal: newest.goal, status: newest.status };
+}

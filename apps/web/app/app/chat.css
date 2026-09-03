@@ -676,6 +676,63 @@
 .composer {
   flex-shrink: 0;
   padding: var(--sp-3) var(--sp-6) var(--sp-5);
+  /* The mention list is positioned against this. */
+  position: relative;
+}
+
+/*
+  The mention list, above the box rather than below it: the composer sits at the
+  bottom of the viewport, so a list below would open off screen.
+*/
+.composer-suggest {
+  position: absolute;
+  bottom: 100%;
+  left: var(--sp-6);
+  right: var(--sp-6);
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-2);
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-pop);
+  z-index: 20;
+}
+.composer-suggest li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.composer-suggest li[aria-selected='true'] {
+  background: var(--surface-hover);
+}
+.suggest-name {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.suggest-summary {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+  A mention in a message. The literal `@Name` is what carries the meaning; the
+  tint is decoration over text that already reads as an address (rule 15).
+*/
+.mention {
+  color: var(--accent-text);
+  background: var(--accent-quiet);
+  border-radius: var(--r-sm);
+  padding: 0 3px;
+  font-weight: 500;
 }
 .composer-box {
   display: flex;
