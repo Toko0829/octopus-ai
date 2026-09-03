@@ -18,6 +18,77 @@ const project = (id: string, createdAt: string) => ({
   created_at: createdAt,
 });
 
+describe('summariseProjects · which steps are being worked on', () => {
+  const p1 = project('p1', '2026-08-01T00:00:00Z');
+
+  it('lists the steps the executor is holding, with their stage and title', () => {
+    const p = one(
+      summariseProjects(
+        [p1],
+        [
+          { project_id: 'p1', state: 'ai_running', stage: 'content', title: 'Write send four' },
+          { project_id: 'p1', state: 'pending', stage: 'channels', title: 'Set up the campaign' },
+          { project_id: 'p1', state: 'done', stage: 'strategy', title: 'Pick the offer' },
+        ],
+        [],
+      ),
+    );
+    expect(p.working).toEqual([{ stage: 'content', title: 'Write send four' }]);
+  });
+
+  it('counts the self-check as still working', () => {
+    // Stopping at `ai_running` would blink the panel off between the draft and
+    // its review, which reads as the work having finished when it has not.
+    const p = one(
+      summariseProjects(
+        [p1],
+        [{ project_id: 'p1', state: 'ai_self_check', stage: 'measurement', title: 'Read the numbers' }],
+        [],
+      ),
+    );
+    expect(p.working).toHaveLength(1);
+  });
+
+  it('leaves routing out, because no voice owns a step being routed', () => {
+    const p = one(
+      summariseProjects(
+        [p1],
+        [{ project_id: 'p1', state: 'routing', stage: 'content', title: 'Write send four' }],
+        [],
+      ),
+    );
+    expect(p.working).toEqual([]);
+  });
+
+  it('is an empty list when nothing is running, rather than absent', () => {
+    const p = one(summariseProjects([p1], [{ project_id: 'p1', state: 'pending' }], []));
+    expect(p.working).toEqual([]);
+  });
+
+  it('never prints undefined for a step with no title', () => {
+    // A read that did not select the columns yields an entry with no title. The
+    // panel shows this string to a person, so the fallback is words.
+    const p = one(
+      summariseProjects([p1], [{ project_id: 'p1', state: 'ai_running' }], []),
+    );
+    expect(p.working).toEqual([{ stage: null, title: 'an unnamed step' }]);
+  });
+
+  it('ignores a running step belonging to a project not in the list', () => {
+    // Same rule the counts follow: RLS can return a task whose project row was
+    // filtered by a different predicate, and inventing a project from a task row
+    // would put a goal-less entry on somebody's list.
+    const p = one(
+      summariseProjects(
+        [p1],
+        [{ project_id: 'p2', state: 'ai_running', stage: 'content', title: 'Not ours' }],
+        [],
+      ),
+    );
+    expect(p.working).toEqual([]);
+  });
+});
+
 describe('summariseProjects', () => {
   it('counts a finished step at approved, not only at done', () => {
     // Matches private.task_deps_satisfied. If these two ever disagree, a person

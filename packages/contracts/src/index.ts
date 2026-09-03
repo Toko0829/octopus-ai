@@ -1232,6 +1232,20 @@ export const Task = z.object({
 export type Task = z.infer<typeof Task>;
 
 /**
+ * A step the executor is holding right now.
+ *
+ * The stage rather than the persona, because the mapping is the client's to
+ * make from the same registry it renders names out of: sending a persona would
+ * put a second copy of `personaForStage` on the wire, and the wire copy would
+ * be the stale one after a stage moves between voices.
+ */
+export const WorkingStep = z.object({
+  stage: z.string().nullable(),
+  title: z.string(),
+});
+export type WorkingStep = z.infer<typeof WorkingStep>;
+
+/**
  * A project as the list view needs it: enough to say what it is and how far it
  * has got, without shipping every task body to render a row.
  *
@@ -1251,6 +1265,17 @@ export const ProjectSummary = z.object({
   waitingOnYou: z.number().int(),
   escalated: z.number().int(),
   artifactCount: z.number().int(),
+  /**
+   * The steps the executor is running right now, so the client can say which
+   * voice is busy and on what.
+   *
+   * **A list rather than a count**, because the useful thing on a members panel
+   * is the step's own title: "Working on: Write the welcome email" is a report,
+   * and "1 step running" is a number nobody can act on. Defaulted, so a client
+   * reading a server that predates this field renders an idle panel rather than
+   * throwing.
+   */
+  working: z.array(WorkingStep).default([]),
 });
 export type ProjectSummary = z.infer<typeof ProjectSummary>;
 

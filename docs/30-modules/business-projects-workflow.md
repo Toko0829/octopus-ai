@@ -82,6 +82,17 @@ than regeneration), `materialise_campaign`.
 | `POST /api/projects/:projectId/tasks/:taskId/resolution`      | The owner's verbs: `answer`, `retry`, `find_expert`, `approve_work`, `reject_work`, `dispute` |
 | `GET /api/projects/:projectId/artifacts/:artifactId/file-url` | A signed URL, read as the caller so RLS decides visibility                                    |
 
+**What the project list reports.** `summariseProjects` in `apps/api/src/lib/project-progress.ts` is
+the one place task rows become the numbers a person reads, and it is pure so a miscount fails a
+test rather than rendering as a plausible figure. Alongside the counts it now returns
+**`working`**: the stage and title of every task in `WORKING_STATES`, which is `ai_running` and
+`ai_self_check`. Two states rather than one, because the critic reading a draft is still the agent
+busy on that step from the reader's side, and stopping at `ai_running` would blink the members
+panel off between the draft and its review. `routing` is deliberately excluded: the scheduler is
+still deciding who takes the step, so no voice owns it yet. The wire carries the **stage**, not a
+persona, because the client maps it through the same registry it renders names from and a second
+copy on the wire would be the stale one.
+
 **pgTAP** (`supabase/tests/`, counts from each suite's own `plan(N)`).
 
 | Suite                    | Assertions |

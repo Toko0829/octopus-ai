@@ -141,6 +141,17 @@ Posting a message also starts an agent run (`startAgentRun`), and the reply arri
 - **A failed agent run never invalidates a sent message.** The send and the run are separate awaits; if the run cannot start, the message stays sent and the failure surfaces in its own banner.
 - **Live updates failing is never silent.** If the browser cannot read the session, or the channel errors or times out, a banner says so. The page would otherwise look perfectly healthy while quietly showing stale data, since the server-rendered first paint succeeds regardless.
 
+## The members panel, and its second group
+
+`ContextPanel` renders two lists. The people come from `room_members` with Realtime Presence dots. Below them, under an "Octopus" label, the **four agent voices** from `AGENT_PERSONAS`, built by `activityByPersona` in `lib/persona-activity.ts` out of `ProjectSummary.working` on the project list `ChatApp` already refetches on every message.
+
+- **A separate `UiPersona` type, not a widened `UiMember`.** A persona has no user id, never goes offline and never expires, so putting it in the member type would add fields that are meaningless for every person in the list and force four literals elsewhere to carry them.
+- **The pulse is the second use of the one reserved glow** (`.presence.working`, the same `--glow-agent` and `breathe` as `.pulse`), on the same fact: the agent is doing something right now. `prefers-reduced-motion` in `globals.css` already stops the animation and leaves a static teal dot. **The activity line carries the same state in words** ("Working on: Write the welcome email"), so rule 15 holds without the reader having to see the dot.
+- **An idle voice shows its own summary** rather than a blank or the word "Offline". A blank line beside a name reads as something failing to load, and "Offline" would be false for a voice that always answers.
+- **The Strategist's busy state is this browser's own claim.** It is set when this tab's `startAgentRun` is accepted and cleared on a Strategist message, on a system notice, or after 180 seconds. The timeout is not a fallback for a bug: a run can end in ways this client never sees, so the pulse expires whether or not anything arrived. A tab backgrounded through a whole run pulses until it does.
+
+`ProjectPanel` names the same voices: `ownerLabel` resolves an AI step's owner through `personaForStage`, so a step's meta line reads "Content" or "Ads" rather than "Octopus", and `ai_running` reads "Content is working on it".
+
 ## Layout: the scroll chain
 
 The shell is a full-height grid whose panes scroll independently. **Every ancestor of a scrolling pane needs `min-height: 0`.** Flex and grid items default to `min-height: auto`, which refuses to shrink below the content's intrinsic height, so the child's `overflow-y: auto` never receives a bounded height and the content simply overflows and is clipped by `.shell`'s `overflow: hidden`. The symptom is a message list you cannot scroll once it fills the viewport. This applies to `.main` → `.stream`, `.sidebar` → `.chan-list`, and the `.rail` and `.context` panes.

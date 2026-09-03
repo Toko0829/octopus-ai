@@ -33,6 +33,27 @@ export interface UiMember {
   expiresAt: string | null;
 }
 
+/**
+ * One of the four agent voices, as the members panel renders it.
+ *
+ * **A separate type from `UiMember` on purpose.** A persona holds no
+ * `room_members` row, has no user id, is never offline and never expires, so
+ * widening `UiMember` would add fields that are meaningless for every person in
+ * the list and force four literals elsewhere to carry them. The two lists sit
+ * beside each other in the panel and neither pretends to be the other.
+ */
+export interface UiPersona {
+  id: AgentPersona;
+  name: string;
+  initials: string;
+  /** One line, for the panel and later for the composer's mention list. */
+  summary: string;
+  /** A step this voice owns is in the executor's hands right now. */
+  working: boolean;
+  /** What it is doing, in words, or null when it is not doing anything. */
+  activity: string | null;
+}
+
 export interface UiChannel {
   id: string;
   name: string;

@@ -374,7 +374,7 @@ export async function projectRoutes(
 
         const [{ data: tasks, error: taskErr }, { data: artifacts, error: artErr }] =
           await Promise.all([
-            db.from('tasks').select('id, project_id, state').in('project_id', ids),
+            db.from('tasks').select('id, project_id, state, stage, title').in('project_id', ids),
             db.from('artifacts').select('id, project_id').in('project_id', ids),
           ]);
         if (taskErr) throw taskErr;

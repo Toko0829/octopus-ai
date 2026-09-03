@@ -85,6 +85,7 @@ Rich cards embedded in the stream, **permission-gated by role**:
 
 - Supabase Realtime **Presence**: online / idle / dnd, typing indicators, and **activity states** ("Agent is retrieving sources…", "Node is on-site").
 - Member panel shows who's here and their live state.
+- **The agent group is separate and derived, not subscribed.** The four voices sit under their own "Octopus" label below the people, always answering rather than online or offline, each with one line saying what it is doing. A working voice takes the **breathing teal dot**, which is the same reserved glow as the message pulse and means the same thing. The line beside it says so in words, so the state never rests on colour or motion alone.
 
 ## System messages (audit trail)
 

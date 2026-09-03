@@ -751,6 +751,10 @@
   color: var(--text-faint);
   margin: var(--sp-5) 0 var(--sp-3);
 }
+/* The agent group sits closer to the people above it than a new section would. */
+.ctx-label-agents {
+  margin-top: var(--sp-4);
+}
 .ctx-label:first-child {
   margin-top: 0;
 }
@@ -811,6 +815,18 @@
 }
 .presence.offline {
   background: var(--ink-400);
+}
+/*
+  The second use of the one allowed glow, on the same fact the `.pulse` below is
+  reserved for: an agent is doing something right now (AGENTS.md rule 14). The
+  activity line beside it says the same thing in words, so this never carries the
+  state alone. `prefers-reduced-motion` in globals.css already stops the
+  animation, leaving a static teal dot.
+*/
+.presence.working {
+  background: var(--teal-400);
+  box-shadow: var(--glow-agent);
+  animation: breathe 1.6s var(--ease) infinite;
 }
 .ctx-source {
   padding: var(--sp-3);

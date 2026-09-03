@@ -8,10 +8,12 @@ import type {
   EmbedActionResponse,
   ListNotificationsResponse,
   Message,
+  ProjectSummary,
   Room,
   RoomMember,
 } from '@octopus/contracts';
 import type { Presence, UiMember, UiMessage } from '../../lib/types';
+import { activityByPersona } from '../../lib/persona-activity';
 import {
   fromBroadcastRecord,
   mergeMessages,
@@ -67,6 +69,16 @@ interface Props {
   initialInbox?: ListNotificationsResponse | null;
 }
 
+/**
+ * How long the Strategist keeps pulsing with no word back.
+ *
+ * Three minutes, which is longer than a plan usually takes and shorter than a
+ * person will sit staring at it. The backstop exists because a run can end in
+ * ways this client never sees, and a pulse with no way to stop would outlive
+ * the thing it described.
+ */
+const STRATEGIST_BUSY_TIMEOUT_MS = 180_000;
+
 export function ChatApp({
   viewerId,
   viewerEmail,
@@ -89,6 +101,26 @@ export function ChatApp({
   const [createOpen, setCreateOpen] = useState(false);
   const [workOpen, setWorkOpen] = useState(false);
   const [waitingOnYou, setWaitingOnYou] = useState(0);
+  /**
+   * The project list, kept rather than reduced to one number.
+   *
+   * It already arrives on every message for the waiting badge, and it carries
+   * `working`, which is what the members panel needs to say which voice is busy.
+   * Keeping it costs one more piece of state and saves a second poll.
+   */
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  /**
+   * This browser's own agent run is in flight.
+   *
+   * **Client-local, and it has to be.** Planning happens before a project
+   * exists, so there is no task row for the panel to find and no server-side
+   * agent presence to read; this is the one wait that looks longest and the one
+   * nothing else can report. It is therefore a claim about what this tab just
+   * did, not about the system, and the clear rules below keep it from lying for
+   * longer than the timeout.
+   */
+  const [strategistBusy, setStrategistBusy] = useState(false);
+  const strategistTimer = useRef<number | null>(null);
   // Rooms arrive as a server prop and become state here, because creating one has
   // to show up without a full page reload and has to move the selection with it.
   const [roomList, setRoomList] = useState(rooms);
@@ -126,6 +158,10 @@ export function ChatApp({
     () => Object.fromEntries(uiMembers.map((m) => [m.id, m] as const)),
     [uiMembers],
   );
+  const personas = useMemo(
+    () => activityByPersona(projects, strategistBusy),
+    [projects, strategistBusy],
+  );
 
   /**
    * Ownership decides whether the plan card offers its actions. Presentation
@@ -135,6 +171,37 @@ export function ChatApp({
   const canAct = useMemo(
     () => rooms.find((r) => r.id === roomId)?.ownerId === viewerId,
     [rooms, roomId, viewerId],
+  );
+
+  /**
+   * Mark the Strategist busy, with a backstop.
+   *
+   * The timeout is the honest part. A run can end in ways this client never
+   * sees: intake declining the subject posts one line and stops, and a tab that
+   * was backgrounded through the whole run may miss the broadcast. A pulse with
+   * no way to stop would be a lie that outlives the thing it described, so it
+   * expires whether or not anything arrived.
+   */
+  const markStrategistBusy = useCallback(() => {
+    setStrategistBusy(true);
+    if (strategistTimer.current !== null) window.clearTimeout(strategistTimer.current);
+    strategistTimer.current = window.setTimeout(
+      () => setStrategistBusy(false),
+      STRATEGIST_BUSY_TIMEOUT_MS,
+    );
+  }, []);
+
+  const clearStrategistBusy = useCallback(() => {
+    if (strategistTimer.current !== null) window.clearTimeout(strategistTimer.current);
+    strategistTimer.current = null;
+    setStrategistBusy(false);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (strategistTimer.current !== null) window.clearTimeout(strategistTimer.current);
+    },
+    [],
   );
 
   /**
@@ -182,15 +249,19 @@ export function ChatApp({
     async (embedId: string, input: EmbedActionBody) => {
       const res = await actOnEmbed(roomId, embedId, input);
       patchEmbed(embedId, res);
+      // A finished card continues the run: the Strategist is planning again, or
+      // writing a diff for a project that is already running.
+      if (res.state === 'answered') markStrategistBusy();
       return res;
     },
-    [roomId, patchEmbed],
+    [roomId, patchEmbed, markStrategistBusy],
   );
 
   const flash = useCallback((text: string) => {
     setToast(text);
     window.setTimeout(() => setToast(null), 2600);
   }, []);
+
 
   /** Pull anything that landed while we were not subscribed. */
   const catchUp = useCallback(async (id: string) => {
@@ -321,10 +392,14 @@ export function ChatApp({
     let live = true;
     getProjects(roomId)
       .then((res) => {
-        if (live) setWaitingOnYou(res.projects.reduce((n, p) => n + p.waitingOnYou, 0));
+        if (!live) return;
+        setProjects(res.projects);
+        setWaitingOnYou(res.projects.reduce((n, p) => n + p.waitingOnYou, 0));
       })
       .catch(() => {
-        if (live) setWaitingOnYou(0);
+        if (!live) return;
+        setProjects([]);
+        setWaitingOnYou(0);
       });
     return () => {
       live = false;
@@ -400,6 +475,9 @@ export function ChatApp({
       // agent must not roll it back or mark it unsent. Surface it separately.
       try {
         await startAgentRun(roomId, text);
+        // Only once the run was accepted. Pulsing on the optimistic send would
+        // show the Strategist working on a run the server refused.
+        markStrategistBusy();
       } catch (runErr) {
         console.error('[chat] agent run could not be started', runErr);
         setBanner('Your message was sent, but the agent could not be started.');
@@ -413,6 +491,27 @@ export function ChatApp({
       setBanner(err instanceof Error ? err.message : 'Message failed to send.');
     }
   }
+
+  /**
+   * Stop the Strategist pulsing when the run has visibly answered.
+   *
+   * Three signals, because a run ends in three shapes. A card is the ordinary
+   * one: the plan or the diff has landed and there is something to read. A
+   * `system` line is the failure notice, which is the platform saying the run
+   * did not finish. A plain Strategist line is intake declining the subject or
+   * asking its questions, both of which are the turn handing back to the person.
+   *
+   * The remaining case is a run that ends without reaching this browser at all,
+   * and that is what the timeout in `markStrategistBusy` is for.
+   */
+  const newestMessage = messages[messages.length - 1];
+  useEffect(() => {
+    if (!strategistBusy || !newestMessage || newestMessage.seq === null) return;
+    const isAgentAnswer =
+      newestMessage.authorKind === 'agent' && newestMessage.persona === 'strategist';
+    const isPlatformNotice = newestMessage.authorKind === 'system';
+    if (isAgentAnswer || isPlatformNotice) clearStrategistBusy();
+  }, [newestMessage, strategistBusy, clearStrategistBusy]);
 
   const activeChannel = uiChannels.find((c) => c.id === activeChan);
   const business = businesses.find((b) => b.id === roomId) ?? businesses[0]!;
@@ -480,7 +579,7 @@ export function ChatApp({
           onAddSource={canAct ? () => setSourceOpen(true) : undefined}
         />
       </div>
-      <ContextPanel members={uiMembers} roomId={roomId} canAct={canAct} />
+      <ContextPanel members={uiMembers} personas={personas} roomId={roomId} canAct={canAct} />
       <CommandPalette
         open={cmdkOpen}
         channels={uiChannels}

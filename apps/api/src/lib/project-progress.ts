@@ -30,9 +30,25 @@ import type { ProjectSummary } from '@octopus/contracts';
  */
 export const DONE_STATES = new Set(['approved', 'payout_pending', 'paid', 'done']);
 
+/**
+ * The states the executor is holding a step in.
+ *
+ * Two rather than one: `ai_running` is the model working and `ai_self_check` is
+ * the critic reading what it produced, and both are the agent busy on that step
+ * from the reader's side. Stopping at `ai_running` would blink the panel off
+ * between the draft and its review, which reads as the work having finished.
+ *
+ * Deliberately not `routing`: that is the scheduler deciding who takes the step,
+ * and no voice owns it yet.
+ */
+export const WORKING_STATES = new Set(['ai_running', 'ai_self_check']);
+
 export interface TaskStateRow {
   project_id: string;
   state: string;
+  /** Present only on the reads that select them; `working` needs both. */
+  stage?: string | null;
+  title?: string | null;
 }
 
 export interface ArtifactProjectRow {
@@ -64,7 +80,17 @@ export function summariseProjects(
   artifacts: ArtifactProjectRow[],
 ): ProjectSummary[] {
   const counts = new Map(
-    projects.map((p) => [p.id, { total: 0, done: 0, waiting: 0, escalated: 0, artifacts: 0 }]),
+    projects.map((p) => [
+      p.id,
+      {
+        total: 0,
+        done: 0,
+        waiting: 0,
+        escalated: 0,
+        artifacts: 0,
+        working: [] as { stage: string | null; title: string }[],
+      },
+    ]),
   );
 
   for (const task of tasks) {
@@ -74,6 +100,13 @@ export function summariseProjects(
     if (DONE_STATES.has(task.state)) c.done += 1;
     if (task.state === 'needs_user') c.waiting += 1;
     if (task.state === 'escalated') c.escalated += 1;
+    if (WORKING_STATES.has(task.state)) {
+      // The title is what the reader sees, so an absent one falls back to words
+      // rather than to `undefined`. A read that did not select these columns
+      // yields a working entry with no title instead of crashing the summary,
+      // which is the same stance `citations` takes two functions below.
+      c.working.push({ stage: task.stage ?? null, title: task.title ?? 'an unnamed step' });
+    }
   }
 
   for (const artifact of artifacts) {
@@ -88,7 +121,14 @@ export function summariseProjects(
       .slice()
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .map((p) => {
-        const c = counts.get(p.id) ?? { total: 0, done: 0, waiting: 0, escalated: 0, artifacts: 0 };
+        const c = counts.get(p.id) ?? {
+          total: 0,
+          done: 0,
+          waiting: 0,
+          escalated: 0,
+          artifacts: 0,
+          working: [],
+        };
         return {
           id: p.id,
           goal: p.goal,
@@ -99,6 +139,7 @@ export function summariseProjects(
           waitingOnYou: c.waiting,
           escalated: c.escalated,
           artifactCount: c.artifacts,
+          working: c.working,
         };
       })
   );

@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { Role, UiMember } from '../../lib/types';
+import type { Role, UiMember, UiPersona } from '../../lib/types';
 import { RoleBadge } from './ui';
 import { ConnectedAccounts } from './ConnectedAccounts';
 
@@ -39,10 +39,16 @@ function avatarBg(role: Role): CSSProperties {
  */
 export function ContextPanel({
   members,
+  personas,
   roomId,
   canAct,
 }: {
   members: UiMember[];
+  /**
+   * The four agent voices. Passed in rather than built here, because what each
+   * one is doing is derived from the project list `ChatApp` already holds.
+   */
+  personas: UiPersona[];
   roomId: string;
   canAct: boolean;
 }) {
@@ -65,6 +71,39 @@ export function ContextPanel({
               {m.presence === 'online' ? 'Online' : 'Offline'}
               {m.expiresAt ? ` · access until ${new Date(m.expiresAt).toLocaleDateString()}` : ''}
             </div>
+          </div>
+        </div>
+      ))}
+
+      {/*
+        The agent's own group, below the people.
+
+        **These are not members and the panel does not pretend they are.** They
+        hold no `room_members` row, have no user id and never go offline;
+        `room_members.user_id` is a foreign key to `auth.users`, so putting the
+        AI in the roster would mean giving it credentials, which is a larger
+        decision than a name in a list (ADR-0031). Rendering them as their own
+        group says what is true: four voices that always answer, beside the
+        people who may not be here.
+
+        The pulse is the one reserved use of glow (AGENTS.md rule 14) and it
+        means exactly what it has always meant: the agent is doing something
+        right now. The activity line carries the same fact in words, so the
+        state never rests on colour or motion alone (rule 15).
+      */}
+      <div className="ctx-label ctx-label-agents">Octopus</div>
+      {personas.map((p) => (
+        <div className="member" key={p.id}>
+          <div className="member-av" style={avatarBg('agent')}>
+            {p.initials}
+            <span className={`presence ${p.working ? 'working' : 'online'}`} aria-hidden />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div className="member-name">
+              {p.name}
+              <RoleBadge role="agent" />
+            </div>
+            <div className="member-activity">{p.activity ?? p.summary}</div>
           </div>
         </div>
       ))}

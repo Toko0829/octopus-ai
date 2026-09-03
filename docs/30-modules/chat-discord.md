@@ -163,6 +163,12 @@ Threads per subtask; Zulip-style **named topics** for resumable subtasks. A node
 
 Supabase Presence: online / idle / dnd, typing, activity states ("Agent is retrieving sources…", "Node is on-site"). Member panel shows live state.
 
+**Two kinds of presence, from two sources.** A person's dot is Realtime Presence, so it says who is subscribed right now. **The four agent voices are not present in that sense and the panel does not claim they are**: they hold no membership row, are never offline, and sit in their own group below the people. A voice shows the pulse while a step it owns is in `ai_running` or `ai_self_check`, read from `ProjectSummary.working` on the project list the client already refetches on every message. No polling, no second subscription, and no server-side agent presence table.
+
+**The Strategist has one extra source, and it is client-local.** Planning happens before a project exists, so the longest wait in the product has no task row to be found. This browser marks the Strategist busy when its own run is accepted, and clears it on a Strategist message, on a system notice, or after three minutes. That last one is the honest part: a run can end in ways this client never sees, and a pulse with no way to stop would outlive what it described. **The known gap:** intake declining the subject clears it correctly, but a tab backgrounded through a whole run keeps pulsing until the timeout.
+
+Typing indicators and the activity states quoted above are still not built.
+
 ## System messages (audit trail)
 
 Distinctly rendered: join / task-complete / escrow-held / registered / payout. The human-readable projection of the event-sourced log.

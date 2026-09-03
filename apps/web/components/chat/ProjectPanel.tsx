@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import {
+  AGENT_PERSONAS,
   BUDGET_BAND_LABELS,
   BudgetBand,
+  personaForStage,
   TIMELINE_LABELS,
   Timeline,
   type CampaignSummary,
@@ -84,6 +86,8 @@ const STATE_COPY: Record<
   pending: { label: 'Not started', tone: 'active' },
   ready: { label: 'Ready to run', tone: 'active' },
   routing: { label: 'Being assigned', tone: 'active' },
+  // Rewritten per step by `describeState`, which knows the stage and so knows
+  // which voice is on it. The generic label survives for a step with no stage.
   ai_running: { label: 'Octopus is working on it', tone: 'active' },
   ai_self_check: { label: 'Being checked', tone: 'active' },
   escalated: { label: 'Needs an expert', tone: 'waiting' },
@@ -106,11 +110,24 @@ const STATE_COPY: Record<
   blocked: { label: 'Blocked', tone: 'stopped' },
 };
 
+/**
+ * Who does this step, in the panel's words.
+ *
+ * `ai` is resolved per task rather than read from here, because which voice owns
+ * an AI step depends on its stage. This map holds the two that do not vary and
+ * the fallback for a step whose stage names no voice.
+ */
 const OWNER_COPY: Record<Task['ownerType'], string> = {
   ai: 'Octopus',
   human: 'An expert',
   user: 'You',
 };
+
+/** The voice that owns an AI step, or the plain owner word for anything else. */
+function ownerLabel(task: Pick<Task, 'ownerType' | 'stage'>): string {
+  if (task.ownerType !== 'ai') return OWNER_COPY[task.ownerType];
+  return AGENT_PERSONAS[personaForStage(task.stage)].name;
+}
 
 /**
  * How a campaign's state reads to the person paying for it.
@@ -146,8 +163,14 @@ const CHANNEL_COPY: Record<CampaignSummary['channel'], string> = {
   organic_social: 'Organic social',
 };
 
-function describeState(state: TaskState) {
-  return STATE_COPY[state] ?? { label: state.replace(/_/g, ' '), tone: 'active' as const };
+function describeState(state: TaskState, task?: Pick<Task, 'ownerType' | 'stage'>) {
+  const copy = STATE_COPY[state] ?? { label: state.replace(/_/g, ' '), tone: 'active' as const };
+  // The one state where naming the voice tells the reader something the row does
+  // not already say: it is running right now, and this is who is on it.
+  if (state === 'ai_running' && task && task.ownerType === 'ai') {
+    return { ...copy, label: `${ownerLabel(task)} is working on it` };
+  }
+  return copy;
 }
 
 export function ProjectPanel({ roomId, canAct, onClose }: Props) {
@@ -963,7 +986,7 @@ function TaskRow({
   onResolved: () => void;
 }) {
   const [showWork, setShowWork] = useState(false);
-  const state = describeState(task.state);
+  const state = describeState(task.state, task);
   const delivered = task.artifacts.length > 0;
   const stuck = task.state === 'needs_user' || task.state === 'escalated';
   // An expert handed something over and it is waiting on this person. A separate
@@ -1031,7 +1054,7 @@ function TaskRow({
       <p className="work-task-title">{task.title}</p>
 
       <p className="work-task-meta mono">
-        {OWNER_COPY[task.ownerType]}
+        {ownerLabel(task)}
         {task.riskTier === 'high_risk' && <span className="work-risk"> · Needs your approval</span>}
         {task.riskTier === 'external' && (
           <span className="work-risk"> · Uses an outside service</span>
