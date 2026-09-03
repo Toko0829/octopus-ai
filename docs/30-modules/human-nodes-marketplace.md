@@ -6,7 +6,351 @@
 >
 > Update on any change to onboarding/KYC, matching, the offer flow, the engagement state model, or anti-fraud.
 
-## Implementation status
+## Current shape
+
+> What exists today, read out of the migrations and `apps/api`. **Update this section in the
+> same change as the code**, and keep its "Not built" list honest: it is what a later session
+> trusts instead of reading the whole doc. How each slice went is under
+> [History](#history-slice-by-slice) at the bottom of this doc, and in
+> [status-log.md](../00-overview/status-log.md).
+
+**Tables**, with the migration that landed them.
+
+| Table                | Holds                                                                | Notes                                                                                                                                                                                           |
+| -------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node_profiles`      | One row per node: `kyc_status`, `availability`, `service_geo`, rates | `20260831120000`. A node's identity is its `auth.users` id, so a node is a user with a profile                                                                                                  |
+| `node_skills`        | Claimed skills, one row per tag                                      | `20260831121000`. Claims, not verified capability                                                                                                                                               |
+| `node_credentials`   | Claimed licences and certifications                                  | `20260831122000`. `credential_kind` enum. No evidence is stored, so nothing is confirmed                                                                                                        |
+| `node_verifications` | Each identity-check attempt and its `verification_result`            | `20260831123000`. `passed / failed / inconclusive / error`, the last two retryable oppositely                                                                                                   |
+| `threads`            | A per-task room-within-a-room the node is admitted to                | `20260901120000`, with `room_members.scope` ([ADR-0017](../40-adr/0017-thread-admission-is-a-property-of-the-membership.md))                                                                    |
+| `offers`             | One offer to one node for one task                                   | `20260903120000`. `offer_status` enum; expiry is a timestamp, never a status a clock has to write                                                                                               |
+| `engagements`        | The accepted deal: node, price, currency, deadline, outcome          | `20260904120000`. **No state column of its own** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)): the task's state is the state                                           |
+| `escrow_holds`       | Money committed against `projects.budget_ceiling`                    | `20260904121000`. `state in (held, released, refunded)`; the ceiling has two committer classes ([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md))                            |
+| `ledger_entries`     | Double-entry record of every movement                                | `20260904122000`. Append-only                                                                                                                                                                   |
+| `payouts`            | What the node is paid once the owner approves                        | `20260907121000`. `state in (pending, paid, failed)`. `platform_fee` is a column written from a constant `0` ([ADR-0024](../40-adr/0024-the-take-rate-is-not-deducted-from-an-agreed-price.md)) |
+| `disputes`           | A raised dispute and its resolution                                  | `20260908122000`, written only by `raise_dispute` / `resolve_dispute`. No state column of its own; the task carries `disputed`                                                                  |
+| `ops_actions`        | What an ops actor did, for the audit trail                           | `20260908123000`                                                                                                                                                                                |
+| `ratings`            | Two-directional, `1..5`, one per direction per engagement            | `20260908127000`, written by `submit_rating`. `ratings_not_self` refuses self-rating                                                                                                            |
+
+**Lifecycles**, and where each is enforced.
+
+- **`offer_status`**: `open → declined | expired | withdrawn | accepted`. `open` is the only
+  non-terminal value. Expiry is `expires_at` rather than a status, so no clock has to write a row
+  to make an offer stale.
+- **`kyc_status`**: `unverified → pending → verified | rejected`, plus `suspended` (was verified,
+  lost eligibility; a review can restore it). **Nothing reaches `suspended`.**
+- **`node_availability`**: `available | paused | offboarded`.
+- **`engagements.outcome`**: `completed | reassigned | cancelled | disputed_resolved`, null until
+  `ended_at` is set (`engagements_outcome_iff_ended`). Re-pricing or re-assigning is refused by
+  trigger: that is a new engagement, not an edit.
+- **`disputes.resolution`**: `released | refunded | partial | reassigned | rejection_upheld`
+  ([ADR-0026](../40-adr/0026-the-dispute-exit-map.md)). `resolution`, `resolved_at`, `resolved_by`
+  and `resolution_note` are written all four together or not at all. A partial settlement is a
+  refund and a new hold ([ADR-0025](../40-adr/0025-a-partial-settlement-is-a-refund-and-a-new-hold.md)).
+- **Task states this module drives**, all enforced by the workflow state-machine trigger
+  (`20260813120000`, amended by `20260904124000`, `20260907120000`, `20260908120000`,
+  `20260908121000`): `escalated → matching → offered → claimed → escrow_funded → in_progress →
+proof_submitted → in_review → approved → payout_pending → paid → done`, with `rejected` and
+  `disputed` as exits. `claimed → matching` stays deliberately dropped
+  ([ADR-0019](../40-adr/0019-claimed-to-matching-stays-dropped.md)).
+
+**SQL functions that own a transition**, so no Node-side helper can bypass one: `accept_offer`,
+`settle_payout`, `reassign_engagement`, `raise_dispute`, `resolve_dispute`, `submit_rating`.
+
+**Routes** (`apps/api/src/routes/nodes.ts`, `task-actions.ts`, `ops.ts`).
+
+| Route                                                                         | Does                                                                                                  |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `GET`, `PATCH /api/node`                                                      | The node's own profile                                                                                |
+| `POST /api/node/skills`, `DELETE /api/node/skills/:tag`                       | Claim and drop a skill                                                                                |
+| `POST /api/node/credentials`, `POST …/:credentialId/revoke`                   | Claim and revoke a credential                                                                         |
+| `POST /api/node/verification`                                                 | Run an identity check through the in-repo fake verifier                                               |
+| `GET /api/node/offers`, `POST …/:offerId/accept`, `POST …/:offerId/decline`   | See and answer offers. Accepting funds escrow in the same transaction                                 |
+| `GET /api/node/engagements`                                                   | The node's accepted work                                                                              |
+| `POST …/engagements/:id/start`, `…/proof`, `GET …/proof/:artifactId/file-url` | Start the step, hand it over with files, read a proof file back under RLS                             |
+| `POST …/engagements/:id/dispute`, `POST …/engagements/:id/rating`             | Raise a dispute, rate the owner                                                                       |
+| `POST /api/projects/:projectId/tasks/:taskId/resolution`                      | The owner's verbs: `find_expert`, `approve_work`, `reject_work`, `dispute`, plus `answer` and `retry` |
+| `POST /api/projects/:projectId/engagements/:id/rating`                        | The owner rates the node                                                                              |
+| `GET /api/ops/disputes`, `GET …/:disputeId`, `POST …/:disputeId/resolve`      | The one ops console that exists                                                                       |
+
+**Ticker sweeps** (`apps/api/src/lib/ticker.ts`, `DEFAULT_TICK_INTERVAL_MS = 30_000`, behind a
+single-claim lease so two instances cannot both sweep). This module is driven by `matcherSweep`
+(offer the step to the next ranked node), `noShowSweep` (expire an offer or a breached deadline and
+reassign, [ADR-0023](../40-adr/0023-a-breached-deadline-reassigns.md)), `payoutSweep` (settle an
+approved step), plus `escrowReconcileSweep` and `healSweep`. The two TTLs live in
+`packages/marketplace/src/matching.ts`: `OFFER_TTL_MS` is 48 hours and `WORK_TTL_HOURS` is 168.
+Both were set that long **because nobody was notified of anything**; in-app notification landed
+after them and neither has been revisited since.
+
+**pgTAP** (`supabase/tests/`, counts taken from each suite's own `plan(N)`).
+
+| Suite                         | Assertions |
+| ----------------------------- | ---------- |
+| `node_onboarding.sql`         | 46         |
+| `thread_scope.sql`            | 55         |
+| `marketplace_rls.sql`         | 46         |
+| `marketplace_offers.sql`      | 37         |
+| `marketplace_engagements.sql` | 71         |
+| `marketplace_proof.sql`       | 35         |
+| `marketplace_payout.sql`      | 38         |
+| `marketplace_disputes.sql`    | 62         |
+| `marketplace_ratings.sql`     | 24         |
+
+**Not built.**
+
+- **No real money and no real identity check.** The only registered payment provider is a
+  deterministic in-repo fake and `carriesRealMoney` refuses a real one at the writer; the same
+  holds for KYC through `carriesRealPii`. There is no Stripe Connect Express onboarding, so a
+  payout's `destination` is the node's own user id rather than a connected account.
+- **No take rate.** `platform_fee` is written from a constant `0`, because a fee has to be named
+  on the offer before it can come out of a payment.
+- **`nda_signed_at` and `terms_hash` have no writer.** The columns are settled; e-sign is not built.
+- **No deadline extension.** A node can ask for longer in the thread and the owner has no way to
+  grant it, because an extension needs a surface, an authorisation question and an audit story.
+- **Node suspension is not built.** `kyc_status` carries `suspended` and nothing reaches it,
+  because it would be terminal with no exit until a moderation console exists.
+- **Credentials are claims only.** Confirming one needs an evidence bucket and a licence registry,
+  and has neither.
+- **Onboarding is ops-invited** (`scripts/invite-node.mjs`), not self-service.
+- **Notification is in-app only.** Push, email and SMS are unbuilt, which is why the two TTLs
+  above are as long as they are.
+- **No thread switcher in the owner's UI.** Thread messages are marked in the stream rather than
+  hidden, because hiding rows the owner may read is the defect this repository has recorded twice.
+- **Six of the seven ops consoles.** Only disputes was pulled forward, and only because a
+  restored arc with no console is a new dead end.
+
+## Node onboarding & KYC
+
+- Identity verification via **Persona** (or Stripe Identity to stay in-stack): document + **passive liveness** + **Face Match 1:1** + **Face Search 1:N** across enrolled nodes to kill account-renting / duplicate-identity fraud (the defining gig-fraud vector).
+- Collect jurisdiction, languages, and professional licenses (lawyer/accountant/notary — **verified, not self-attested**).
+- Set up the **Stripe Connect Express** connected account (payout rails + tax onboarding handled by the provider).
+
+## Skill & trust graph
+
+- Structured skill taxonomy (`legal-filing:US-TX`, `notary:US-TX`, `real-estate:Austin`, `food-safety-consulting`, `procurement`, `on-site-inspection`), service geo (PostGIS), availability, rate, languages, rating.
+- Trust score seeds from KYC + verified credentials and grows with completed jobs/ratings.
+- License claims are **hard filters** for regulated tasks, not ranking weights.
+
+## Future idea: AI-administered skill assessment (recorded, scored, owner-chosen)
+
+**Owner-proposed 2026-09-01, deliberately not scheduled.** The proposal: before a
+node is chosen for a task, they take a marketing knowledge check on camera —
+questions generated and scored by the AI — and the owner reviews every
+candidate's recording and score and picks one. Recorded here rather than built,
+which was the owner's own call, and listed in
+[roadmap.md](../10-architecture/roadmap.md)'s deferred table with its trigger.
+
+What it would close is the matcher's honest gap: today nothing in the system can
+set `node_skills.verified` true, so the pool matches claims and ranks on price
+because every other specified input is NULL or constant. An AI-scored assessment
+is a real signal where a weighted score over constant columns is arithmetic
+pretending to be a ranking. And owner-picks-from-candidates already has a hook in
+this doc: the "short sealed-bid window for higher-value/negotiable-scope tasks"
+offer strategy, which is the shape this idea slots into.
+
+Four constraints to hold when it is built, stated now so the slice arrives to
+them rather than discovers them:
+
+1. **Per skill, not per task.** An audition for every dispatch adds a heavy step
+   to a cascade that already runs 48 hours per candidate, and makes the same
+   person re-prove `copywriting` weekly. A passed assessment should instead be
+   the first writer of `node_skills.verified` — a column that has waited for one
+   since `20260831121000` — with a validity window, making it a certification
+   tier (already named in roadmap Phase 4) rather than a per-task gate. A
+   per-task round stays available as the sealed-bid variant for high-value
+   steps.
+2. **The owner sees all three: the recording, the score and the answers.**
+   Decided by the owner 2026-09-01, overriding this section's first draft, which
+   proposed sharing only score + answers. The reasoning holds up: the video is
+   the richest signal of whether you would trust a stranger with your work, and
+   the owner is the evaluator, which is the sharing most video-interview law
+   contemplates. What the decision costs is recorded rather than glossed: it
+   makes the platform a **custodian of face recordings**, which inverts the
+   posture [security-compliance.md](../10-architecture/security-compliance.md)
+   built (verdicts and scores kept, faces stay with the provider), so the slice
+   that builds this must arrive with the node's **explicit consent before
+   recording**, a retention schedule, a deletion path the node can walk
+   (Illinois' AIVI Act makes deletion-on-request a statutory right), and access
+   limited to owners actually choosing — never a browsable gallery. The
+   recording still doubles as the anti-fraud control: proof the test-taker is
+   the KYC'd node and not a rented account.
+3. **The AI scores; a person decides.** An AI score that hard-filters who gets
+   paid work is the authority `stage-skills.ts` refused to hand a model. The
+   owner making the final choice keeps the score advisory, which is also what
+   the law will demand: AI systems selecting people for work are **high-risk
+   under the EU AI Act**, NYC Local Law 144 requires bias audits of automated
+   employment decision tools, and Illinois' AI Video Interview Act regulates
+   exactly this artifact — consent, explanation, deletion on request, and
+   restrictions on sharing the recording. First markets are US + EU, so this is
+   not a corner case.
+4. **Showing owners candidate videos invites the bias the cascade avoids, and
+   that exposure is now accepted rather than avoided.** The price-ranked cascade
+   never shows a face before a match; recordings do, and a choice made on accent
+   or appearance is a discrimination exposure the platform carries. With the
+   owner's 2026-09-01 decision to show the video, the mitigation moves from
+   withholding it to ordering it: the surface presents **score and answers
+   first, the recording behind a deliberate click**, and the choice is logged
+   with what was viewed — the same event-sourcing every other decision here
+   gets — so a dispute can read what the pick was made on.
+
+**Trigger to build:** self-service node registration (when strangers, not
+ops-vetted invitees, enter the pool), or the first skill market where claims
+plus ratings demonstrably misprice work.
+
+## Matching algorithm
+
+**Skill-based ranked matching, not a blind broadcast.** Eligible pool = verified skills cover `required_skills` **AND** service geo/jurisdiction includes the task location **AND** any required license is verified **AND** rate ≤ escrowed task budget **AND** currently available. Rank by weighted score: skill/credential fit, jurisdiction exactness (Austin-local > Texas-state), rating + completion-rate, price, responsiveness, current workload (load-balancing). Offer strategy is task-dependent: **first-accept-wins + cascade** for time-sensitive/commodity tasks; a **short sealed-bid window** for higher-value/negotiable-scope tasks.
+
+> **What slices 4 and 5 implement of the above, and what they cannot.** The pool
+> filters on `kyc_status = 'verified'`, `availability = 'available'`, a non-null
+> `rate`, and a **claimed** skill from the stage map. **Slice 5 adds a fifth
+> filter, `rate_period = 'task'`**, because an escrow hold is a whole amount and
+> there is no hours field anywhere to fund an hourly rate against. It still does
+> not filter on verified skills or licences (nothing can set either true) or on
+> jurisdiction (no task carries one). **"Rate ≤ escrowed task budget" is enforced
+> at acceptance rather than at ranking**, which is the right place for it: the
+> ceiling can move between an offer and an acceptance, so `accept_offer` re-checks
+> it under a row lock over both committer classes
+> ([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md)). Ranking is
+> price ascending then a stable id tiebreak, because every other specified input is
+> NULL or constant on every row. **First-accept-wins with cascade is the shipped
+> strategy**, expressed structurally by a partial unique index allowing one open
+> offer per task; the sealed-bid window would drop that index and is a different
+> slice's decision. See "What the matcher can actually rank on" above.
+
+## Offer flow
+
+Top-ranked nodes get a push/email/in-app **offer** (scope, `acceptance_criteria`, escrowed price, deadline, expiry) via [notifications](notifications.md). Expired/declined offers **auto-cascade** to the next candidate. No task stalls on a silent node.
+
+## Engagement lifecycle & state
+
+`CLAIMED → ESCROW_FUNDED → IN_PROGRESS → PROOF_SUBMITTED → IN_REVIEW → APPROVED → PAID` (with `REJECTED → IN_PROGRESS` bounded re-do, and `DISPUTED` → ops).
+
+**These are `public.task_state` values, and `engagements` will carry no state
+column of its own** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)).
+Every state above already exists in the machine `20260813120000` declared,
+already has its arcs enforced by trigger **including against `service_role`**,
+and already writes an audit event on every transition. A parallel enum would be
+two machines over one truth, and it would drift silently, because "the
+engagement says `in_progress` and the task says `in_review`" is a confusing
+screen rather than an error. `engagements` carries facts about the **deal** —
+`agreed_price` at acceptance, `deadline_at`, `terms_hash`, `outcome` — while
+`tasks.state` carries the fact about the **work**.
+
+Two consequences follow and are stated now so slice 5 arrives to them: **one
+live engagement per task** (a partial unique index on `ended_at is null`, not a
+plain unique, because reassignment after a no-show creates a second engagement
+and `claimed → matching` exists to say so), and **multi-node splits deferred**
+until the first acceptance criteria naming more than one node.
+
+1. **Accept + escrow fund** — ✅ live as of `20260904125000`, with two parts of
+   this sentence not yet true. **Nothing is captured**: the hold is modelled
+   against the already-authorised `projects.budget_ceiling` and the only
+   registered provider is the in-repo fake. **Nothing is e-signed**:
+   `engagements.nda_signed_at` and `terms_hash` are columns with no writer. The
+   step stops at `ESCROW_FUNDED`; `escrow_funded → in_progress` gains its
+   producer in slice 6.
+2. **Join group chat** — ✅ live in the same transaction. The node is added to the
+   task's thread with `role = 'human_node'` and `scope = 'thread'`, and the chat
+   surface badges them "Human node" as a word rather than a colour (rule 15).
+   **`expires_at` is null on purpose**: there is no deadline source, so access is
+   revoked explicitly when the engagement ends rather than boxed by a clock
+   nobody set.
+3. **Do the work** — the AI co-pilots in-thread (prepared docs, RAG-grounded checklists, forms, addresses, talking points); the user answers questions; presence/typing show live activity. All coordination stays in-thread for auditability.
+4. **Submit proof** — deliverables to Supabase Storage (signed docs, stamped permits, geotagged/timestamped site photos, receipts, filing confirmation numbers), attached as artifacts.
+5. **Approval (maker-checker + human)** — AI critic validates proof against `acceptance_criteria` (authenticity, tampering/liveness, correct reference numbers) → the user (and/or AI for low-risk) gives final approval. Rejections return to `IN_PROGRESS` with structured feedback + a re-do window.
+6. **Payout** — on approval, escrow releases: Stripe Connect transfer to the node's connected account, platform fee retained (see [payments-billing.md](payments-billing.md)). Instant payout to debit card optional for eligible nodes.
+7. **Rating + dispute** — two-sided rating updates the trust graph; disputes freeze the transfer and route to ops with the full audit trail (release / partial / refund / reassign). Repeat low ratings / fraud flags suspend the node.
+8. **Offboard from chat** — on task close, the node's thread access is revoked/archived; deliverables + transcript remain on the project record.
+
+## Waitpoint completion
+
+**There is no token to complete** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). A human task waits by sitting in a `task_state` the scheduler does not select, at zero compute, for as long as it takes. On approval the marketplace moves that row, and the next tick picks it up in its new state. Resumption is a read rather than a replay, so it is deterministic by construction ([ai-orchestrator.md](ai-orchestrator.md)).
+
+## Anti-fraud
+
+Account-renting / synthetic identity (Face Search 1:N dedup) · geo/IP consistency (impossible-location flags) · collusion / fake proof (proof authenticity + EXIF/geo/timestamp checks) · cold-start (provisional trust score → lower-risk tasks with heavier proof review until a track record accrues).
+
+## Two-sided liquidity
+
+Cold-start supply: KYC + verified credential grants provisional eligibility. Thin skill markets fall back to vetted local professional partners. Certification tiers and node acquisition tracked in [roadmap.md](../10-architecture/roadmap.md) (Phase 4).
+
+## Key entities
+
+Nine were specified from Phase 0. Five exist; the rest carry a trigger rather
+than a date, because a list that mixes live tables with intentions reads as
+though all nine are there. Column shapes live in
+[data-model.md](../10-architecture/data-model.md).
+
+| Entity               | Status                                                                              | Notes                                                                                                                                                                                                                                                                                            |
+| -------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `node_profiles`      | ✅ live `20260831120000`, written by `invite_node` and `decide_node_kyc`            | Keyed on `user_id`: a node **is** a user, so every child predicate is a plain equality. `available` + not-`verified` is unrepresentable, by constraint                                                                                                                                           |
+| `node_skills`        | ✅ live `20260831121000`, written by `/api/node/skills`                             | Claim and verified claim on one row, one boolean apart. Tag is shape-checked text; the curated taxonomy is a reviewed code registry landing in slice 3                                                                                                                                           |
+| `node_credentials`   | ✅ live `20260831122000`, written by `/api/node/credentials`, claims only           | Renamed from `credentials` (below). `verified` is write-once true — a licence is **revoked**, with a date, never un-verified                                                                                                                                                                     |
+| `node_verifications` | ✅ live `20260831123000`, written by `decide_node_kyc`                              | Not in the original nine; forced by them. No policy, no client grant, append-only including for `service_role`                                                                                                                                                                                   |
+| `offers`             | ✅ live `20260903120000`, written by the matcher sweep and the decline route        | Its entire content is a lifecycle, so it landed **with** its writers rather than ahead of them, inverting this domain's ordering for the first time. One policy, `node_id = auth.uid()`: the owner reads nothing                                                                                 |
+| `engagements`        | ✅ live `20260904120000`, written by `accept_offer`                                 | **No state column** — [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md). `agreed_price` frozen at acceptance and never following `node_profiles.rate`. One live engagement per task, as a partial unique index, so reassignment can still create a second row                  |
+| `escrow_holds`       | ✅ live `20260904121000`, written by `accept_offer` and the reconcile sweep         | Not in the original nine; forced by them. Models an obligation against `projects.budget_ceiling` and **charges nothing**. `held → refunded` is the only mapped arc; `released` waits for a payout ([payments-billing.md](payments-billing.md))                                                   |
+| `ledger_entries`     | ✅ live `20260904122000`, written by `accept_offer` and the reconcile sweep         | Double-entry, append-only, immutable including for `service_role`. **No policy and no client grant**: the reader is the Phase-3 ops console, and a member's view of money is the projection                                                                                                      |
+| `proof_artifacts`    | ❌ **not built, deliberately** ([ADR-0022](../40-adr/0022-proof-is-an-artifact.md)) | Slice 6 decided against it. Proof is an `artifacts` row with `kind = 'proof'`, which the enum has carried since `20260813160000`. A second table strands an unremovable enum value and duplicates five guard and reader surfaces; EXIF/geo belong to a verdict table once an extractor exists    |
+| `payouts`            | ✅ live `20260907121000`, written by the payout sweep and `settle_payout`           | Not in the original nine; forced by them. `pending → paid` is the only mapped arc and `failed` is declared with no producer, the shape `released` had. `platform_fee` is a column written from a constant `0` ([ADR-0024](../40-adr/0024-the-take-rate-is-not-deducted-from-an-agreed-price.md)) |
+| `ratings`            | ✅ live `20260908127000`, written by `submit_rating`                                | Two-sided, one per side per deal, append-only including for `service_role`. Gated on `outcome = 'completed'`, which excludes a `disputed_resolved` deal deliberately. Its writer is also `trust_score`'s first, in the same transaction                                                          |
+| `disputes`           | ✅ live `20260908122000`, written by `raise_dispute` and `resolve_dispute`          | **No state column** (ADR-0016): `tasks.state` is the machine and open is derived as `resolved_at is null`, as a partial unique index. `evidence` is text and deliberately not a join — six immutable surfaces already hold what a dispute reads                                                  |
+| `ops_actions`        | ✅ live `20260908123000`, written by `resolve_dispute`                              | Not in the original nine; forced by them. `actor_id` and `reason` are both `not null`, which is the whole reason it is not a verb in `events`: every `service_role` write lands there as `system` with a null actor. Append-only including for `service_role`                                    |
+
+**Two deliberate divergences from what this doc used to say, reconciled rather
+than left to drift (rule 1):**
+
+- **`credentials` is `node_credentials`.** A table called `public.credentials`
+  sitting three tables from `channel_connections` reads as auth credentials to
+  every future schema browser, and this repository's posture is that the next
+  reader should not have to check.
+- **`service_geo` (PostGIS) is `service_jurisdictions text[]`.** PostGIS is not
+  installed, and the matching rule this doc specifies — "service geo/jurisdiction
+  **includes** the task location", ranked by "jurisdiction **exactness**" — is a
+  containment test over a hierarchy plus a specificity ordering, not a geometry
+  query. Argued, with its trigger to revisit, in
+  [ADR-0015](../40-adr/0015-service-geo-is-a-jurisdiction-code.md).
+
+### Enum values, and the contested ones
+
+- **`kyc_status`** `unverified | pending | verified | rejected | suspended`.
+  `rejected` and `suspended` differ in what can undo them, so collapsing them
+  makes "can this person try again" unanswerable from the row. **No `expired`**:
+  a state you must run a clock to enter is wrong between sweeps, so credential
+  expiry is a date evaluated at match time.
+- **`node_availability`** `available | paused | offboarded`. **No `busy`**:
+  workload is derivable by counting live engagements, and this doc already
+  treats it as a ranking input rather than an eligibility gate. Defaults to
+  `paused`, because a permissive default is one every future writer must
+  remember to override.
+- **`credential_kind`** `lawyer | accountant | notary`. **No `other`**: a hard
+  filter that matches everything is the regulated-task control switched off.
+- **`verification_kind`** `document | liveness | face_match | face_search |
+sanctions_pep | license_check`. The 1:1 and 1:N face checks are separate
+  because only the second can name a third party.
+- **`offer_status`** `open | declined | expired | withdrawn | accepted`. Three
+  settlements rather than one, because they answer different questions and a
+  cascade reads differently depending which it was: `declined` is a person saying
+  no and is the only one that can carry a reason, `expired` is a person saying
+  nothing, and `withdrawn` is the offer ceasing to matter through no act of the
+  node's. **`accepted` was declared and unreachable for two slices** and became
+  reachable in `20260904124000`, which is exactly the ordering this domain
+  intends: `alter type ... add value` is irreversible, so the label was cheap to
+  declare early, and the arc stayed out until `accept_offer` could fund escrow in
+  the same transaction. **No `cascading`**: that is the task's state, not the offer's, and a second machine
+  over one truth is what [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)
+  refuses.
+- **`verification_result`** `passed | failed | inconclusive | error`. The last
+  two decide retryability oppositely: the provider could not tell (retrying the
+  same evidence is pointless) versus our call failed (retrying is exactly
+  right). **No `pending`** — that is `kyc_status`.
+
+## History (slice by slice)
+
+> How the module got here. The current state is summarised in **Current shape** at the
+> top of this doc; this section is the record of how each slice went and what it found,
+> and it is not corrected after the fact.
 
 **Live: the domain, threads, onboarding, the matcher, and now acceptance. A node
 can take work, be paid from a budget the owner authorised, and talk to them about
@@ -1065,230 +1409,3 @@ and what it was deferred for is the trail:
    thread pairing checks, and the broadcast payload; and it would have replaced a
    client insert that RLS re-checks with a `service_role` insert whose only
    control is the route. `20260904127000`'s header argues it in full.
-
-## Node onboarding & KYC
-
-- Identity verification via **Persona** (or Stripe Identity to stay in-stack): document + **passive liveness** + **Face Match 1:1** + **Face Search 1:N** across enrolled nodes to kill account-renting / duplicate-identity fraud (the defining gig-fraud vector).
-- Collect jurisdiction, languages, and professional licenses (lawyer/accountant/notary — **verified, not self-attested**).
-- Set up the **Stripe Connect Express** connected account (payout rails + tax onboarding handled by the provider).
-
-## Skill & trust graph
-
-- Structured skill taxonomy (`legal-filing:US-TX`, `notary:US-TX`, `real-estate:Austin`, `food-safety-consulting`, `procurement`, `on-site-inspection`), service geo (PostGIS), availability, rate, languages, rating.
-- Trust score seeds from KYC + verified credentials and grows with completed jobs/ratings.
-- License claims are **hard filters** for regulated tasks, not ranking weights.
-
-## Future idea: AI-administered skill assessment (recorded, scored, owner-chosen)
-
-**Owner-proposed 2026-09-01, deliberately not scheduled.** The proposal: before a
-node is chosen for a task, they take a marketing knowledge check on camera —
-questions generated and scored by the AI — and the owner reviews every
-candidate's recording and score and picks one. Recorded here rather than built,
-which was the owner's own call, and listed in
-[roadmap.md](../10-architecture/roadmap.md)'s deferred table with its trigger.
-
-What it would close is the matcher's honest gap: today nothing in the system can
-set `node_skills.verified` true, so the pool matches claims and ranks on price
-because every other specified input is NULL or constant. An AI-scored assessment
-is a real signal where a weighted score over constant columns is arithmetic
-pretending to be a ranking. And owner-picks-from-candidates already has a hook in
-this doc: the "short sealed-bid window for higher-value/negotiable-scope tasks"
-offer strategy, which is the shape this idea slots into.
-
-Four constraints to hold when it is built, stated now so the slice arrives to
-them rather than discovers them:
-
-1. **Per skill, not per task.** An audition for every dispatch adds a heavy step
-   to a cascade that already runs 48 hours per candidate, and makes the same
-   person re-prove `copywriting` weekly. A passed assessment should instead be
-   the first writer of `node_skills.verified` — a column that has waited for one
-   since `20260831121000` — with a validity window, making it a certification
-   tier (already named in roadmap Phase 4) rather than a per-task gate. A
-   per-task round stays available as the sealed-bid variant for high-value
-   steps.
-2. **The owner sees all three: the recording, the score and the answers.**
-   Decided by the owner 2026-09-01, overriding this section's first draft, which
-   proposed sharing only score + answers. The reasoning holds up: the video is
-   the richest signal of whether you would trust a stranger with your work, and
-   the owner is the evaluator, which is the sharing most video-interview law
-   contemplates. What the decision costs is recorded rather than glossed: it
-   makes the platform a **custodian of face recordings**, which inverts the
-   posture [security-compliance.md](../10-architecture/security-compliance.md)
-   built (verdicts and scores kept, faces stay with the provider), so the slice
-   that builds this must arrive with the node's **explicit consent before
-   recording**, a retention schedule, a deletion path the node can walk
-   (Illinois' AIVI Act makes deletion-on-request a statutory right), and access
-   limited to owners actually choosing — never a browsable gallery. The
-   recording still doubles as the anti-fraud control: proof the test-taker is
-   the KYC'd node and not a rented account.
-3. **The AI scores; a person decides.** An AI score that hard-filters who gets
-   paid work is the authority `stage-skills.ts` refused to hand a model. The
-   owner making the final choice keeps the score advisory, which is also what
-   the law will demand: AI systems selecting people for work are **high-risk
-   under the EU AI Act**, NYC Local Law 144 requires bias audits of automated
-   employment decision tools, and Illinois' AI Video Interview Act regulates
-   exactly this artifact — consent, explanation, deletion on request, and
-   restrictions on sharing the recording. First markets are US + EU, so this is
-   not a corner case.
-4. **Showing owners candidate videos invites the bias the cascade avoids, and
-   that exposure is now accepted rather than avoided.** The price-ranked cascade
-   never shows a face before a match; recordings do, and a choice made on accent
-   or appearance is a discrimination exposure the platform carries. With the
-   owner's 2026-09-01 decision to show the video, the mitigation moves from
-   withholding it to ordering it: the surface presents **score and answers
-   first, the recording behind a deliberate click**, and the choice is logged
-   with what was viewed — the same event-sourcing every other decision here
-   gets — so a dispute can read what the pick was made on.
-
-**Trigger to build:** self-service node registration (when strangers, not
-ops-vetted invitees, enter the pool), or the first skill market where claims
-plus ratings demonstrably misprice work.
-
-## Matching algorithm
-
-**Skill-based ranked matching, not a blind broadcast.** Eligible pool = verified skills cover `required_skills` **AND** service geo/jurisdiction includes the task location **AND** any required license is verified **AND** rate ≤ escrowed task budget **AND** currently available. Rank by weighted score: skill/credential fit, jurisdiction exactness (Austin-local > Texas-state), rating + completion-rate, price, responsiveness, current workload (load-balancing). Offer strategy is task-dependent: **first-accept-wins + cascade** for time-sensitive/commodity tasks; a **short sealed-bid window** for higher-value/negotiable-scope tasks.
-
-> **What slices 4 and 5 implement of the above, and what they cannot.** The pool
-> filters on `kyc_status = 'verified'`, `availability = 'available'`, a non-null
-> `rate`, and a **claimed** skill from the stage map. **Slice 5 adds a fifth
-> filter, `rate_period = 'task'`**, because an escrow hold is a whole amount and
-> there is no hours field anywhere to fund an hourly rate against. It still does
-> not filter on verified skills or licences (nothing can set either true) or on
-> jurisdiction (no task carries one). **"Rate ≤ escrowed task budget" is enforced
-> at acceptance rather than at ranking**, which is the right place for it: the
-> ceiling can move between an offer and an acceptance, so `accept_offer` re-checks
-> it under a row lock over both committer classes
-> ([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md)). Ranking is
-> price ascending then a stable id tiebreak, because every other specified input is
-> NULL or constant on every row. **First-accept-wins with cascade is the shipped
-> strategy**, expressed structurally by a partial unique index allowing one open
-> offer per task; the sealed-bid window would drop that index and is a different
-> slice's decision. See "What the matcher can actually rank on" above.
-
-## Offer flow
-
-Top-ranked nodes get a push/email/in-app **offer** (scope, `acceptance_criteria`, escrowed price, deadline, expiry) via [notifications](notifications.md). Expired/declined offers **auto-cascade** to the next candidate. No task stalls on a silent node.
-
-## Engagement lifecycle & state
-
-`CLAIMED → ESCROW_FUNDED → IN_PROGRESS → PROOF_SUBMITTED → IN_REVIEW → APPROVED → PAID` (with `REJECTED → IN_PROGRESS` bounded re-do, and `DISPUTED` → ops).
-
-**These are `public.task_state` values, and `engagements` will carry no state
-column of its own** ([ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)).
-Every state above already exists in the machine `20260813120000` declared,
-already has its arcs enforced by trigger **including against `service_role`**,
-and already writes an audit event on every transition. A parallel enum would be
-two machines over one truth, and it would drift silently, because "the
-engagement says `in_progress` and the task says `in_review`" is a confusing
-screen rather than an error. `engagements` carries facts about the **deal** —
-`agreed_price` at acceptance, `deadline_at`, `terms_hash`, `outcome` — while
-`tasks.state` carries the fact about the **work**.
-
-Two consequences follow and are stated now so slice 5 arrives to them: **one
-live engagement per task** (a partial unique index on `ended_at is null`, not a
-plain unique, because reassignment after a no-show creates a second engagement
-and `claimed → matching` exists to say so), and **multi-node splits deferred**
-until the first acceptance criteria naming more than one node.
-
-1. **Accept + escrow fund** — ✅ live as of `20260904125000`, with two parts of
-   this sentence not yet true. **Nothing is captured**: the hold is modelled
-   against the already-authorised `projects.budget_ceiling` and the only
-   registered provider is the in-repo fake. **Nothing is e-signed**:
-   `engagements.nda_signed_at` and `terms_hash` are columns with no writer. The
-   step stops at `ESCROW_FUNDED`; `escrow_funded → in_progress` gains its
-   producer in slice 6.
-2. **Join group chat** — ✅ live in the same transaction. The node is added to the
-   task's thread with `role = 'human_node'` and `scope = 'thread'`, and the chat
-   surface badges them "Human node" as a word rather than a colour (rule 15).
-   **`expires_at` is null on purpose**: there is no deadline source, so access is
-   revoked explicitly when the engagement ends rather than boxed by a clock
-   nobody set.
-3. **Do the work** — the AI co-pilots in-thread (prepared docs, RAG-grounded checklists, forms, addresses, talking points); the user answers questions; presence/typing show live activity. All coordination stays in-thread for auditability.
-4. **Submit proof** — deliverables to Supabase Storage (signed docs, stamped permits, geotagged/timestamped site photos, receipts, filing confirmation numbers), attached as artifacts.
-5. **Approval (maker-checker + human)** — AI critic validates proof against `acceptance_criteria` (authenticity, tampering/liveness, correct reference numbers) → the user (and/or AI for low-risk) gives final approval. Rejections return to `IN_PROGRESS` with structured feedback + a re-do window.
-6. **Payout** — on approval, escrow releases: Stripe Connect transfer to the node's connected account, platform fee retained (see [payments-billing.md](payments-billing.md)). Instant payout to debit card optional for eligible nodes.
-7. **Rating + dispute** — two-sided rating updates the trust graph; disputes freeze the transfer and route to ops with the full audit trail (release / partial / refund / reassign). Repeat low ratings / fraud flags suspend the node.
-8. **Offboard from chat** — on task close, the node's thread access is revoked/archived; deliverables + transcript remain on the project record.
-
-## Waitpoint completion
-
-**There is no token to complete** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)). A human task waits by sitting in a `task_state` the scheduler does not select, at zero compute, for as long as it takes. On approval the marketplace moves that row, and the next tick picks it up in its new state. Resumption is a read rather than a replay, so it is deterministic by construction ([ai-orchestrator.md](ai-orchestrator.md)).
-
-## Anti-fraud
-
-Account-renting / synthetic identity (Face Search 1:N dedup) · geo/IP consistency (impossible-location flags) · collusion / fake proof (proof authenticity + EXIF/geo/timestamp checks) · cold-start (provisional trust score → lower-risk tasks with heavier proof review until a track record accrues).
-
-## Two-sided liquidity
-
-Cold-start supply: KYC + verified credential grants provisional eligibility. Thin skill markets fall back to vetted local professional partners. Certification tiers and node acquisition tracked in [roadmap.md](../10-architecture/roadmap.md) (Phase 4).
-
-## Key entities
-
-Nine were specified from Phase 0. Five exist; the rest carry a trigger rather
-than a date, because a list that mixes live tables with intentions reads as
-though all nine are there. Column shapes live in
-[data-model.md](../10-architecture/data-model.md).
-
-| Entity               | Status                                                                              | Notes                                                                                                                                                                                                                                                                                            |
-| -------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `node_profiles`      | ✅ live `20260831120000`, written by `invite_node` and `decide_node_kyc`            | Keyed on `user_id`: a node **is** a user, so every child predicate is a plain equality. `available` + not-`verified` is unrepresentable, by constraint                                                                                                                                           |
-| `node_skills`        | ✅ live `20260831121000`, written by `/api/node/skills`                             | Claim and verified claim on one row, one boolean apart. Tag is shape-checked text; the curated taxonomy is a reviewed code registry landing in slice 3                                                                                                                                           |
-| `node_credentials`   | ✅ live `20260831122000`, written by `/api/node/credentials`, claims only           | Renamed from `credentials` (below). `verified` is write-once true — a licence is **revoked**, with a date, never un-verified                                                                                                                                                                     |
-| `node_verifications` | ✅ live `20260831123000`, written by `decide_node_kyc`                              | Not in the original nine; forced by them. No policy, no client grant, append-only including for `service_role`                                                                                                                                                                                   |
-| `offers`             | ✅ live `20260903120000`, written by the matcher sweep and the decline route        | Its entire content is a lifecycle, so it landed **with** its writers rather than ahead of them, inverting this domain's ordering for the first time. One policy, `node_id = auth.uid()`: the owner reads nothing                                                                                 |
-| `engagements`        | ✅ live `20260904120000`, written by `accept_offer`                                 | **No state column** — [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md). `agreed_price` frozen at acceptance and never following `node_profiles.rate`. One live engagement per task, as a partial unique index, so reassignment can still create a second row                  |
-| `escrow_holds`       | ✅ live `20260904121000`, written by `accept_offer` and the reconcile sweep         | Not in the original nine; forced by them. Models an obligation against `projects.budget_ceiling` and **charges nothing**. `held → refunded` is the only mapped arc; `released` waits for a payout ([payments-billing.md](payments-billing.md))                                                   |
-| `ledger_entries`     | ✅ live `20260904122000`, written by `accept_offer` and the reconcile sweep         | Double-entry, append-only, immutable including for `service_role`. **No policy and no client grant**: the reader is the Phase-3 ops console, and a member's view of money is the projection                                                                                                      |
-| `proof_artifacts`    | ❌ **not built, deliberately** ([ADR-0022](../40-adr/0022-proof-is-an-artifact.md)) | Slice 6 decided against it. Proof is an `artifacts` row with `kind = 'proof'`, which the enum has carried since `20260813160000`. A second table strands an unremovable enum value and duplicates five guard and reader surfaces; EXIF/geo belong to a verdict table once an extractor exists    |
-| `payouts`            | ✅ live `20260907121000`, written by the payout sweep and `settle_payout`           | Not in the original nine; forced by them. `pending → paid` is the only mapped arc and `failed` is declared with no producer, the shape `released` had. `platform_fee` is a column written from a constant `0` ([ADR-0024](../40-adr/0024-the-take-rate-is-not-deducted-from-an-agreed-price.md)) |
-| `ratings`            | ✅ live `20260908127000`, written by `submit_rating`                                | Two-sided, one per side per deal, append-only including for `service_role`. Gated on `outcome = 'completed'`, which excludes a `disputed_resolved` deal deliberately. Its writer is also `trust_score`'s first, in the same transaction                                                          |
-| `disputes`           | ✅ live `20260908122000`, written by `raise_dispute` and `resolve_dispute`          | **No state column** (ADR-0016): `tasks.state` is the machine and open is derived as `resolved_at is null`, as a partial unique index. `evidence` is text and deliberately not a join — six immutable surfaces already hold what a dispute reads                                                  |
-| `ops_actions`        | ✅ live `20260908123000`, written by `resolve_dispute`                              | Not in the original nine; forced by them. `actor_id` and `reason` are both `not null`, which is the whole reason it is not a verb in `events`: every `service_role` write lands there as `system` with a null actor. Append-only including for `service_role`                                    |
-
-**Two deliberate divergences from what this doc used to say, reconciled rather
-than left to drift (rule 1):**
-
-- **`credentials` is `node_credentials`.** A table called `public.credentials`
-  sitting three tables from `channel_connections` reads as auth credentials to
-  every future schema browser, and this repository's posture is that the next
-  reader should not have to check.
-- **`service_geo` (PostGIS) is `service_jurisdictions text[]`.** PostGIS is not
-  installed, and the matching rule this doc specifies — "service geo/jurisdiction
-  **includes** the task location", ranked by "jurisdiction **exactness**" — is a
-  containment test over a hierarchy plus a specificity ordering, not a geometry
-  query. Argued, with its trigger to revisit, in
-  [ADR-0015](../40-adr/0015-service-geo-is-a-jurisdiction-code.md).
-
-### Enum values, and the contested ones
-
-- **`kyc_status`** `unverified | pending | verified | rejected | suspended`.
-  `rejected` and `suspended` differ in what can undo them, so collapsing them
-  makes "can this person try again" unanswerable from the row. **No `expired`**:
-  a state you must run a clock to enter is wrong between sweeps, so credential
-  expiry is a date evaluated at match time.
-- **`node_availability`** `available | paused | offboarded`. **No `busy`**:
-  workload is derivable by counting live engagements, and this doc already
-  treats it as a ranking input rather than an eligibility gate. Defaults to
-  `paused`, because a permissive default is one every future writer must
-  remember to override.
-- **`credential_kind`** `lawyer | accountant | notary`. **No `other`**: a hard
-  filter that matches everything is the regulated-task control switched off.
-- **`verification_kind`** `document | liveness | face_match | face_search |
-sanctions_pep | license_check`. The 1:1 and 1:N face checks are separate
-  because only the second can name a third party.
-- **`offer_status`** `open | declined | expired | withdrawn | accepted`. Three
-  settlements rather than one, because they answer different questions and a
-  cascade reads differently depending which it was: `declined` is a person saying
-  no and is the only one that can carry a reason, `expired` is a person saying
-  nothing, and `withdrawn` is the offer ceasing to matter through no act of the
-  node's. **`accepted` was declared and unreachable for two slices** and became
-  reachable in `20260904124000`, which is exactly the ordering this domain
-  intends: `alter type ... add value` is irreversible, so the label was cheap to
-  declare early, and the arc stayed out until `accept_offer` could fund escrow in
-  the same transaction. **No `cascading`**: that is the task's state, not the offer's, and a second machine
-  over one truth is what [ADR-0016](../40-adr/0016-an-engagement-has-no-state-of-its-own.md)
-  refuses.
-- **`verification_result`** `passed | failed | inconclusive | error`. The last
-  two decide retryability oppositely: the provider could not tell (retrying the
-  same evidence is pointless) versus our call failed (retrying is exactly
-  right). **No `pending`** — that is `kyc_status`.

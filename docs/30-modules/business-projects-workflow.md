@@ -5,28 +5,108 @@
 > **Owner paths:** `packages/core/**` · **Depends on:** ai-orchestrator (planner writes/updates DAG; executors run tasks), rag-knowledge (playbook compilation, grounding), human-nodes-marketplace (escalation subflow), chat-discord (task threads, plan/approval cards), payments-billing (escrow tied to human tasks).
 >
 > Update on any change to the project/task states, DAG model, scheduler, or router.
->
-> **Implementation status (Phase 2, in progress):** the **schema and both guards are live and applied** (`20260813120000_workflow_dag.sql`, hardened by `20260813130000`). `projects`, `tasks`, `task_deps`, `task_runs` and the append-only `events` log exist; the per-task state machine below is enforced by a trigger; the graph's acyclicity and single-project containment are enforced by another; and `private.task_deps_satisfied` answers the scheduler's READY question. Verified against the live database: `supabase/tests/rls_workflow.sql`, **33/33**.
->
-> Built in this order deliberately. Both candidate durable runners ([ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md) pins Trigger.dev, which is blocked on credentials) drive this structure and neither defines it, so building a runner first means building a runtime with nothing to run.
->
-> **Approving a plan now materialises it** (`20260813140000`). `public.materialise_plan(embedId)` creates the project and one task per step in a single transaction, reading the payload from the card itself so what was approved is what gets built, and idempotent per card so a retry cannot produce a second project. Verified against the live database: `supabase/tests/materialise_plan.sql`, **19/19**. Details in [architecture.md](../10-architecture/architecture.md).
->
-> **The scheduler and router are live** in `packages/core` (`20260813150000` adds their selection query). Approving a plan runs one tick immediately, so a person who just approved something sees where each step went.
->
-> **The AI executor and the checker are live too** (`20260813160000` adds `artifacts`). An AI-owned task now runs end to end: `ROUTING → AI_RUNNING → AI_SELF_CHECK → APPROVED → DONE`, producing a cited artifact, and **an approved task satisfies its dependents**, so the graph actually moves. The last hop is the newest: `APPROVED` is not terminal, so until the executor walked on, a step that had produced its artifact and passed its own check could still be cancelled by a replan and recorded as abandoned. 42 Node tests, including the first suite this loop has ever had; `supabase/tests/artifacts.sql` 15/15 against the live database.
->
-> **The ticker is live** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)): a periodic pass reclaims runs whose worker died and walks every active project's graph, holding a lease so only one instance ticks. Approving a plan still ticks inline, so the interactive path never waits on the interval.
->
-> **The graph has edges now** (`20260828120000`). The planner states which steps consume which other steps' output, and `materialise_plan` writes them as `hard` `task_deps` rows, so `task_deps_satisfied` and `private.tasks_ready` are enforcing a real graph rather than an empty set for the first time. See "Where the edges come from" below.
->
-> **Replan-by-diff is live** (`20260828130000`, `20260828140000`). An owner can ask for a running plan to be changed, and gets a card of add / cancel / modify ops to approve. See "Changing a plan that is already running" below.
->
-> **The three remainders are closed** ([ADR-0030](../40-adr/0030-an-escalation-is-an-event-and-a-playbook-is-the-card.md)): a step the executor left at `approved` is finished by the heal sweep and its artifact delivered, `escalations` is derived from the `task.routed` event the scheduler already writes rather than being a second table, and `playbook_versions` waits in the roadmap's deferred table for the compiler that would give two of its columns a producer. **Consuming the question before the work succeeds is what makes a race safe and a failure silent.** The card is closed first so a second message cannot answer the same steps twice. The first live answer then hit an invalid enum value, every task failed, the failure was logged per task, and the room said **nothing at all**: the person had answered, the question had vanished, and no step had moved. The card is now **reopened** when nothing completes, so their next message is still read as an answer, and the run says so plainly. Losing a reply is bad; losing it without saying so is worse.
 
-**An answered step is a finished step, and the machine had to say so.** The only arc out of `NEEDS_USER` was back to `ROUTING`, where the router applies rule 2 to a `user`-owned task and returns it to `NEEDS_USER`: the answer had nowhere to land and the loop had no end. Nothing failed, the task simply waited forever. `20260815220000` adds `NEEDS_USER → APPROVED`, and the semantics are the point rather than a convenience: the plan gave that person work only they could do, so answering **is** doing it, and `APPROVED` is the state that satisfies dependents. The answer is stored as an artifact `created_by: 'user'` with **no citations**, deliberately, since a person's own decision rests on no retrieved source and attaching one would attribute their judgement to the corpus. The checker never sees it: a human answering is not a maker to be checked.
+## Current shape
 
-**A waiting task now says so.** A tick that leaves steps in `NEEDS_USER` or `ESCALATED` posts one digest into the project's room, batched rather than one message per task, because `ai-orchestrator.md` requires digests and `vision.md` counts user touches as a guardrail to drive down. The two are **not merged**: only one is actionable, and a task waiting on an expert is waiting on a marketplace that does not exist, so the copy says that plainly instead of implying somebody is on their way.
+> What exists today, read out of the migrations and `apps/api`. **Update this section in the
+> same change as the code**, and keep its "Not built" list honest: it is what a later session
+> trusts instead of reading the whole doc. The narrative of how each piece arrived is further
+> down this doc and in [status-log.md](../00-overview/status-log.md).
+
+**Tables**, with the migration that landed them.
+
+| Table        | Holds                                                                 | Notes                                                                                                                                                                                    |
+| ------------ | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `projects`   | One approved plan: `status`, `budget_ceiling`, its room               | `20260813120000`. The ceiling has two committer classes ([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md))                                                            |
+| `tasks`      | One row per plan step: `state`, `owner_type`, `risk_tier`, its result | `20260813120000`. A human waitpoint **is** this row, at zero compute ([ADR-0010](../40-adr/0010-postgres-durable-runner.md))                                                             |
+| `task_deps`  | Which step consumes which step's output                               | `20260813120000`. `hard / soft / resource`; acyclicity enforced by the `task_deps_guard_acyclic` trigger, not by the runner. `private.task_deps_satisfied` is what a scheduler pass asks |
+| `task_runs`  | One attempt at one task, under a lease                                | `20260813120000`. `running / succeeded / failed`; the lease is how a crashed worker is noticed                                                                                           |
+| `events`     | The event-sourced audit trail                                         | `20260813120000`. Append-only, and the source notifications derive from ([ADR-0028](../40-adr/0028-a-notification-is-derived-from-the-event.md))                                         |
+| `plan_diffs` | An owner's requested change to a running plan, as a diff              | `20260828140000`, applied by `apply_plan_diff`                                                                                                                                           |
+
+**The task state machine.** 23 states in `public.task_state`:
+
+```
+pending · ready · routing · ai_running · ai_self_check · escalated · needs_user ·
+matching · offered · claimed · escrow_funded · in_progress · proof_submitted ·
+in_review · approved · payout_pending · paid · done · rejected · disputed ·
+failed · cancelled · blocked
+```
+
+Enforced by `private.guard_task_transition()` behind the trigger
+`tasks_guard_transition`, which fires `before update ... when (old.state is distinct from
+new.state)` so an ordinary edit (a retry count, an artifact path) is not validated as a
+transition from a state to itself. **The map lives in Postgres rather than in the runner**, because
+the runner is the part [ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md)
+already plans to replace. `cancelled` and `blocked` are reachable from anywhere; `blocked` exits to
+`ready`, `routing` or `in_progress`.
+
+The map has been amended, never rewritten, by: `20260813130000` (hardening), `20260815220000`
+(an answered user task), `20260827120000` (the owner takes an escalated step), `20260828140000`
+(plan diffs), `20260829140000` (campaigns), `20260904120000`…`125000` (engagements, the escrow
+ceiling, offer accept), `20260906122000`…`124000` (deadlines, no-show, reassignment),
+`20260907122000` (payout), `20260908120000`…`125000` (the dispute arcs).
+
+**Project lifecycle**: `draft → planning → active → paused | completed | cancelled`.
+`paused` is the kill switch, honoured at a safe checkpoint.
+
+**Decision logic** (`packages/core/src/`, IO injected as a port so each is testable without a
+database).
+
+| File           | Decides                                                                                                                           |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `scheduler.ts` | Which of a project's ready tasks move, and holds a step back until its dependencies are met                                       |
+| `router.ts`    | Who executes a task, starting from the `owner_type` the planner proposed and the risk tier                                        |
+| `critic.ts`    | The checker half of maker-checker: whether an artifact counts as the task done. Deterministic on purpose                          |
+| `recovery.ts`  | What to do with a run whose worker stopped answering, and how long a lease lasts                                                  |
+| `intake.ts`    | What a question card means, and which slots are still required ([ADR-0029](../40-adr/0029-a-question-is-answered-on-the-card.md)) |
+
+**The runner** (`apps/api/src/lib/`): `ticker.ts` walks the graph every
+`DEFAULT_TICK_INTERVAL_MS = 30_000` behind a single-claim lease, so two instances cannot both
+sweep and an overrunning pass cannot stack. `scheduler.ts` and `executor.ts` dispatch,
+`heal.ts` recovers stalled runs, `replan-diff.ts` applies an owner's diff, `waiting.ts` says
+what a step is waiting for, `task-resolution.ts` and `task-answers.ts` carry the owner's verbs.
+
+**SQL functions that own a transition**: `materialise_plan` (approving a plan creates the project
+and one task per step, in one transaction), `apply_plan_diff` (change a running plan by diff rather
+than regeneration), `materialise_campaign`.
+
+**Routes**.
+
+| Route                                                         | Does                                                                                          |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `POST /api/rooms/:roomId/agent-runs`                          | Start a run for a goal. Returns `202 + runId`                                                 |
+| `GET /api/rooms/:roomId/projects`                             | The room's projects                                                                           |
+| `GET`, `PATCH /api/projects/:projectId`                       | The project panel, and the owner's changes to it                                              |
+| `POST /api/projects/:projectId/replan`                        | Submit a plan diff                                                                            |
+| `POST /api/projects/:projectId/tasks/:taskId/resolution`      | The owner's verbs: `answer`, `retry`, `find_expert`, `approve_work`, `reject_work`, `dispute` |
+| `GET /api/projects/:projectId/artifacts/:artifactId/file-url` | A signed URL, read as the caller so RLS decides visibility                                    |
+
+**pgTAP** (`supabase/tests/`, counts from each suite's own `plan(N)`).
+
+| Suite                    | Assertions |
+| ------------------------ | ---------- |
+| `rls_workflow.sql`       | 33         |
+| `materialise_plan.sql`   | 42         |
+| `apply_plan_diff.sql`    | 27         |
+| `project_membership.sql` | 13         |
+| `question_answers.sql`   | 12         |
+| `artifacts.sql`          | 15         |
+| `storage_artifacts.sql`  | 11         |
+
+**Not built.**
+
+- **`apps/agent` and `apps/matcher` do not exist.** The ticker runs inside `apps/api`, which is
+  the amendment [ADR-0010](../40-adr/0010-postgres-durable-runner.md) made to
+  [ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md). Trigger.dev and
+  Temporal stay documented escape hatches, triggered by a single locked ticker being outgrown.
+- **`playbook_versions` is deferred.** A plan is the planner's output and its record is the
+  approved card ([ADR-0030](../40-adr/0030-an-escalation-is-an-event-and-a-playbook-is-the-card.md));
+  a compiled archetype × jurisdiction-pack DAG waits on a playbook compiler.
+- **No `pg-boss`.** Utility jobs are specified on it and nothing runs there yet.
+- **The critic is deterministic**, so there is no AI critic pass over an artifact.
+- **Nothing exercises `paused`.** The kill switch is the same paused state with a different
+  authorisation question, and that question has no surface.
 
 ## A step that stopped can be dealt with
 
@@ -632,3 +712,31 @@ argument this one makes for the AI arm, which nobody has yet had to make.
 `HEAL_ENABLED` and `HEAL_MAX_PER_TICK` are documented in
 [infra-devops.md](infra-devops.md). `apps/api/src/lib/heal.test.ts` pins the
 seven properties above.
+
+## History (slice by slice)
+
+> How the module got here. The current state is summarised in **Current shape** at the
+> top of this doc; this section is the record of how each slice went and what it found,
+> and it is not corrected after the fact.
+
+**Implementation status (Phase 2, in progress):** the **schema and both guards are live and applied** (`20260813120000_workflow_dag.sql`, hardened by `20260813130000`). `projects`, `tasks`, `task_deps`, `task_runs` and the append-only `events` log exist; the per-task state machine below is enforced by a trigger; the graph's acyclicity and single-project containment are enforced by another; and `private.task_deps_satisfied` answers the scheduler's READY question. Verified against the live database: `supabase/tests/rls_workflow.sql`, **33/33**.
+
+Built in this order deliberately. Both candidate durable runners ([ADR-0001](../40-adr/0001-durable-orchestration-trigger-vs-temporal.md) pins Trigger.dev, which is blocked on credentials) drive this structure and neither defines it, so building a runner first means building a runtime with nothing to run.
+
+**Approving a plan now materialises it** (`20260813140000`). `public.materialise_plan(embedId)` creates the project and one task per step in a single transaction, reading the payload from the card itself so what was approved is what gets built, and idempotent per card so a retry cannot produce a second project. Verified against the live database: `supabase/tests/materialise_plan.sql`, **19/19**. Details in [architecture.md](../10-architecture/architecture.md).
+
+**The scheduler and router are live** in `packages/core` (`20260813150000` adds their selection query). Approving a plan runs one tick immediately, so a person who just approved something sees where each step went.
+
+**The AI executor and the checker are live too** (`20260813160000` adds `artifacts`). An AI-owned task now runs end to end: `ROUTING → AI_RUNNING → AI_SELF_CHECK → APPROVED → DONE`, producing a cited artifact, and **an approved task satisfies its dependents**, so the graph actually moves. The last hop is the newest: `APPROVED` is not terminal, so until the executor walked on, a step that had produced its artifact and passed its own check could still be cancelled by a replan and recorded as abandoned. 42 Node tests, including the first suite this loop has ever had; `supabase/tests/artifacts.sql` 15/15 against the live database.
+
+**The ticker is live** ([ADR-0010](../40-adr/0010-postgres-durable-runner.md)): a periodic pass reclaims runs whose worker died and walks every active project's graph, holding a lease so only one instance ticks. Approving a plan still ticks inline, so the interactive path never waits on the interval.
+
+**The graph has edges now** (`20260828120000`). The planner states which steps consume which other steps' output, and `materialise_plan` writes them as `hard` `task_deps` rows, so `task_deps_satisfied` and `private.tasks_ready` are enforcing a real graph rather than an empty set for the first time. See "Where the edges come from" below.
+
+**Replan-by-diff is live** (`20260828130000`, `20260828140000`). An owner can ask for a running plan to be changed, and gets a card of add / cancel / modify ops to approve. See "Changing a plan that is already running" below.
+
+**The three remainders are closed** ([ADR-0030](../40-adr/0030-an-escalation-is-an-event-and-a-playbook-is-the-card.md)): a step the executor left at `approved` is finished by the heal sweep and its artifact delivered, `escalations` is derived from the `task.routed` event the scheduler already writes rather than being a second table, and `playbook_versions` waits in the roadmap's deferred table for the compiler that would give two of its columns a producer. **Consuming the question before the work succeeds is what makes a race safe and a failure silent.** The card is closed first so a second message cannot answer the same steps twice. The first live answer then hit an invalid enum value, every task failed, the failure was logged per task, and the room said **nothing at all**: the person had answered, the question had vanished, and no step had moved. The card is now **reopened** when nothing completes, so their next message is still read as an answer, and the run says so plainly. Losing a reply is bad; losing it without saying so is worse.
+
+**An answered step is a finished step, and the machine had to say so.** The only arc out of `NEEDS_USER` was back to `ROUTING`, where the router applies rule 2 to a `user`-owned task and returns it to `NEEDS_USER`: the answer had nowhere to land and the loop had no end. Nothing failed, the task simply waited forever. `20260815220000` adds `NEEDS_USER → APPROVED`, and the semantics are the point rather than a convenience: the plan gave that person work only they could do, so answering **is** doing it, and `APPROVED` is the state that satisfies dependents. The answer is stored as an artifact `created_by: 'user'` with **no citations**, deliberately, since a person's own decision rests on no retrieved source and attaching one would attribute their judgement to the corpus. The checker never sees it: a human answering is not a maker to be checked.
+
+**A waiting task now says so.** A tick that leaves steps in `NEEDS_USER` or `ESCALATED` posts one digest into the project's room, batched rather than one message per task, because `ai-orchestrator.md` requires digests and `vision.md` counts user touches as a guardrail to drive down. The two are **not merged**: only one is actionable, and a task waiting on an expert is waiting on a marketplace that does not exist, so the copy says that plainly instead of implying somebody is on their way.
