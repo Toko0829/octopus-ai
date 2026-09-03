@@ -374,6 +374,22 @@ Non-negotiables (full list in [security-compliance.md](../10-architecture/securi
 - Streams tokens **inline** into the channel (accent bar + Agent tag + working pulse).
 - Reports as **batched digests**, not chatter; surfaces only decisions that need the user.
 - Its messages are the human-readable projection of the audit trail.
+- **It speaks in four named voices** since `20260912120000`, so the plan, a delivered draft, a campaign proposal and a spend pause do not all arrive from one anonymous account.
+
+### The four voices
+
+**A persona is a voice, not a runner** ([ADR-0031](../40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)). The executor, the scheduler and the router are unchanged; there is still one writer to the task DAG and one place a spend cap is checked. The voice is a label chosen in `apps/api` from the step's own `tasks.stage`, by `personaForStage` in `packages/contracts`, so no model picks it and no new authorisation surface appears.
+
+| Persona      | Stages                              | What it signs                                                                              |
+| ------------ | ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| `strategist` | `strategy`, and any unmatched stage | intake, the run notices, the plan card, the question card, the replan card, the waiting digest |
+| `content`    | `content`, `creative`, `conversion` | the artifact delivered for those stages                                                    |
+| `ads`        | `channels`                          | the campaign card and the publish sweep's notices                                          |
+| `analyst`    | `measurement`                       | the metrics and optimize sweeps' notices, including the CPA-ceiling pause                  |
+
+`personaForStage` is **total**: `tasks.stage` is free text, so an unrecognised stage and a null one both fall to the Strategist rather than throwing. A thrown label would mean delivered work that never reaches the room, which is the failure `roomForProject` was written to fix.
+
+**`services/ai` is untouched.** All five system prompts still open "You are Octopus", because a persona changes who a message is attributed to and not how it was written. Per-persona prompt voice is named-not-built; if it lands it is a prompt change with an eval pass, not a field on a request.
 
 ## Minimal-user-involvement policy
 

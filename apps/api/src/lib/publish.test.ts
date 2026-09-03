@@ -425,7 +425,10 @@ describe('publishing a campaign somebody approved', () => {
 
     const message = log.messages[0]!;
     expect(message.idempotency_key).toBe(`campaign-published:${CAMPAIGN}`);
-    expect(message.author_kind).toBe('system');
+    // Ads, not the platform. It submitted this campaign, so it is the one
+    // reporting that the platform took it.
+    expect(message.author_kind).toBe('agent');
+    expect(message.persona).toBe('ads');
     expect(String(message.body)).toContain('is live');
     // The trigger owns that verb. Writing it here would double every entry.
     expect(log.events.some((e) => e.verb === 'campaign.transitioned')).toBe(false);

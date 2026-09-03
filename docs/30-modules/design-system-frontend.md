@@ -134,6 +134,10 @@ Both reuse `.cmdk-scrim`, so there is one overlay treatment rather than a second
 
 Posting a message also starts an agent run (`startAgentRun`), and the reply arrives over Realtime as an ordinary member message with `authorKind: 'agent'`, rendered with the accent bar and **Agent** badge. Two rules the client holds to:
 
+**An agent message says which voice wrote it.** `authorOf` in `MessageStream.tsx` reads `persona` off the row and returns an author built from `AGENT_PERSONAS` in `packages/contracts`: Strategist (ST), Content (CO), Ads (AD), Analyst (AN). All four carry `role: 'agent'`, so the accent bar, the teal avatar and the **Agent** badge are unchanged and rule 15 still holds by a word rather than by a name. **A message with no persona renders as `Octopus` (OC)**, which is every agent message written before `20260912120000` and is a permanent second state rather than a migration that finishes: nothing was backfilled ([ADR-0031](../40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)).
+
+`fromBroadcastRecord` parses the value with `AgentPersona.safeParse` rather than casting it. The broadcast is the one path into this client that no route validated, so an unknown value becomes null and falls back to the legacy name instead of indexing the registry with a string nobody checked.
+
 - **A failed agent run never invalidates a sent message.** The send and the run are separate awaits; if the run cannot start, the message stays sent and the failure surfaces in its own banner.
 - **Live updates failing is never silent.** If the browser cannot read the session, or the channel errors or times out, a banner says so. The page would otherwise look perfectly healthy while quietly showing stale data, since the server-rendered first paint succeeds regardless.
 

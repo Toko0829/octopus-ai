@@ -1,5 +1,6 @@
 import type {
   ActionEmbed,
+  AgentPersona,
   AuthorKind,
   Channel,
   Message,
@@ -51,6 +52,15 @@ export interface UiMessage {
   id: string;
   authorId: string | null;
   authorKind: AuthorKind;
+  /**
+   * Which of the four agent voices wrote this.
+   *
+   * Null for everything a person or a node said, for a system line, and for
+   * every agent message written before `20260912120000`. The stream renders
+   * that last group under the single legacy name rather than guessing which
+   * specialist it would have been.
+   */
+  persona: AgentPersona | null;
   body: string;
   /** Ordering cursor from Postgres. Null only for a not-yet-confirmed local send. */
   seq: number | null;
@@ -79,4 +89,4 @@ export interface UiMessage {
   embed?: ActionEmbed | null;
 }
 
-export type { ActionEmbed, Channel, Message, Room, RoomMember };
+export type { ActionEmbed, AgentPersona, Channel, Message, Room, RoomMember };

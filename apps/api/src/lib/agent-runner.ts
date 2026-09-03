@@ -11,6 +11,7 @@ import {
 import {
   PlanEmbedPayload,
   QuestionEmbedPayload,
+  type AgentPersona,
   type IntakeSlot,
   type IntakeQuestion,
 } from '@octopus/contracts';
@@ -253,6 +254,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
       room_id: roomId,
       author_id: null,
       author_kind: 'agent',
+      persona: 'strategist',
       body,
       // Deterministic per run and position, so a retried run cannot post twice.
       idempotency_key: `agent-run:${runId}:${index}`,
@@ -291,6 +293,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
         room_id: roomId,
         author_id: null,
         author_kind: 'agent',
+        persona: 'strategist',
         body: `${plan.title}\n\n${plan.summary}`,
         idempotency_key: idempotencyKey,
       })
@@ -327,19 +330,39 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
     if (embedError && embedError.code !== '23505') throw embedError;
   }
 
-  async function postSystemNotice(roomId: string, body: string, runId: string, key = 'failed') {
+  /**
+   * A short line about the run itself, in one of two voices.
+   *
+   * **`'system'` and a persona are different claims and the caller must pick
+   * one.** "Working on a plan for X" is the Strategist saying what it is doing,
+   * and it reads as an evasion in the platform's flat voice when the next
+   * message in the room is signed. "The agent could not complete this run" is
+   * the platform reporting a fault in the machinery, and signing it would have
+   * the Strategist calmly announce its own failure as though it had chosen to.
+   *
+   * The idempotency key is unchanged by the voice, so a run that posted a
+   * notice before this change still collides with itself after it.
+   */
+  async function postNotice(
+    roomId: string,
+    body: string,
+    runId: string,
+    key: string,
+    voice: 'system' | AgentPersona,
+  ) {
     try {
       const admin = createServiceClient(opts.supabase);
       const { error } = await admin.from('messages').insert({
         room_id: roomId,
         author_id: null,
-        author_kind: 'system',
+        author_kind: voice === 'system' ? 'system' : 'agent',
+        persona: voice === 'system' ? null : voice,
         body,
         idempotency_key: `agent-run:${runId}:${key}`,
       });
       if (error && error.code !== '23505') throw error;
     } catch (err) {
-      log.error({ err, runId, roomId, key }, 'could not post agent notice');
+      log.error({ err, runId, roomId, key, voice }, 'could not post agent notice');
     }
   }
 
@@ -434,6 +457,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
         room_id: roomId,
         author_id: null,
         author_kind: 'agent',
+        persona: 'strategist',
         body,
         // Its own key, not position 0. The card and the plan now land in the
         // same run, and the plan's first proposal is keyed `:0`; sharing that
@@ -738,7 +762,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
       // Said in the room the moment there is something to work on, because a
       // minute of silence after a message looks like the agent deciding not
       // to reply (rule 16).
-      await postSystemNotice(roomId, INTAKE_COPY.started(echo(goal)), runId, 'started');
+      await postNotice(roomId, INTAKE_COPY.started(echo(goal)), runId, 'started', 'strategist');
       if (fromOwner) await rememberStated(roomId, next.context, ownerId);
 
       const plan = await requestPlanFor(roomId, next.goal, next.context, runId);
@@ -762,7 +786,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
         { err, agentRunId: runId, roomId, kind: err instanceof AiServiceError ? err.kind : null },
         'agent run failed',
       );
-      await postSystemNotice(roomId, failureNotice(err), runId);
+      await postNotice(roomId, failureNotice(err), runId, 'failed', 'system');
     }
   }
 
@@ -793,7 +817,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
           .maybeSingle<{ id: string; goal: string; status: string }>();
         if (error) throw error;
         if (project && project.status !== 'completed' && project.status !== 'cancelled') {
-          await postSystemNotice(roomId, INTAKE_COPY.updating, runId, 'started');
+          await postNotice(roomId, INTAKE_COPY.updating, runId, 'started', 'strategist');
           await produceDiff(
             admin,
             { aiServiceUrl: opts.aiServiceUrl, aiTimeoutMs: opts.aiTimeoutMs, log },
@@ -823,7 +847,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
       });
       if (!next) return;
 
-      await postSystemNotice(roomId, INTAKE_COPY.updating, runId, 'started');
+      await postNotice(roomId, INTAKE_COPY.updating, runId, 'started', 'strategist');
       const plan = await requestPlanFor(roomId, next.goal, next.context, runId);
 
       // Retire the pending plan only now that its replacement exists, and pass
@@ -844,7 +868,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
         },
         'continuation from a question card failed',
       );
-      await postSystemNotice(roomId, failureNotice(err), runId);
+      await postNotice(roomId, failureNotice(err), runId, 'failed', 'system');
     }
   }
 

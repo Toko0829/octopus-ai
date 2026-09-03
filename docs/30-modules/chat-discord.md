@@ -6,7 +6,77 @@
 >
 > The visual/interaction spec is in [discord-chat-spec.md](../20-design/discord-chat-spec.md); this module doc is the behavior/data view. Update both on any layout, role, embed, or transport change.
 >
-> **Implementation status (Phase 2, in progress):** the chat runs entirely on live data. The **server-authoritative write path and persistence are live**: `POST /api/rooms/:roomId/messages` and `GET /api/rooms/:roomId/messages` (since-cursor catch-up) in `apps/api`, with delivery to Realtime subscribers verified end-to-end, and `apps/web` reads sign-in, rooms, channels, members, message history, live Realtime delivery and Realtime Presence with **no mock data left**. **The AI is a member rather than a widget:** a posted goal starts an agent run and the reply arrives as an ordinary message with `author_kind='agent'`, rendered inline. **Four embed components are live**, each described below: `plan` (`20260812120000`), `question` (`20260815120000`), `artifact` (`20260815210000`) and `replan` (`20260828130000`). **Threads are live and written** as of slice 5 of the marketplace sequence (`20260904125000`): `public.accept_offer` creates a task's thread and admits the expert who took it, thread-scoped, in the same transaction. `threads` still has **one policy, for SELECT, and no client write grant** — the writer runs under the secret key, so creating a thread needed a grant rather than a policy. **`author_kind = 'node'` gained its writer in the same slice** (`20260904127000`): a node posts **through their own grant, on the existing client path**, because every participant INSERTs like any member (rule 5) and a server-mediated route would have been a second write path to keep in step. The route derives `author_kind` from the caller's own membership row and RLS re-checks it. **The owner's stream interleaves both conversations**, marked with a "in a task thread" label rather than filtered, because hiding rows the owner may read is the fetched-never-rendered defect. **Thread realtime topics landed in slice 6** (`20260906120000`), emitted **beside** the room topic rather than instead of it, so the node console subscribes and its ten-second poll is gone while the owner keeps reading thread messages in realtime. **Slice 8 adds two system-message keys and no new component**: `dispute-raised:<id>` when either party raises, and `dispute-resolved:<id>` when an operator decides. Both land in the **room** and deliberately not in the working thread, because a dispute is decided by an operator rather than negotiated between the parties and a line in that thread would invite exactly that negotiation. **Not built yet:** a thread switcher in the owner's UI, reactions, pins, mentions, saved messages, and the remaining embed components (approval, pay, sign, assign), which land with the marketplace and payments. See [design-system-frontend.md](design-system-frontend.md).
+## Current shape
+
+> What exists today, read out of the migrations and `apps/web`. **Update this section in the
+> same change as the code**, and keep its "Not built" list honest: it is what a later session
+> trusts instead of reading the whole doc. The narrative of how each piece arrived is under
+> History at the bottom and in [status-log.md](../00-overview/status-log.md).
+
+**Tables**, with the migration that landed them.
+
+| Table           | Holds                                                                                        | Notes                                                                                               |
+| --------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `rooms`         | One workspace: `name`, `owner_id`, optional `project_id`                                     | `20260728120000`; `owner_id` from `20260812130000`                                                  |
+| `channels`      | Workstreams inside a room                                                                    | `20260728120000`                                                                                    |
+| `threads`       | One task's working conversation: `(id, room_id)` unique, `channel_id`, `task_id`             | `20260901120000`. Written by `accept_offer` under the secret key; SELECT policy only, no write grant |
+| `messages`      | `author_id`, `author_kind`, **`persona`**, `body`, `idempotency_key` UNIQUE, `seq`, `thread_id` | `20260728120000`; `thread_id` `20260901121000`; `persona` `20260912120000`                          |
+| `room_members`  | `role`, `scope` (`room`/`thread`, checked), `thread_id?`, `expires_at`                        | `20260728120000`; thread scope `20260901122000`                                                     |
+| `action_embeds` | The card on a message: `component`, `payload`, `required_role`, `state`; `unique (message_id)` | `20260812120000`                                                                                    |
+| `room_profiles` | What the workspace knows about its own business, owner-only                                  | `20260911120000`                                                                                    |
+
+**Who can be an author.** `public.author_kind` is `user | agent | node | system` and has never
+been extended. `user` and `node` are client-writable through `messages_insert_own`, which derives
+neither from the request: the route reads the caller's own `room_members` row and RLS re-checks
+the same fact independently. `agent` and `system` arrive only through the secret key.
+
+**The four agent voices** (`messages.persona`, `20260912120000`). A persona names **who spoke,
+never who may act** ([ADR-0031](../40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)): it
+is chosen in `apps/api` from the step's own `tasks.stage`, and the DAG keeps its single writer.
+
+| Persona      | In the stream   | Stages                              | Posts                                                                                                                      |
+| ------------ | --------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `strategist` | Strategist (ST) | `strategy`, and any unmatched stage | the intake lines, the run notices, the plan card, the question card, the replan card, the waiting digest, a recorded answer |
+| `content`    | Content (CO)    | `content`, `creative`, `conversion` | the delivered artifact for those stages                                                                                    |
+| `ads`        | Ads (AD)        | `channels`                          | the campaign card, and the publish sweep's three outcome notices                                                           |
+| `analyst`    | Analyst (AN)    | `measurement`                       | the metrics sweep's blocked notice, and the optimize sweep's pause and pause-blocked notices                               |
+
+**What stays `system`.** The rule is that **system says what a person or the platform did; a
+persona says what it did or found.** So an embed decision, an offer accepted, work started, proof
+submitted, a dispute raised or resolved, a payout, a deadline warning, a source-ingest outcome and
+a failed run are all `system`, and `messages_persona_agent_only` refuses a persona on any of them.
+`postSystemMessage` and `postPersonaMessage` in `apps/api/src/lib/system-message.ts` are two
+functions rather than one with a nullable argument, so a caller has to choose.
+
+**`persona` is null in three cases and the client renders all three the same way**: a person's or
+a node's message, a system line, and every agent message written before `20260912120000`. The last
+group keeps the single legacy name, `Octopus`. **Nothing was backfilled**, so that rendering is
+permanent rather than a migration that finishes.
+
+**Embed components.** Five of the nine enum values are ever written: `plan` (`20260812120000`),
+`question` (`20260815120000`), `artifact` (`20260815210000`), `replan` (`20260828130000`),
+`campaign` (`20260829130000`). `approval`, `pay`, `sign` and `assign` were declared in Phase 0 and
+have no writer.
+
+**Routes** (`apps/api/src/routes/messages.ts`). `POST /api/rooms/:roomId/messages` writes one
+message under the caller's own grant; `GET /api/rooms/:roomId/messages` reads history with a
+`since` cursor. The read's column list is `MESSAGE_COLUMNS`, exported and pinned against
+`MessageRow` by a test, because a PostgREST select is a string and a column it omits fails at
+runtime only. Neither `authorKind` nor `persona` is accepted from the request.
+
+**Realtime.** `public.broadcast_message()` sends the whole inserted row to `chat:room:<id>`, and
+additionally to `chat:thread:<id>` when the message carries one (`20260906120000`). A new column
+therefore reaches subscribers with no trigger change, which `message_persona.sql` asserts rather
+than assumes. Presence is Realtime Presence from the client and has no server-side table.
+
+**pgTAP suites and their counts**: `rls_membership.sql` (26), `thread_scope.sql` (55),
+`message_persona.sql` (10), `question_answers.sql` (12), `room_profiles.sql` (10).
+
+**Not built.** A thread switcher in the owner's UI. `@user`, `@role` and `#channel` mentions,
+reactions, pins and saved messages. Agent mentions, which land in the next slice. The four
+unwritten embed components. Message editing or deletion of any kind. Typing indicators and the
+activity states the spec describes. A mention feeding [notifications](notifications.md). The top
+bar's presence avatars and live budget.
 
 ## 5-region layout
 
@@ -27,9 +97,13 @@ Implementation notes that callers depend on:
 
 `You` / `AI Agent` / `Human Node` / `Verified Pro` / `Admin` — **color + badge + icon, never color alone**. Enforced by role claims + RLS + each embed's `required_role`.
 
+**The AI role holds four voices, and the badge does not change.** Strategist, Content, Ads and Analyst all render with `role: 'agent'`: the same accent bar, the same teal avatar, the same `Agent` badge. What differs is the name and the two initials, both read from the registry in `packages/contracts`. That is deliberate under rule 15: the thing a reader must not get wrong is that this was written by the AI rather than by a person, and that claim stays carried by a word rather than by a name they would have to have memorised. See the persona table in **Current shape**.
+
 ## AI inline in the stream
 
 Accent bar + Agent tag + **live token streaming** + a **bioluminescent working pulse** while the agent is acting. Not a corner bubble. Its messages double as the audit trail.
+
+**Signed since `20260912120000`.** A message says which of the four voices wrote it, chosen from the step's own `tasks.stage` rather than by any model, and `events.payload.persona` records the same on `task.reviewed` and `task.executed` so the audit trail names a speaker too. A persona is a voice and never a writer: there is still one writer to the task DAG, one router and one spend cap ([ADR-0031](../40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)). Live token streaming is still not built.
 
 ## Interactive action embeds
 
@@ -107,7 +181,7 @@ Warm Chat skin by default; compact density for power users; per-business accent 
 
 ## Key entities
 
-`rooms` · `channels` · `threads` (**live**, written by `accept_offer`) · `messages` (idempotency key, `seq` ordering cursor, `author_kind`, `thread_id?`) · `room_members` (`scope`, `thread_id?`, `expires_at`) · `reactions` / `pins` · `action_embeds` (component, payload, `required_role`, state) · presence (ephemeral, Realtime).
+`rooms` · `channels` · `threads` (**live**, written by `accept_offer`) · `messages` (idempotency key, `seq` ordering cursor, `author_kind`, `persona?`, `thread_id?`) · `room_members` (`scope`, `thread_id?`, `expires_at`) · `reactions` / `pins` · `action_embeds` (component, payload, `required_role`, state) · presence (ephemeral, Realtime).
 
 ## A third topic namespace: `notify:user:<uid>` (notifications slice 1, `20260909122000`)
 
@@ -139,3 +213,10 @@ would be four lines of setup behind six parameters.
 looking at. An owner running two businesses, and a node whose work lives in
 threads their access to has been revoked, are both people the chat topics
 structurally cannot reach.
+
+## History (slice by slice)
+
+> How the module got here. The current state is summarised in **Current shape** at the top,
+> which is what a later session should read instead of this.
+
+> **Implementation status (Phase 2, in progress):** the chat runs entirely on live data. The **server-authoritative write path and persistence are live**: `POST /api/rooms/:roomId/messages` and `GET /api/rooms/:roomId/messages` (since-cursor catch-up) in `apps/api`, with delivery to Realtime subscribers verified end-to-end, and `apps/web` reads sign-in, rooms, channels, members, message history, live Realtime delivery and Realtime Presence with **no mock data left**. **The AI is a member rather than a widget:** a posted goal starts an agent run and the reply arrives as an ordinary message with `author_kind='agent'`, rendered inline. **Four embed components are live**, each described below: `plan` (`20260812120000`), `question` (`20260815120000`), `artifact` (`20260815210000`) and `replan` (`20260828130000`). **Threads are live and written** as of slice 5 of the marketplace sequence (`20260904125000`): `public.accept_offer` creates a task's thread and admits the expert who took it, thread-scoped, in the same transaction. `threads` still has **one policy, for SELECT, and no client write grant** — the writer runs under the secret key, so creating a thread needed a grant rather than a policy. **`author_kind = 'node'` gained its writer in the same slice** (`20260904127000`): a node posts **through their own grant, on the existing client path**, because every participant INSERTs like any member (rule 5) and a server-mediated route would have been a second write path to keep in step. The route derives `author_kind` from the caller's own membership row and RLS re-checks it. **The owner's stream interleaves both conversations**, marked with a "in a task thread" label rather than filtered, because hiding rows the owner may read is the fetched-never-rendered defect. **Thread realtime topics landed in slice 6** (`20260906120000`), emitted **beside** the room topic rather than instead of it, so the node console subscribes and its ten-second poll is gone while the owner keeps reading thread messages in realtime. **Slice 8 adds two system-message keys and no new component**: `dispute-raised:<id>` when either party raises, and `dispute-resolved:<id>` when an operator decides. Both land in the **room** and deliberately not in the working thread, because a dispute is decided by an operator rather than negotiated between the parties and a line in that thread would invite exactly that negotiation. **Not built yet:** a thread switcher in the owner's UI, reactions, pins, mentions, saved messages, and the remaining embed components (approval, pay, sign, assign), which land with the marketplace and payments. See [design-system-frontend.md](design-system-frontend.md).

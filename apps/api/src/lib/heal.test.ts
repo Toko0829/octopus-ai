@@ -269,6 +269,12 @@ describe('a stranded AI step', () => {
     expect(healed[0]?.actor_kind).toBe('system');
 
     expect(deliveredFor('t1')).toHaveLength(1);
+    // The heal writes `actor_kind: 'system'` on the event, because the sweep is
+    // the machinery correcting itself, and the delivery is still signed by the
+    // voice that owns the step. Two different claims about two different rows:
+    // the platform fixed the record, and Content is the one handing over the
+    // work. The same `postArtifact` produces it, which is why this holds.
+    expect(deliveredFor('t1')[0]).toMatchObject({ author_kind: 'agent', persona: 'content' });
     expect(tables.action_embeds.rows).toHaveLength(1);
     expect(tables.action_embeds.rows[0]).toMatchObject({
       component: 'artifact',

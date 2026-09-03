@@ -476,7 +476,10 @@ describe('answering a task', () => {
     // And the room is told, keyed so a replay says it once.
     const notice = written.find((w) => w.table === 'messages');
     expect(notice?.values).toMatchObject({
-      author_kind: 'system',
+      // The Strategist: it asked the question, so it is the one saying it has
+      // the answer and is carrying on.
+      author_kind: 'agent',
+      persona: 'strategist',
       idempotency_key: `question-task:${EMBED}:${TASK_A}`,
     });
     expect(String(notice?.values?.body)).toContain('Confirm the monthly ad budget');

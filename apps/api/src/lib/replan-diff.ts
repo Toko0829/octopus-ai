@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FastifyBaseLogger } from 'fastify';
-import { ReplanEmbedPayload, type IntakeSlot } from '@octopus/contracts';
+import { ReplanEmbedPayload, type AgentPersona, type IntakeSlot } from '@octopus/contracts';
 import { requestReplan, type ReplanTaskInput } from './ai';
 
 /**
@@ -36,6 +36,17 @@ export interface ReplanDiffInput {
    * which are that context plus the answers.
    */
   context?: IntakeSlot[];
+  /**
+   * Which voice posts the card and any notice about it. Defaults to the
+   * Strategist, who owns the plan.
+   *
+   * Set by a mention, so `@Ads move the budget to Meta` comes back as a change
+   * proposed by Ads. **It changes the signature on a card and nothing else**:
+   * the ops are still proposed by the one reasoning core, the diff still applies
+   * only through `apply_plan_diff` behind the owner's approval, and a persona
+   * has no authority a plain replan does not (ADR-0031).
+   */
+  persona?: AgentPersona;
 }
 
 export async function produceDiff(
@@ -45,6 +56,11 @@ export async function produceDiff(
 ): Promise<void> {
   const { projectId, roomId, goal, reason, runId } = input;
   const log = opts.log;
+  // Whoever was asked answers. An owner opening the panel and asking for a
+  // change is asking the planner, so the Strategist is the default; a mention
+  // names a specialist, and a card that arrived under a different name than the
+  // one addressed would read as the request having been reassigned.
+  const persona: AgentPersona = input.persona ?? 'strategist';
 
   try {
     // The DAG travels to the core rather than being read by it: the task graph
@@ -65,7 +81,7 @@ export async function produceDiff(
       owner_type: 'ai' | 'human' | 'user';
     }>;
     if (tasks.length === 0) {
-      await postNotice(admin, roomId, runId, 'That project has no steps to change.', log);
+      await postNotice(admin, roomId, runId, 'That project has no steps to change.', persona, log);
       return;
     }
 
@@ -114,7 +130,7 @@ export async function produceDiff(
 
     for (const proposal of response.proposals) {
       if (proposal.kind === 'post_message') {
-        await postNotice(admin, roomId, runId, proposal.body, log);
+        await postNotice(admin, roomId, runId, proposal.body, persona, log);
         continue;
       }
       if (proposal.kind !== 'propose_replan') {
@@ -182,6 +198,7 @@ export async function produceDiff(
           roomId,
           runId,
           'I put together a change and could not store it. The plan is unchanged.',
+          persona,
           log,
         );
         continue;
@@ -193,6 +210,7 @@ export async function produceDiff(
           room_id: roomId,
           author_id: null,
           author_kind: 'agent',
+          persona,
           body: proposal.summary,
           idempotency_key: `replan:${runId}`,
         })
@@ -227,6 +245,7 @@ export async function produceDiff(
       runId,
       'I could not work out a change to the plan just now. Nothing has been altered, ' +
         'so the project is still running as it was.',
+      persona,
       log,
     );
   }
@@ -266,12 +285,14 @@ async function postNotice(
   roomId: string,
   runId: string,
   body: string,
+  persona: AgentPersona,
   log: FastifyBaseLogger,
 ): Promise<void> {
   const { error } = await admin.from('messages').insert({
     room_id: roomId,
     author_id: null,
     author_kind: 'agent',
+    persona,
     body,
     idempotency_key: `replan-notice:${runId}`,
   });

@@ -11,7 +11,7 @@ import {
   type PublishDecision,
 } from '@octopus/marketing';
 import { markConnectionExpired, readPublishableConnections } from './connections';
-import { postSystemMessage } from './system-message';
+import { postPersonaMessage } from './system-message';
 import { roomForProject } from './room-for-project';
 
 /**
@@ -474,13 +474,14 @@ async function finish(
       already_existed: decision.alreadyExisted,
     });
 
-    await postSystemMessage(
+    await postPersonaMessage(
       deps.admin,
       deps.log,
       roomId,
       `campaign-published:${campaign.id}`,
       `Your campaign "${campaign.name}" is live. ` +
         `It will not spend more than the ${campaign.budget_cap} ${campaign.currency} you authorised.`,
+      'ads',
     );
 
     log.info(
@@ -525,7 +526,7 @@ async function finish(
       },
     );
 
-    await postSystemMessage(
+    await postPersonaMessage(
       deps.admin,
       deps.log,
       roomId,
@@ -539,6 +540,7 @@ async function finish(
             `The platform said: ${decision.message} ` +
             'This campaign is closed and nothing was spent. This looks like a fault on our ' +
             'side, so approving the same thing again is unlikely to help until it is fixed.',
+      'ads',
     );
 
     log.warn(
@@ -610,13 +612,14 @@ async function announceBlocked(
   rule: string,
   reason: string,
 ): Promise<void> {
-  await postSystemMessage(
+  await postPersonaMessage(
     deps.admin,
     deps.log,
     roomId,
     `campaign-publish-blocked:${campaign.id}:${rule}`,
     `Your campaign "${campaign.name}" is approved and waiting to publish. ${reason} ` +
       'Connected accounts are listed beside this conversation. Nothing has been spent.',
+    'ads',
   );
   deps.log.info({ campaignId: campaign.id, rule }, 'campaign is approved but cannot publish yet');
 }

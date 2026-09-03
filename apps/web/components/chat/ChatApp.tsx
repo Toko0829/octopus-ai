@@ -372,6 +372,10 @@ export function ChatApp({
         id: localId,
         authorId: viewerId,
         authorKind: 'user',
+        // A person's message never carries one, and the table refuses it: the
+        // field is here because the type requires every message to say, rather
+        // than because this one could have a value.
+        persona: null,
         body: text,
         seq: null,
         ts: new Date().toTimeString().slice(0, 5),

@@ -237,6 +237,58 @@ describe('executeTask · a step that passes its own check', () => {
     expect(written.indexOf(message!)).toBeGreaterThan(written.indexOf(taskWrite('done')[0]!));
   });
 
+  it('signs the delivery with the voice that owns the step stage', async () => {
+    // `positioning` is not one of the six funnel stages. The planner has
+    // written stages this repository did not expect before, and `tasks.stage` is
+    // free text, so the fallback is the case that actually runs in production
+    // rather than a defensive branch: an unrecognised stage is delivered by the
+    // Strategist rather than throwing away the work.
+    await run();
+    const message = written.find((w) => w.table === 'messages' && w.op === 'insert');
+    expect(message?.values?.author_kind).toBe('agent');
+    expect(message?.values?.persona).toBe('strategist');
+  });
+
+  it('delivers a content-stage step as Content', async () => {
+    tables.tasks.rows[0]!.stage = 'content';
+    await run();
+    const message = written.find((w) => w.table === 'messages' && w.op === 'insert');
+    expect(message?.values?.persona).toBe('content');
+  });
+
+  it('delivers a conversion-stage step as Content too, and a channels one as Ads', async () => {
+    // Conversion is the division worth pinning: a landing page is a piece of
+    // writing before it is a channel, so it belongs to the same voice that
+    // wrote the copy pointing at it.
+    tables.tasks.rows[0]!.stage = 'conversion';
+    await run();
+    expect(
+      written.find((w) => w.table === 'messages' && w.op === 'insert')?.values?.persona,
+    ).toBe('content');
+
+    written.length = 0;
+    tables.messages.rows = [];
+    tables.tasks.rows[0]!.state = 'ai_running';
+    tables.tasks.rows[0]!.stage = 'channels';
+    await run();
+    expect(
+      written.find((w) => w.table === 'messages' && w.op === 'insert')?.values?.persona,
+    ).toBe('ads');
+  });
+
+  it('records the voice on both events, so the audit trail names a speaker', async () => {
+    // `task.executed` reads the stage off the row the update returned, which is
+    // why `transition` selects it. Without that, every executed hop would be
+    // labelled Strategist: plausible, and wrong for five stages out of six.
+    tables.tasks.rows[0]!.stage = 'measurement';
+    await run();
+    const personas = written
+      .filter((w) => w.table === 'events')
+      .map((w) => (w.values?.payload as { persona?: string }).persona);
+    expect(personas).toContain('analyst');
+    expect(personas.every((p) => p === 'analyst')).toBe(true);
+  });
+
   it('records why it moved, on both hops', async () => {
     await run();
     const reasons = written

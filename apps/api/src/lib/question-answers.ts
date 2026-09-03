@@ -8,7 +8,7 @@ import {
 } from '@octopus/contracts';
 import { remainingRequiredSlots } from '@octopus/core';
 import { completeTaskWithAnswer } from './task-answers';
-import { postSystemMessage } from './system-message';
+import { postPersonaMessage } from './system-message';
 import { profileFieldsFromSlots, writeProfileFields } from './room-profile';
 
 /**
@@ -287,12 +287,13 @@ export async function handleQuestionAction(
 
   // Said in the room, because the chat is the audit trail and a step that
   // completed without a line saying so is one nobody can dispute.
-  await postSystemMessage(
+  await postPersonaMessage(
     admin,
     log,
     embed.room_id,
     `question-task:${embed.id}:${taskId}`,
     `Recorded: ${task.title}. I will carry on with what it unblocks.`,
+    'strategist',
   );
 
   // Closed once every step it named has an answer. A card with one step left

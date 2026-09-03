@@ -45,6 +45,8 @@ Top bar carries business name, current phase, live **budget (tabular numerics)**
 
 **Never color alone** — every role is color **+ badge + icon** (accessibility, and to survive colorblind/low-contrast).
 
+**The AI Agent row is four voices, one badge.** Strategist, Content, Ads and Analyst share `--role-agent`, the teal avatar and the "Agent" badge; only the name and the two initials differ (`messages.persona`, `20260912120000`). The badge deliberately does not fork: what a reader must not get wrong is that the AI wrote this rather than a person, and that claim stays carried by a word. A message with no persona renders under the single legacy name, `Octopus`. See [chat-discord.md](../30-modules/chat-discord.md) for the stage-to-voice table.
+
 ## The AI, inline (not a bubble)
 
 - The agent's messages render with a subtle **accent bar** + **Agent** tag, in the normal stream position — it is a member, not a widget.

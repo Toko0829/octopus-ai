@@ -413,6 +413,7 @@ The AI/RAG layer is a **separate Python service** (`services/ai`, FastAPI); the 
 
 - Chat, projects, tasks, ledger, escrow, and embeddings all live in one Postgres. There is no second store to keep in sync.
 - **The AI participates by `INSERT`ing rows** (messages, tasks, artifacts) exactly like a human member — there is no privileged side channel. This keeps RLS and audit uniform.
+- **It signs what it writes.** `messages.persona` (`20260912120000`) names which of four voices wrote an agent message — Strategist, Content, Ads, Analyst — and `events.payload.persona` records the same on `task.reviewed` and `task.executed`. The value is chosen in `apps/api` by `personaForStage` from the step's own `tasks.stage`; **no model picks it, and it grants nothing.** There is still one writer to the task DAG, one router, and one spend cap ([ADR-0031](../40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)). A client cannot set it: the route never sends the column and `messages_insert_own` carries `persona is null`, the same defense in depth `author_kind` has.
 - Triggers turn state changes into realtime broadcasts and event-sourced audit records.
 
 ## Realtime transport

@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
-import type { UiMember, UiMessage } from '../../lib/types';
+import { AGENT_PERSONAS } from '@octopus/contracts';
+import type { AgentPersona, UiMember, UiMessage } from '../../lib/types';
 import { RoleBadge } from './ui';
 import { OctopusMark } from './icons';
 import { PlanCard } from './PlanCard';
@@ -31,8 +32,38 @@ interface Props {
   onQuestionAction: (embedId: string, input: EmbedActionBody) => Promise<EmbedActionResponse>;
 }
 
-/** Author identity for a message whose sender is not in the member list. */
-const AGENT: UiMember = {
+/**
+ * The four agent voices, as authors.
+ *
+ * Built from the contract registry rather than restated, so a rename lands in
+ * one place. They are **not** roster entries and never will be: `room_members`
+ * requires an `auth.users` row, and giving the AI credentials to hold one is a
+ * larger decision than a name in a stream (ADR-0031). Every one carries
+ * `role: 'agent'`, so the accent bar, the avatar gradient and the badge are the
+ * ones the chat already had.
+ */
+const PERSONA_AUTHORS: Record<AgentPersona, UiMember> = Object.fromEntries(
+  (Object.keys(AGENT_PERSONAS) as AgentPersona[]).map((key) => [
+    key,
+    {
+      id: `persona:${key}`,
+      name: AGENT_PERSONAS[key].name,
+      role: 'agent',
+      presence: 'online',
+      initials: AGENT_PERSONAS[key].initials,
+      expiresAt: null,
+    } satisfies UiMember,
+  ]),
+) as Record<AgentPersona, UiMember>;
+
+/**
+ * The single voice the AI spoke in before `20260912120000`.
+ *
+ * Kept rather than backfilled. Every agent message in an existing room has no
+ * persona, and choosing one for it now would be a guess written into the record
+ * a person reads to reconstruct what happened.
+ */
+const OCTOPUS: UiMember = {
   id: 'agent',
   name: 'Octopus',
   role: 'agent',
@@ -66,7 +97,7 @@ const HUMAN_NODE: UiMember = {
 };
 
 function authorOf(m: UiMessage, membersById: Record<string, UiMember>): UiMember {
-  if (m.authorKind === 'agent') return AGENT;
+  if (m.authorKind === 'agent') return m.persona ? PERSONA_AUTHORS[m.persona] : OCTOPUS;
   if (m.authorId && membersById[m.authorId]) return membersById[m.authorId] as UiMember;
   // An expert admitted to one thread of this room. Checked before the
   // former-member fallback, or every message a node writes would be labelled as

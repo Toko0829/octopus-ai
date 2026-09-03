@@ -1,3 +1,4 @@
+import { AgentPersona } from '@octopus/contracts';
 import type { Channel, Message, Room, RoomMember } from '@octopus/contracts';
 import type { Presence, Role, UiBusiness, UiChannel, UiMember, UiMessage } from './types';
 
@@ -81,6 +82,11 @@ export function fromBroadcastRecord(record: unknown): UiMessage | null {
     authorId: typeof r.author_id === 'string' ? r.author_id : null,
     authorKind:
       kind === 'agent' || kind === 'node' || kind === 'system' || kind === 'user' ? kind : 'user',
+    // Parsed rather than cast. The broadcast is the one path into this client
+    // that no route validated, so a persona the client does not know becomes
+    // null and renders under the legacy name, instead of indexing a registry
+    // with a string nobody checked.
+    persona: AgentPersona.safeParse(r.persona).data ?? null,
     body: typeof r.body === 'string' ? r.body : '',
     seq: r.seq === null || r.seq === undefined ? null : Number(r.seq),
     ts: typeof r.created_at === 'string' ? formatTime(r.created_at) : '',
@@ -95,6 +101,7 @@ export function toMessage(m: Message): UiMessage {
     id: m.id,
     authorId: m.authorId,
     authorKind: m.authorKind,
+    persona: m.persona,
     body: m.body ?? '',
     seq: m.seq,
     ts: formatTime(m.createdAt),

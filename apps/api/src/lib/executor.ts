@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { nextStateAfterReview, review } from '@octopus/core';
-import { ArtifactEmbedPayload } from '@octopus/contracts';
+import { ArtifactEmbedPayload, personaForStage } from '@octopus/contracts';
 import { AiServiceError, requestExecution } from './ai';
 import { planContextForProject, roomForProject } from './room-for-project';
 
@@ -205,6 +205,11 @@ export async function executeTask(taskId: string, deps: ExecutorDeps): Promise<v
         reasons: verdict.reasons,
         artifact_id: artifact?.id ?? null,
         next,
+        // Which voice this step is delivered under, recorded beside the review
+        // rather than derived later: `tasks.stage` can be edited by a plan diff,
+        // and an audit trail that re-derives the speaker from today's row would
+        // rewrite who said what.
+        persona: personaForStage(task.stage),
       },
     });
 
@@ -304,7 +309,11 @@ export async function transition(
 ): Promise<boolean> {
   let q = admin.from('tasks').update({ state: to }).eq('id', taskId);
   if (from !== undefined) q = q.eq('state', from);
-  const { data, error } = await q.select('id, project_id').maybeSingle();
+  // `stage` rides along only to name the voice on the event below. Forgetting it
+  // would not fail anything: `personaForStage(undefined)` is total and would
+  // label every executed transition as the Strategist, which is a plausible
+  // answer and a wrong one.
+  const { data, error } = await q.select('id, project_id, stage').maybeSingle();
 
   // Not caught. The state machine in Postgres is the authority, and a loop that
   // swallowed a refused transition would carry on as though the task had moved.
@@ -320,7 +329,7 @@ export async function transition(
     verb: 'task.executed',
     subject_type: 'task',
     subject_id: taskId,
-    payload: { to, reason },
+    payload: { to, reason, persona: personaForStage(data.stage) },
   });
   return true;
 }
@@ -397,6 +406,14 @@ export async function postArtifact(
         room_id: roomId,
         author_id: null,
         author_kind: 'agent',
+        // The step's own stage decides who delivers it, so a landing page
+        // arrives from Content and a channel setup from Ads without anybody
+        // choosing per call site. A step with no stage, or one the planner
+        // invented, falls to the Strategist rather than throwing: an unsigned
+        // delivery is a cosmetic error and a thrown one is work that never
+        // reaches the room, which is the failure `roomForProject` was written
+        // to fix.
+        persona: personaForStage(input.stage),
         body: `${input.step}\n\n${input.title}\n\n${input.body}${sources}`,
         // One delivery per artifact. A retried run that reached approval twice
         // would collide here rather than posting the work a second time.

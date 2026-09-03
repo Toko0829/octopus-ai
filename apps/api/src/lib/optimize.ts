@@ -12,7 +12,7 @@ import {
   type CpaVerdict,
 } from '@octopus/marketing';
 import { markConnectionExpired, readPublishableConnections } from './connections';
-import { postSystemMessage } from './system-message';
+import { postPersonaMessage } from './system-message';
 import { roomForProject } from './room-for-project';
 import { rollupOutcomes, type OutcomeReadRow } from './metrics';
 
@@ -400,7 +400,7 @@ async function pauseOne(
     });
   }
 
-  await postSystemMessage(
+  await postPersonaMessage(
     admin,
     log,
     roomId,
@@ -410,6 +410,7 @@ async function pauseOne(
       `${verdict.conversions} conversion(s) against a ceiling of ${verdict.cpaCeiling} ` +
       `${campaign.currency} per conversion. To run it again, raise or clear the ceiling on ` +
       'the project panel, then resume it there.',
+    'analyst',
   );
 
   log.info(
@@ -442,14 +443,15 @@ async function announceBlocked(
   rule: string,
   reason: string,
 ): Promise<void> {
-  await postSystemMessage(
+  await postPersonaMessage(
     deps.admin,
     deps.log,
     roomId,
     `campaign-pause-blocked:${campaign.id}:${rule}`,
     `Your campaign "${campaign.name}" has crossed the cost per conversion ceiling you set, ` +
-      `and Octopus cannot stop its spend from here. ${reason} ` +
-      'The pause will be attempted again until it lands.',
+      `and I cannot stop its spend from here. ${reason} ` +
+      'I will keep trying to pause it until it lands.',
+    'analyst',
   );
   deps.log.info({ campaignId: campaign.id, rule }, 'a breached campaign cannot be paused yet');
 }

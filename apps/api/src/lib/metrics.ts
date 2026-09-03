@@ -12,7 +12,7 @@ import {
   type MetricsPeriod,
 } from '@octopus/marketing';
 import { markConnectionExpired, readPublishableConnections } from './connections';
-import { postSystemMessage } from './system-message';
+import { postPersonaMessage } from './system-message';
 import { roomForProject } from './room-for-project';
 
 /**
@@ -478,13 +478,14 @@ async function announceBlocked(
   rule: string,
   reason: string,
 ): Promise<void> {
-  await postSystemMessage(
+  await postPersonaMessage(
     deps.admin,
     deps.log,
     roomId,
     `campaign-metrics-blocked:${campaign.id}:${rule}`,
     `Performance is not being recorded for your campaign "${campaign.name}". ${reason} ` +
       'Anything already measured is still on the project panel.',
+    'analyst',
   );
   deps.log.info({ campaignId: campaign.id, rule }, 'a campaign cannot be measured right now');
 }

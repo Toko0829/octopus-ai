@@ -80,7 +80,7 @@ vi.mock('../lib/supabase', () => ({
   createServiceClient: () => client(),
 }));
 
-const { messageRoutes } = await import('./messages');
+const { messageRoutes, MESSAGE_COLUMNS, MessageRow } = await import('./messages');
 
 async function build(): Promise<FastifyInstance> {
   const app = Fastify();
@@ -236,6 +236,43 @@ describe('posting into a thread', () => {
     // Zod rather than refused. What matters is that it never reaches the insert.
     expect(res.statusCode).toBe(201);
     expect(inserted[0]?.author_kind).toBe('user');
+  });
+
+  it('never lets a client name a persona', async () => {
+    // The same guarantee as `author_kind` above, and it needs its own case: a
+    // client that could set this could file a message under the Ads
+    // specialist's name in somebody's audit trail. The route never sends the
+    // column at all, and `messages_insert_own` refuses one independently
+    // (`20260912120000`), which is the layer this test cannot reach.
+    tables.room_members = [
+      { room_id: ROOM, user_id: USER, role: 'user', scope: 'room', thread_id: null },
+    ];
+
+    const app = await build();
+    const res = await app.inject(post({ persona: 'ads' }));
+
+    expect(res.statusCode).toBe(201);
+    expect(inserted[0]).not.toHaveProperty('persona');
+  });
+});
+
+describe('the messages select and MessageRow', () => {
+  // The `PROJECT_COLUMNS` argument, applied to the other pinned select in this
+  // service: a PostgREST select is a string, so a column the schema requires and
+  // the query omits is invisible to the type checker and fails at runtime. For
+  // `persona` the failure would be quieter still, because the row parses either
+  // way and every specialist would simply render as the legacy Octopus.
+  it('selects every column MessageRow requires', () => {
+    const selected = new Set(MESSAGE_COLUMNS.split(',').map((c) => c.trim()));
+
+    for (const column of Object.keys(MessageRow.shape)) {
+      // The embedded relation is selected with its own column list, so it does
+      // not appear as a bare name.
+      if (column === 'action_embeds') continue;
+      expect(selected.has(column), `MessageRow requires "${column}" and the read omits it`).toBe(
+        true,
+      );
+    }
   });
 });
 

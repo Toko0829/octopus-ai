@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { PostgrestError } from '@supabase/supabase-js';
 import {
+  AgentPersona,
   ArtifactEmbedPayload,
   CampaignEmbedPayload,
   EmbedState,
@@ -71,13 +72,21 @@ const EmbedRow = z.discriminatedUnion('component', [
   z.object({ ...EmbedRowBase, component: z.literal('campaign'), payload: CampaignEmbedPayload }),
 ]);
 
-/** Database row shape (snake_case) for the columns we select. */
-const MessageRow = z.object({
+/**
+ * Database row shape (snake_case) for the columns we select. Exported so a test
+ * can pin `MESSAGE_COLUMNS` against it.
+ */
+export const MessageRow = z.object({
   id: z.string(),
   room_id: z.string(),
   channel_id: z.string().nullable(),
   author_id: z.string().nullable(),
   author_kind: z.enum(['user', 'agent', 'node', 'system']),
+  // Defaulted rather than required, because a row written before
+  // `20260912120000` has no such key at all and every fixture in this
+  // repository predates it. A missing persona and an explicit null mean the
+  // same thing to the reader: the single legacy voice.
+  persona: AgentPersona.nullable().default(null),
   body: z.string().nullable(),
   seq: z.coerce.number().int(),
   created_at: z.string(),
@@ -95,8 +104,15 @@ type MessageRow = z.infer<typeof MessageRow>;
 // thread, so the owner's stream now interleaves two conversations and a client
 // that could not tell them apart would render a node's work as if it had been
 // said to the whole room.
-const SELECT_COLUMNS =
-  'id, room_id, channel_id, author_id, author_kind, body, seq, created_at, thread_id, ' +
+//
+// `persona` joins it with `20260912120000`, and unlike `thread_id` it has a
+// reader on the day it lands: the stream names the voice that wrote each agent
+// message, so a select that forgot the column would render every specialist as
+// the legacy Octopus with nothing failing anywhere. Exported so a test can pin
+// it against `MessageRow`, the way `PROJECT_COLUMNS` is pinned: a select string
+// that drifts from the schema fails at runtime only.
+export const MESSAGE_COLUMNS =
+  'id, room_id, channel_id, author_id, author_kind, persona, body, seq, created_at, thread_id, ' +
   'action_embeds(id, message_id, component, payload, required_role, state, created_at)';
 
 function toEmbed(raw: unknown): Message['embed'] {
@@ -149,6 +165,7 @@ function toMessage(row: MessageRow): Message {
     channelId: row.channel_id,
     authorId: row.author_id,
     authorKind: row.author_kind,
+    persona: row.persona,
     body: row.body,
     seq: row.seq,
     createdAt: row.created_at,
@@ -210,7 +227,7 @@ export async function messageRoutes(
 
         let q = db
           .from('messages')
-          .select(SELECT_COLUMNS)
+          .select(MESSAGE_COLUMNS)
           .eq('room_id', roomId)
           .order('seq', { ascending: true })
           .limit(limit);
@@ -343,7 +360,7 @@ export async function messageRoutes(
             body,
             idempotency_key: idempotencyKey,
           })
-          .select(SELECT_COLUMNS)
+          .select(MESSAGE_COLUMNS)
           .single();
 
         if (!error) {
@@ -356,7 +373,7 @@ export async function messageRoutes(
         if (pgErr.code === PG_UNIQUE_VIOLATION) {
           const { data: existing, error: lookupErr } = await db
             .from('messages')
-            .select(SELECT_COLUMNS)
+            .select(MESSAGE_COLUMNS)
             .eq('idempotency_key', idempotencyKey)
             .maybeSingle();
 

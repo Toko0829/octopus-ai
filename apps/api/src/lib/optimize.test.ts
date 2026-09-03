@@ -449,9 +449,12 @@ describe('pausing a breached campaign', () => {
     expect(event).not.toHaveProperty('actor_id');
 
     expect(db.log.messages).toHaveLength(1);
+    // The Analyst, because pausing on a cost ceiling is a judgement it made
+    // from what it measured rather than something a person or a platform did.
     expect(db.log.messages[0]).toMatchObject({
       idempotency_key: `campaign-paused:${CAMPAIGN}:0`,
-      author_kind: 'system',
+      author_kind: 'agent',
+      persona: 'analyst',
     });
     expect(db.log.messages[0]!.body).toContain('500');
     expect(db.log.messages[0]!.body).toContain('15');

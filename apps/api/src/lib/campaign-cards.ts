@@ -237,6 +237,11 @@ async function postOneCard(
         room_id: roomId,
         author_id: null,
         author_kind: 'agent',
+        // Ads by name rather than by `personaForStage(task.stage)`. A campaign
+        // card is proposed for any step the router parked as needing spend
+        // authorisation, whatever stage the planner filed it under, and the
+        // voice should follow what the message is about.
+        persona: 'ads',
         body:
           `${payload.data.name}\n\n${payload.data.summary}\n\n` +
           'Nothing runs until you approve this and set a budget. ' +

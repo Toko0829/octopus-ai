@@ -148,6 +148,12 @@ export async function notifyWaiting(
         room_id: roomId,
         author_id: null,
         author_kind: 'agent',
+        // The Strategist, whatever stages the waiting steps came from. This
+        // digest is about the plan as a whole and it asks the owner to unblock
+        // it, which is the planner's business; signing it with whichever
+        // specialist happened to own the first stalled step would make the
+        // sender look arbitrary.
+        persona: 'strategist',
         body: waitingMessage(summary, titles),
         idempotency_key: key,
       })

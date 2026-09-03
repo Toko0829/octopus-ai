@@ -47,6 +47,159 @@ export const FunnelStage = z.enum([
 ]);
 export type FunnelStage = z.infer<typeof FunnelStage>;
 
+/* ------------------------------------------------------- agent personas */
+
+/**
+ * The four voices the AI speaks in. Mirrors the `messages_persona_known` check
+ * in `20260912120000`.
+ *
+ * **A persona is a voice, not a writer** ([ADR-0031](../../../docs/40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)).
+ * The task DAG keeps its single writer, the router still parks high-risk steps
+ * and the spend cap still holds the ceiling; this names which specialist a
+ * message came from so a plan, a delivered draft, a campaign card and a pause
+ * notice do not all arrive from one anonymous account.
+ *
+ * Four rather than nine, which was the shape this started from: a persona with
+ * no tool behind it is an empty chair. Creative, SEO, CRO and a competitor scout
+ * each arrive with their provider.
+ */
+export const AgentPersona = z.enum(['strategist', 'content', 'ads', 'analyst']);
+export type AgentPersona = z.infer<typeof AgentPersona>;
+
+/** How a persona introduces itself: what it is called and what it owns. */
+export interface AgentPersonaProfile {
+  /** Shown on every message this voice writes, and in the members panel. */
+  readonly name: string;
+  /** Two letters for the avatar, which carries no image. */
+  readonly initials: string;
+  /** The funnel stages whose steps this voice delivers. */
+  readonly stages: readonly FunnelStage[];
+  /** One line, for the members panel and the composer's mention list. */
+  readonly summary: string;
+}
+
+/**
+ * The registry, checked in rather than stored, on the stance
+ * `packages/marketplace/src/stage-skills.ts` already takes for the same kind of
+ * map: **a file gets reviewed in a diff by a person and a row does not**, and
+ * six stages is small enough to state completely and read in one screen.
+ *
+ * Two divisions are worth stating because they were decisions rather than
+ * defaults.
+ *
+ * **Conversion belongs to Content.** A landing page is a piece of writing before
+ * it is a channel, and the Python side already classifies such a step's
+ * deliverable as `landing` alongside `copy` and `sequence`
+ * (`services/ai/src/octopus_ai/deliverable.py`). Filing it under Ads would split
+ * one writer's work across two names on the strength of where the traffic came
+ * from.
+ *
+ * **Strategist is the fallback, not a specialist among equals.** It owns intake,
+ * the plan, the questions, the replan and every step whose stage is missing or
+ * unrecognised, because those are the moments when nobody has decided what kind
+ * of work this is yet. `personaForStage` encodes exactly that.
+ *
+ * Key order is display order.
+ */
+export const AGENT_PERSONAS: Readonly<Record<AgentPersona, AgentPersonaProfile>> = Object.freeze({
+  strategist: Object.freeze({
+    name: 'Strategist',
+    initials: 'ST',
+    stages: Object.freeze(['strategy'] as const),
+    summary: 'Positioning, the offer, and the plan itself',
+  }),
+  content: Object.freeze({
+    name: 'Content',
+    initials: 'CO',
+    stages: Object.freeze(['content', 'creative', 'conversion'] as const),
+    summary: 'Copy, creative briefs, emails and landing pages',
+  }),
+  ads: Object.freeze({
+    name: 'Ads',
+    initials: 'AD',
+    stages: Object.freeze(['channels'] as const),
+    summary: 'Channels, campaigns and budgets',
+  }),
+  analyst: Object.freeze({
+    name: 'Analyst',
+    initials: 'AN',
+    stages: Object.freeze(['measurement'] as const),
+    summary: 'Performance, attribution and the cost ceiling',
+  }),
+}) as Readonly<Record<AgentPersona, AgentPersonaProfile>>;
+
+/** Built once from the registry, so the two cannot drift. */
+const STAGE_TO_PERSONA: Readonly<Record<string, AgentPersona>> = Object.freeze(
+  Object.fromEntries(
+    (Object.keys(AGENT_PERSONAS) as AgentPersona[]).flatMap((persona) =>
+      AGENT_PERSONAS[persona].stages.map((stage) => [stage, persona] as const),
+    ),
+  ),
+);
+
+/**
+ * Which voice delivers a step of this stage.
+ *
+ * **Total by construction.** `tasks.stage` is free text (`20260813120000:119`
+ * says why: the stage list lives in this package and in Python, and a third copy
+ * in Postgres would be a third thing to keep in step), so this receives whatever
+ * the planner wrote, including `null` for a step that never carried one. An
+ * unrecognised stage falls to the Strategist rather than throwing or returning
+ * undefined: the cost of a wrong-but-plausible name on a chat message is a
+ * cosmetic error, and the cost of a throw is a delivered artifact that never
+ * reaches the room, which is a failure this repository has already recorded once.
+ */
+export function personaForStage(stage: string | null | undefined): AgentPersona {
+  if (typeof stage !== 'string') return 'strategist';
+  return STAGE_TO_PERSONA[stage.trim().toLowerCase()] ?? 'strategist';
+}
+
+/**
+ * The mention grammar, which lives here because **two independent readers must
+ * agree on it**: the composer decides what to highlight and autocomplete in the
+ * browser, and `startRun` decides what to route in Fastify. A second regex in
+ * `apps/web` would disagree with this one at exactly the cases nobody tests,
+ * `someone@ads.com` and `@Adsy` among them.
+ *
+ * A fresh object each call rather than a module constant, because a `/g` regex
+ * carries `lastIndex` and a shared one silently skips matches on its second use.
+ */
+export function mentionRegex(): RegExp {
+  const names = (Object.keys(AGENT_PERSONAS) as AgentPersona[])
+    .map((key) => AGENT_PERSONAS[key].name)
+    .join('|');
+  return new RegExp(`(?<![\\w@])@(${names})(?![\\w-])`, 'gi');
+}
+
+/**
+ * The persona a message addresses, or null.
+ *
+ * **First token wins.** A message naming two specialists is one request, and
+ * asking the owner to disambiguate would be a question about our data model
+ * rather than about their business. The step that lands is a card they approve
+ * either way.
+ */
+export function parseMention(text: string): AgentPersona | null {
+  const match = mentionRegex().exec(text);
+  if (!match) return null;
+  const name = match[1]!.toLowerCase();
+  return (
+    (Object.keys(AGENT_PERSONAS) as AgentPersona[]).find(
+      (key) => AGENT_PERSONAS[key].name.toLowerCase() === name,
+    ) ?? null
+  );
+}
+
+/**
+ * The same text with the first mention of `persona` removed, for the case where
+ * the mention did not route anywhere and the rest is an ordinary goal. Exactly
+ * one token, so "@Ads and @Ads again" keeps the second and stays legible.
+ */
+export function stripMention(text: string, persona: AgentPersona): string {
+  const token = new RegExp(`(?<![\\w@])@${AGENT_PERSONAS[persona].name}(?![\\w-])`, 'i');
+  return text.replace(token, ' ').replace(/\s+/g, ' ').trim();
+}
+
 /** Who executes a step. Mirrors `owner_type` in the workflow schema. */
 export const StepOwner = z.enum(['AI', 'HUMAN', 'YOU']);
 export type StepOwner = z.infer<typeof StepOwner>;
@@ -740,6 +893,18 @@ export const Message = z.object({
   channelId: z.string().uuid().nullable(),
   authorId: z.string().uuid().nullable(),
   authorKind: AuthorKind,
+  /**
+   * Which agent voice wrote this, for an `agent` row written since
+   * `20260912120000`.
+   *
+   * **Null is the normal case for three different reasons**, which is why it
+   * defaults rather than being required: a person's or a node's message never
+   * has one, a system notice is refused one by the table, and every agent
+   * message written before the column exists carries none. The client renders
+   * that last group under the single legacy name rather than guessing, because
+   * a guess written beside an audit trail is indistinguishable from a fact.
+   */
+  persona: AgentPersona.nullable().default(null),
   body: z.string().nullable(),
   seq: z.coerce.number().int(),
   createdAt: z.string(),
