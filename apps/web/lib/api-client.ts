@@ -4,6 +4,7 @@ import type {
   ArtifactFileUrl,
   Channel,
   ChannelConnection,
+  EmbedActionBody,
   EmbedActionResponse,
   ListMessagesResponse,
   ListNotificationsResponse,
@@ -22,8 +23,10 @@ import type {
   OpsDisputeSummary,
   ProjectDetail,
   ProjectSummary,
+  PutRoomProfileBody,
   ResolveDisputeBody,
   RoomMember,
+  RoomProfile,
   SubmitRatingBody,
 } from '@octopus/contracts';
 
@@ -208,6 +211,21 @@ export function postMessage(
  * `null` clears the ceiling, which blocks new campaign approvals and leaves every
  * campaign already authorised exactly as it was.
  */
+/** What the workspace knows about its business. The owner reads a row; anybody else reads nulls. */
+export function getRoomProfile(roomId: string) {
+  return bff<{ profile: RoomProfile }>(`/rooms/${roomId}/profile`);
+}
+
+/** Only the keys sent are written. `null` clears a field. */
+export function putRoomProfile(roomId: string, input: PutRoomProfileBody) {
+  return bff<{ profile: RoomProfile }>(`/rooms/${roomId}/profile`, {
+    // PATCH, as every partial write here is: only the keys sent are written,
+    // and the BFF proxies PATCH where it has no PUT.
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
 export function setProjectBudget(projectId: string, budgetCeiling: number | null) {
   return bff<ProjectDetail>(`/projects/${projectId}`, {
     method: 'PATCH',
@@ -382,11 +400,7 @@ export function disconnectConnection(roomId: string, connectionId: string) {
   });
 }
 
-export function actOnEmbed(
-  roomId: string,
-  embedId: string,
-  input: { action: 'approve' | 'request_changes'; note?: string; budgetCap?: number },
-) {
+export function actOnEmbed(roomId: string, embedId: string, input: EmbedActionBody) {
   return bff<EmbedActionResponse>(`/rooms/${roomId}/embeds/${embedId}/actions`, {
     method: 'POST',
     body: JSON.stringify(input),

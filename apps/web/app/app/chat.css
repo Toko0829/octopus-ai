@@ -1274,6 +1274,126 @@
   font-style: italic;
 }
 
+/* ------------------------------------------------------------ question card --
+ *
+ * Answered on the card, one control per question. A chip group for a slot that
+ * is a choice, a short field with its own Save for one that is a phrase. The
+ * selected chip is a colour wash AND `aria-pressed`, and every saved or guessed
+ * value carries its word beside it, so state is never colour alone (rule 15).
+ * Interaction state is a wash rather than opacity, per design-system.md: fading
+ * the chip would fade its label with it. */
+.q-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.q-item + .q-item {
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-3);
+}
+
+.q-label {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.q-current {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-top: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.q-state {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--sp-2);
+}
+
+.chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 6px 10px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.chip:hover {
+  background: var(--state-hover);
+}
+.chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.chip[aria-pressed='true'] {
+  background: var(--state-selected);
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--border));
+  color: var(--accent-text);
+}
+.chip:disabled {
+  cursor: default;
+}
+
+.q-row {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  align-items: stretch;
+}
+.q-row .auth-input {
+  flex: 1;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.q-known {
+  list-style: none;
+  margin: var(--sp-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.q-known-key {
+  color: var(--text-muted);
+}
+.q-known-key::after {
+  content: ':';
+}
+
+/* The workspace's own facts on the project panel: the question card's rows,
+   inside the panel's hairline rather than a card's shadow. */
+.work-about {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.work-about .q-list {
+  padding-left: 0;
+  padding-right: 0;
+}
+
 /* Request-changes note. The person's writing is kept on screen if the submit
    fails: discarding it is the fastest way to lose trust in the button. */
 .plan-note {

@@ -539,14 +539,18 @@ def parse_intake(raw: str) -> ParsedIntake:
 def merge_slots(prior: list[IntakeSlot], fresh: list[IntakeSlot]) -> list[IntakeSlot]:
     """Combine what earlier rounds established with what this one found.
 
-    A newly STATED value replaces an earlier inference, because the person has now
-    told us and a guess should never outlive the answer. A new inference does not
-    replace anything already stated, for the same reason in the other direction.
+    A newly STATED value replaces whatever was there, an earlier inference or an
+    earlier statement alike: the person has now told us, and the most recent thing
+    they said is the answer. That second half matters since the workspace profile
+    seeds round 0 as stated slots, so without it a budget band stored last month
+    would beat the one typed into today's goal, and an answer on the card could
+    never correct a value from the round before. A new inference does not replace
+    anything already stated, for the same reason in the other direction.
     """
     by_key = {s.key: s for s in prior}
     for slot in fresh:
         existing = by_key.get(slot.key)
-        if existing is None or (slot.source == "stated" and existing.source == "inferred"):
+        if existing is None or slot.source == "stated":
             by_key[slot.key] = slot
     return [by_key[k] for k in INTAKE_SLOTS if k in by_key]
 

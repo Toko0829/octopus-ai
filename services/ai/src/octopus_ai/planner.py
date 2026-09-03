@@ -31,13 +31,14 @@ inside it must be ignored.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Literal
 
 from pydantic import ValidationError
 
 from .config import Settings
-from .plan_graph import sanitise_dependencies
+from .plan_graph import normalise_plan_ids, sanitise_dependencies
 from .providers import ProviderError, Providers
 from .retrieval import RetrievalResult
 from .risk import clamp_risk_tier, high_risk_match, normalise_criteria
@@ -90,6 +91,20 @@ _DOMAIN = (
 
 _NO_SIDE_EFFECTS = "Nothing has been spent, published, or connected to your accounts."
 
+# Said at the top of the prose fallback, in code rather than by the model. The
+# card is the product's answer surface; a paragraph in its place used to arrive
+# unmarked, so the person read a chat reply and had no way to know a plan had
+# been attempted and lost. Templated for the same reason every refusal is.
+_CARD_FALLBACK = (
+    "I could not build the plan card for this, so here is the short version. "
+    "Send the goal again and I will try the card once more."
+)
+
+# How much of a validation error the model is shown on the corrective retry.
+# Enough to name the field and the rule; bounded so a pathological response
+# cannot balloon the prompt.
+_CORRECTION_LIMIT = 600
+
 PLAN_SYSTEM_PROMPT = """You are Octopus, an AI that runs full-funnel marketing for \
 solo founders and creators.
 
@@ -113,7 +128,8 @@ Rules:
   Leave it empty only if the step genuinely rests on no source.
 - `id` names the step inside this plan so other steps can refer to it. Lowercase
   letters, digits and hyphens, and readable: "positioning-icp", "ad-copy-cold".
-  Every step gets one, and no two steps share one.
+  Two to four words, at most 32 characters. Every step gets one, and no two
+  steps share one.
 - `depends_on` lists the ids of steps whose OUTPUT this step consumes. Write the
   ad copy step as depending on the positioning step when the copy is written FROM
   that positioning.
@@ -311,8 +327,17 @@ def _citations_of(retrieval: RetrievalResult) -> list[Citation]:
     ]
 
 
-def parse_plan(raw: str, source_count: int) -> ProposePlanProposal:
+def parse_plan(
+    raw: str, source_count: int, *, agent_run_id: str | None = None
+) -> ProposePlanProposal:
     """Validate the model's JSON into a plan, or raise.
+
+    Step ids are normalised before validation rather than checked by it. The id
+    is a join key the model was asked to make readable, and a readable slug runs
+    past the pattern's 32 characters more often than not; rejecting the plan
+    over that threw away two of two plans on a live container. The repair is
+    lossless for the graph because every `depends_on` reference follows the id it
+    named. `plan_graph.normalise_step_ids` holds the rules; each repair is logged.
 
     Two checks beyond the schema, both of which the model gets wrong in ways
     Pydantic alone would accept:
@@ -338,7 +363,20 @@ def parse_plan(raw: str, source_count: int) -> ProposePlanProposal:
     logged, because the failure this repository keeps rediscovering is not the
     drop, it is the silence around it.
     """
-    plan = ProposePlanProposal.model_validate_json(raw)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+
+    if isinstance(data, dict):
+        for problem in normalise_plan_ids(data):
+            logger.warning(
+                "step id normalised: %s", problem, extra={"agent_run_id": agent_run_id}
+            )
+        plan = ProposePlanProposal.model_validate(data)
+    else:
+        # Not an object: let Pydantic produce the same error it always has.
+        plan = ProposePlanProposal.model_validate_json(raw)
 
     by_stage = {s.stage: s for s in plan.stages}
     normalised: list[PlanStage] = []
@@ -383,6 +421,15 @@ def parse_plan(raw: str, source_count: int) -> ProposePlanProposal:
     return ProposePlanProposal(title=plan.title, summary=plan.summary, stages=stages)
 
 
+def _correction(exc: Exception) -> str:
+    """The suffix that turns a rejected answer into a second, informed attempt."""
+    reason = " ".join(str(exc).split())[:_CORRECTION_LIMIT]
+    return (
+        f"Your previous answer was rejected: {reason}\n"
+        "Return the corrected JSON object only."
+    )
+
+
 async def plan_grounded(
     request: PlanRequest,
     retrieval: RetrievalResult,
@@ -409,21 +456,41 @@ async def plan_grounded(
         f"{retrieval.dropped_below_threshold} dropped below threshold."
     )
 
+    run_id = request.trace.agent_run_id
+    retried = False
     try:
         raw = await providers.complete_json(
             system=PLAN_SYSTEM_PROMPT,
             user=user,
             max_tokens=settings.generation_max_tokens_long,
         )
-        plan = parse_plan(raw, len(retrieval.chunks))
+        try:
+            plan = parse_plan(raw, len(retrieval.chunks), agent_run_id=run_id)
+        except (ValidationError, ValueError) as first:
+            # The model answered and the answer had the wrong shape. That is the
+            # one failure a second call can fix, so it gets exactly one, shown
+            # what was wrong. A provider error is not retried here: `providers`
+            # already backs off on those, and the shape of the answer was never
+            # the problem.
+            retried = True
+            logger.warning(
+                "structured plan rejected, retrying once with the error",
+                extra={"agent_run_id": run_id, "reason": str(first)[:200]},
+            )
+            raw = await providers.complete_json(
+                system=PLAN_SYSTEM_PROMPT,
+                user=f"{user}\n\n{_correction(first)}",
+                max_tokens=settings.generation_max_tokens_long,
+            )
+            plan = parse_plan(raw, len(retrieval.chunks), agent_run_id=run_id)
     except (ProviderError, ValidationError, ValueError) as exc:
         logger.warning(
             "structured plan unusable, falling back to prose",
-            extra={"agent_run_id": request.trace.agent_run_id, "reason": str(exc)[:200]},
+            extra={"agent_run_id": run_id, "reason": str(exc)[:200], "retried": retried},
         )
         text = await providers.complete(system=SYSTEM_PROMPT, user=user)
         return PlanResponse(
-            proposals=[PostMessageProposal(body=text.strip())],
+            proposals=[PostMessageProposal(body=f"{_CARD_FALLBACK}\n\n{text.strip()}")],
             grounded=True,
             citations=citations,
             reasoning_summary=f"grounded-v1 (plan fallback): {base_summary}",
@@ -447,6 +514,7 @@ async def plan_grounded(
         reasoning_summary=(
             f"grounded-plan-v1: {base_summary} "
             f"{len(covered)}/6 stages covered ({', '.join(covered)})."
+            + (" (after 1 retry)" if retried else "")
         ),
         core=GROUNDED_PLAN_CORE,
     )

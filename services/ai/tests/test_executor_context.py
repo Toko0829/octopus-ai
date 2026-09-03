@@ -44,12 +44,17 @@ class StubRetriever:
     def __init__(self) -> None:
         self.queries: list[str] = []
         self.scopes: list[tuple[str | None, str | None]] = []
+        self.run_ids: list[str | None] = []
 
     async def retrieve(
-        self, query: str, subqueries=None, room_id=None, project_id=None
+        self, query: str, subqueries=None, room_id=None, project_id=None, agent_run_id=None
     ) -> RetrievalResult:
         self.queries.append(query)
         self.scopes.append((room_id, project_id))
+        # Accepted rather than ignored: observability.md requires the run id to be
+        # pivotable from any log line, and the retrieval path is where a step's
+        # per-step re-retrieval is logged.
+        self.run_ids.append(agent_run_id)
         # `grounded` is a property over `chunks`, not a field: an empty
         # retrieval is not grounding, and the type refuses to let a caller claim
         # otherwise.

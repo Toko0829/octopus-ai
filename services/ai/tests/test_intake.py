@@ -161,6 +161,22 @@ def test_a_stated_value_replaces_an_earlier_inference():
     assert merged[0].source == "stated"
 
 
+def test_a_newer_statement_replaces_an_earlier_one():
+    """The most recent thing the person said is the answer.
+
+    Round 0 is seeded from the workspace profile as stated slots, so without this
+    a budget band stored last month would beat the one typed into today's goal,
+    and an answer on the card could never correct a value from the round before.
+    """
+    prior = [IntakeSlot(key="budget_band", value="under_500", source="stated")]
+    fresh = [IntakeSlot(key="budget_band", value="2k_10k", source="stated")]
+
+    merged = merge_slots(prior, fresh)
+
+    assert len(merged) == 1
+    assert merged[0].value == "2k_10k"
+
+
 def test_an_inference_never_overwrites_something_the_person_stated():
     prior = [IntakeSlot(key="icp", value="freelance designers", source="stated")]
     fresh = [IntakeSlot(key="icp", value="small agencies", source="inferred")]

@@ -9,10 +9,13 @@ import { createSchedulerPorts } from '../lib/scheduler';
 import { notifyWaiting } from '../lib/waiting';
 import { produceCampaignCards } from '../lib/campaign-cards';
 import { readSpendInputs, spendCapInput } from '../lib/spend-reads';
+import { handleQuestionAction } from '../lib/question-answers';
+import { createAgentRunner } from '../lib/agent-runner';
 
 /**
  * Acting on an interactive embed: the approve / request-changes path for a plan
- * card, and the shape Pay / Sign / Assign will reuse.
+ * card, the answer path for a question card, and the shape Pay / Sign / Assign
+ * will reuse.
  *
  * Five checks, in order, none of which the client can supply an answer for:
  *
@@ -21,18 +24,24 @@ import { readSpendInputs, spendCapInput } from '../lib/spend-reads';
  *   2. **Component**, as an allow-list. `approve` means "materialise this plan",
  *      so a card that is not a plan has nothing for this route to do and is
  *      refused rather than passed to a function written for a different payload.
+ *      A question card is on the list for `answer` and `finish` only, and a
+ *      verdict on one is refused: it has no verdict to give.
  *   3. **`required_role`**, re-checked here. The UI is told the role so it can
  *      disable what the caller cannot do, but that is a courtesy. A rule enforced
- *      only in React is not enforced.
+ *      only in React is not enforced. For a question card this is now the whole
+ *      control: an answer used to arrive as a chat message and never touch this
+ *      route, so the owner-only rule had to be enforced in the run instead.
  *   4. **State**, so an embed is single-use. Approving twice is two approvals,
  *      which matters little for a plan and enormously for Pay and Sign, so the
  *      guard belongs here rather than being added when money arrives.
  *   5. **A conditional update**, so two concurrent approvals cannot both win.
  *      Checking state and then writing it is a race; `eq('state','pending')` in
- *      the same statement is not.
+ *      the same statement is not. A question card's answers are written by an
+ *      rpc that carries the same condition inside one statement.
  *
  * The verdict is also recorded as a `feedback_events` row: flywheel v0. That is
- * the point of the feature, not a side effect of it.
+ * the point of the feature, not a side effect of it. An answer records none: a
+ * question has no verdict.
  */
 
 const Params = z.object({
@@ -50,10 +59,24 @@ export interface EmbedRoutesOptions {
   aiServiceUrl: string;
   /** Budget for one execution step. Defaults to the production value. */
   aiTimeoutMs?: number;
+  /** For the run a finished question card continues. See `AgentRunnerOptions`. */
+  intakeMaxRounds?: number;
+  intakeTimeoutMs?: number;
 }
 
 export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions): Promise<void> {
   const requireAuth = createRequireAuth(opts.verify);
+  // Finishing a question card continues the run that asked, which is the same
+  // run a chat message starts. One runner, so a plan is posted the same way
+  // whichever entry point reached it.
+  const runner = createAgentRunner({
+    supabase: opts.supabase,
+    aiServiceUrl: opts.aiServiceUrl,
+    aiTimeoutMs: opts.aiTimeoutMs,
+    intakeMaxRounds: opts.intakeMaxRounds,
+    intakeTimeoutMs: opts.intakeTimeoutMs,
+    log: app.log,
+  });
 
   app.post(
     '/api/rooms/:roomId/embeds/:embedId/actions',
@@ -65,11 +88,17 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       }
       const parsed = EmbedActionBody.safeParse(request.body);
       if (!parsed.success) {
-        return fail(reply, 400, 'bad_request', 'action must be approve or request_changes.');
+        return fail(
+          reply,
+          400,
+          'bad_request',
+          'action must be approve, request_changes, answer (with a slot or a task and a value) or finish.',
+        );
       }
 
       const { roomId, embedId } = params.data;
-      const { action, note, budgetCap } = parsed.data;
+      const body = parsed.data;
+      const isAnswer = body.action === 'answer' || body.action === 'finish';
       const userId = (request.user as NonNullable<typeof request.user>).sub;
 
       // (1) Read as the caller, so RLS decides visibility rather than this code
@@ -101,9 +130,18 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       if (
         embed.component !== 'plan' &&
         embed.component !== 'replan' &&
-        embed.component !== 'campaign'
+        embed.component !== 'campaign' &&
+        embed.component !== 'question'
       ) {
-        return fail(reply, 409, 'conflict', 'This card is not one you approve or reject.');
+        return fail(reply, 409, 'conflict', 'This card is not one you act on.');
+      }
+      // Each body shape belongs to one kind of card. A verdict on a question
+      // has nothing to approve; an answer on a plan has nowhere to go.
+      if (isAnswer && embed.component !== 'question') {
+        return fail(reply, 409, 'conflict', 'This card is approved or sent back, not answered.');
+      }
+      if (!isAnswer && embed.component === 'question') {
+        return fail(reply, 409, 'conflict', 'This card is answered, not approved or rejected.');
       }
 
       // `budgetCap` is meaningful on exactly one component, and a number sent
@@ -111,7 +149,7 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
       // accept a request that says "authorise this much", act on it as though it
       // said nothing about money, and answer 200: the caller would have every
       // reason to believe a figure had been recorded.
-      if (budgetCap !== undefined && embed.component !== 'campaign') {
+      if (!isAnswer && body.budgetCap !== undefined && embed.component !== 'campaign') {
         return fail(reply, 400, 'bad_request', 'Only a campaign card carries a budget.');
       }
 
@@ -140,8 +178,27 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
         return fail(reply, 409, 'conflict', `This card was already ${embed.state}.`);
       }
 
-      const nextState = action === 'approve' ? 'approved' : 'rejected';
       const admin = createServiceClient(opts.supabase);
+
+      // A question card from here on has its own path: no verdict, no
+      // `feedback_events`, no commit function. The owner check above is the
+      // control it needed and did not have while answers were chat messages.
+      if (isAnswer) {
+        const result = await handleQuestionAction(
+          {
+            admin,
+            log: request.log,
+            continueFromCard: (rid, eid, payload) => runner.continueFromCard(rid, eid, payload),
+          },
+          { id: embedId, room_id: roomId, payload: embed.payload },
+          body,
+          userId,
+        );
+        return reply.code(result.status).send(result.body);
+      }
+
+      const { action, note, budgetCap } = body;
+      const nextState = action === 'approve' ? 'approved' : 'rejected';
 
       // (6) Approving a campaign is authorising spend, so the cap is checked
       // before the verdict is recorded rather than after.
@@ -373,7 +430,16 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
         { embedId, roomId, userId, action, projectId, campaignId },
         'embed action recorded',
       );
-      return reply.code(200).send({ id: updated.id, state: updated.state, projectId, campaignId });
+      // The payload as approved travels back when it changed, because a campaign
+      // card rendered "approved at 0" after approve: the cap the route wrote
+      // never reached the client, since Realtime carries message inserts only.
+      return reply.code(200).send({
+        id: updated.id,
+        state: updated.state,
+        projectId,
+        campaignId,
+        ...(approvedPayload ? { payload: approvedPayload } : {}),
+      });
     },
   );
 }

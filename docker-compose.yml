@@ -71,7 +71,37 @@ services:
       # A fixed number rather than a share of the host, because compose has no
       # way to say "all of them" and a wrong guess in the other direction makes
       # it slower, not merely unbalanced. Lower it on a smaller box.
+      #
+      # It stays at the whole box even with the fan-out below, because
+      # RERANK_FANOUT DIVIDES this number across concurrent passes rather than
+      # multiplying demand for it. The two settings compose; they do not compete.
       TORCH_NUM_THREADS: '16'
+      # How many sub-query rerank passes run at once. Measured with
+      # `python -m octopus_ai.bench`, 6 sub-queries over 25 candidates at 16
+      # threads, wall time for the whole retrieval:
+      #
+      #   fanout 1 (16 threads)  152.8s     fanout 1, no batching  209.3s
+      #   fanout 2  (8 threads)  116.9s
+      #   fanout 3  (5 threads)  109.8s
+      #
+      # So fan-out wins, and the reason is NOT the fixed per-pass cost that was
+      # expected: the bench put that at 1.4s, 4% of a pass. It is that thread
+      # scaling is sublinear past 8. Halving a pass's threads costs about 21%
+      # more CPU time, not 100%, so two passes sharing the budget finish sooner
+      # than two passes taking turns with all of it.
+      #
+      # 2 rather than the marginally faster 3: at 16 threads `16 // 3` is 5, so a
+      # fan-out of 3 leaves a core idle, and the 6% gap between them is inside
+      # the run-to-run spread this benchmark showed on identical settings.
+      RERANK_FANOUT: '2'
+      # Pairs per forward pass through the cross-encoder. The single batch this
+      # replaces padded all 25 pairs to the longest one, and the bench put that
+      # waste at 37.4% of every token computed; at 8 it is 11.3%, and 12-17% on
+      # the real corpus measured in this container. Scores are
+      # unchanged: max drift across the whole grid was 1.9e-07, and the five
+      # golden negatives came back on identical digits including the 0.001007
+      # that defends the 1.76x threshold margin.
+      RERANK_BATCH_SIZE: '8'
     ports:
       - '8000:8000'
     restart: unless-stopped

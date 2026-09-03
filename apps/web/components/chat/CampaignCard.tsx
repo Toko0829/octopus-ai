@@ -148,8 +148,13 @@ export function CampaignCard({ embed, canAct, onAct }: Props) {
 
       {!pending && (
         <div className={approved ? 'plan-approved-banner' : 'plan-rejected-banner'}>
+          {/* The cap arrives on the card through the action response now, so
+              this reads the figure the owner typed rather than the null the
+              card was posted with. A card fetched fresh carries it too. */}
           {approved
-            ? `Campaign approved at ${campaign.budgetCap ?? 0} ${campaign.currency}. Publishing starts shortly.`
+            ? campaign.budgetCap === null
+              ? `Campaign approved in ${campaign.currency}. Publishing starts shortly.`
+              : `Campaign approved at ${campaign.budgetCap} ${campaign.currency}. Publishing starts shortly.`
             : 'Campaign not approved. The step still needs you.'}
         </div>
       )}

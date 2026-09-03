@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import type {
   Channel,
+  EmbedActionBody,
+  EmbedActionResponse,
   ListNotificationsResponse,
   Message,
   Room,
@@ -136,9 +138,32 @@ export function ChatApp({
   );
 
   /**
-   * Record a verdict, then patch the card in place. Re-fetching the whole
+   * Patch one card in place from what the route answered. Re-fetching the whole
    * stream would scroll the reader away from what they just acted on.
+   *
+   * The payload is taken too, when the route sent one. Realtime carries
+   * `messages` inserts only, so a card on screen otherwise keeps the payload it
+   * was first fetched with: a campaign approved at 2000 read "approved at 0",
+   * and a question card would never show the answer that was just saved.
    */
+  const patchEmbed = useCallback((embedId: string, res: EmbedActionResponse) => {
+    setMessages((cur) =>
+      cur.map((m) =>
+        m.embed?.id === embedId
+          ? {
+              ...m,
+              embed: {
+                ...m.embed,
+                state: res.state,
+                ...(res.payload !== undefined ? { payload: res.payload } : {}),
+              } as UiMessage['embed'],
+            }
+          : m,
+      ),
+    );
+  }, []);
+
+  /** Record a verdict, then patch the card. */
   const handleEmbedAction = useCallback(
     async (
       embedId: string,
@@ -147,13 +172,19 @@ export function ChatApp({
       budgetCap?: number,
     ) => {
       const res = await actOnEmbed(roomId, embedId, { action, note, budgetCap });
-      setMessages((cur) =>
-        cur.map((m) =>
-          m.embed?.id === embedId ? { ...m, embed: { ...m.embed, state: res.state } } : m,
-        ),
-      );
+      patchEmbed(embedId, res);
     },
-    [roomId],
+    [roomId, patchEmbed],
+  );
+
+  /** Save one answer on a question card, then patch the card. */
+  const handleQuestionAction = useCallback(
+    async (embedId: string, input: EmbedActionBody) => {
+      const res = await actOnEmbed(roomId, embedId, input);
+      patchEmbed(embedId, res);
+      return res;
+    },
+    [roomId, patchEmbed],
   );
 
   const flash = useCallback((text: string) => {
@@ -437,6 +468,7 @@ export function ChatApp({
           membersById={membersById}
           canAct={canAct}
           onEmbedAction={handleEmbedAction}
+          onQuestionAction={handleQuestionAction}
         />
         <Composer
           channelName={activeChannel?.name ?? null}

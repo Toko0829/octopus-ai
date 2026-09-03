@@ -12,6 +12,8 @@ Two providers whose scores are not on the same scale sharing one threshold is a
 silent grounding failure, so it is pinned here.
 """
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -22,7 +24,7 @@ from octopus_ai.config import (
     _choice,
     get_settings,
 )
-from octopus_ai.providers import Providers
+from octopus_ai.providers import ProviderError, Providers
 
 
 def _settings(**overrides) -> Settings:
@@ -188,3 +190,135 @@ async def test_local_rerank_respects_top_n_and_empty_input():
     await p.aclose()
     assert len(hits) == 2
     assert [h.index for h in hits] == [3, 2]
+
+
+async def test_concurrent_reranks_build_exactly_one_model(monkeypatch):
+    """The race `RERANK_FANOUT` would have made routine.
+
+    The reranker used to be built on an unguarded `is None` check. Two coroutines
+    arriving together each saw `None`, each constructed a `LocalReranker`, and
+    each loaded ~1 GB of weights; the loser's copy was then dropped on the floor.
+    With a sequential sub-query loop that needed two concurrent requests to
+    surface. Fan-out makes concurrent passes the normal case, so the lock is here
+    before the fan-out can find it.
+    """
+    import octopus_ai.local_reranker as local_reranker
+
+    built = []
+
+    class _CountingReranker:
+        def __init__(self, model_name, *, use_fp16, normalize=True, batch_size=0):
+            built.append((model_name, batch_size))
+
+        def score(self, query, documents):
+            return [0.5] * len(documents)
+
+    monkeypatch.setattr(local_reranker, "LocalReranker", _CountingReranker)
+
+    s = _settings(rerank_provider="local", rerank_batch_size=8)
+    p = Providers(s, client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: None)))
+
+    await asyncio.gather(*(p.rerank("q", ["a", "b"], top_n=2) for _ in range(5)))
+    await p.aclose()
+
+    assert len(built) == 1, f"built {len(built)} rerankers for one process"
+    # And the configured batch size reached it, which is the whole of how
+    # RERANK_BATCH_SIZE gets from the environment to a forward pass.
+    assert built[0][1] == 8
+
+
+async def test_warming_is_a_real_forward_pass_on_the_local_path():
+    """A bare load would move part of the first-request cost and leave the rest.
+
+    The first forward pass initialises kernels that loading does not touch, which
+    is why this scores rather than only constructing.
+    """
+    scored = []
+
+    class _FakeReranker:
+        def score(self, query, documents):
+            scored.append((query, documents))
+            return [0.5] * len(documents)
+
+    s = _settings(rerank_provider="local")
+    p = Providers(s, client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: None)))
+    p._local_reranker = _FakeReranker()
+
+    await p.warm_reranker()
+    await p.aclose()
+
+    assert scored == [("warmup", ["warmup"])]
+
+
+async def test_warming_is_a_no_op_for_the_hosted_provider():
+    """A Cohere deployment must not import torch to warm something it never uses."""
+    s = _settings(rerank_provider="cohere")
+    p = Providers(s, client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: None)))
+
+    class _Exploding:
+        def score(self, *a, **k):  # pragma: no cover - must not run
+            raise AssertionError("the hosted path must not warm a local model")
+
+    p._local_reranker = _Exploding()
+
+    await p.warm_reranker()
+    await p.aclose()
+
+
+async def test_a_broken_local_model_fails_warming_as_a_provider_error():
+    """Same error type as an outage, so callers keep their single failure path.
+
+    That is what makes a missing or corrupt model a named startup failure rather
+    than a 500 on somebody's first question.
+    """
+    from octopus_ai.local_reranker import LocalRerankerError
+
+    class _BrokenReranker:
+        def score(self, query, documents):
+            raise LocalRerankerError("could not load 'BAAI/bge-reranker-v2-m3'")
+
+    s = _settings(rerank_provider="local")
+    p = Providers(s, client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: None)))
+    p._local_reranker = _BrokenReranker()
+
+    with pytest.raises(ProviderError, match="could not load"):
+        await p.warm_reranker()
+    await p.aclose()
+
+
+def test_a_fanout_of_zero_is_refused_at_startup(monkeypatch):
+    """`asyncio.Semaphore(0)` never releases, so every sub-query pass would hang.
+
+    A value that reads like "off" and in fact deadlocks has to be rejected where
+    it is read, with the variable named, exactly as an unknown RERANK_PROVIDER is.
+    """
+    for key in ("RERANK_PROVIDER", "RERANK_LOCAL_MIN_SCORE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "sb_secret_test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("RERANK_FANOUT", "0")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ConfigError, match="RERANK_FANOUT must be >= 1"):
+            get_settings()
+    finally:
+        monkeypatch.delenv("RERANK_FANOUT", raising=False)
+        get_settings.cache_clear()
+
+
+def test_a_negative_batch_size_is_refused_at_startup(monkeypatch):
+    """Negative would silently mean "one batch", which is a different setting."""
+    for key in ("RERANK_PROVIDER", "RERANK_LOCAL_MIN_SCORE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "sb_secret_test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("RERANK_BATCH_SIZE", "-1")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ConfigError, match="RERANK_BATCH_SIZE must be >= 0"):
+            get_settings()
+    finally:
+        monkeypatch.delenv("RERANK_BATCH_SIZE", raising=False)
+        get_settings.cache_clear()

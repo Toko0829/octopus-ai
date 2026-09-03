@@ -150,11 +150,11 @@ nothing about the project the payload names.
 
 ### Starting something else while a question is open
 
-`decideIntakeTurn` reads every message from the room owner as a reply to whatever the room is waiting for. That is right almost always, and it had no way out. It cost a real goal: four steps were waiting on decisions, the person typed a brand new request, and it was filed as the answer to all four. Nothing failed, and what they actually asked for was gone.
+There is no longer anything to escape from. A question card used to claim every message the room owner wrote as a reply to it, which cost a real goal: four steps were waiting on decisions, the person typed a brand new request, and it was filed as the answer to all four. The fix for a while was a `new goal:` prefix, advertised in the copy, that dismissed the card before planning.
 
-A message beginning `new goal:` (or `new:`) is now read as a new goal, and the stale card is moved to `dismissed` before planning, conditionally on `pending` so two runs racing cannot both act on it. The question and the waiting digest both advertise it, because an escape nobody is told about is not one.
+Answers arrive on the card now, through the embed action route, so a chat message is never read as one. **Every message is a goal.** An owner's new goal dismisses the intake cards that were sharpening the previous one, conditionally on `pending` so two runs racing cannot both act on them, and never touches a task card: that one belongs to a plan that already exists and is still running, and the steps it names still need the person whatever they type next. `dismissableQuestion` in `@octopus/core` is that one rule, with no IO. The prefix is gone from the copy, because an escape from a trap that no longer exists would be a lie about how the room works.
 
-**No content heuristic decides this.** Guessing whether a sentence is "a new topic" would be wrong in both directions, and the expensive direction is discarding an answer somebody was asked for. An explicit prefix is unambiguous. `new goal:` with nothing after it leaves the card open rather than planning for an empty string.
+A task the plan asked about is answered on its card, one field per step, or from the project panel by id; both go through `completeTaskWithAnswer`, so the arc a person's answer walks (`needs_user -> approved -> done`) is written once.
 
 ## Playbook model
 
@@ -408,9 +408,7 @@ The third is what gives **`tasks.acceptance_criteria` its first consumer** since
 
 ## What else lives in `packages/core`
 
-`decideIntakeTurn` sits here for the same reason the router does: it is a decision, it has no IO, and a reader should be able to check it without running anything. It answers whether a new chat message is a fresh goal or the answer to an open intake question, which is genuinely ambiguous on the wire, since both arrive as a message that starts an agent run.
-
-Two of its rules are safety rather than convenience. **Only the room's owner can answer**, because intake answers state the person's own budget, customers and timeline and a human node in the room must not supply those; the embed's `required_role` cannot enforce it, since an answer never reaches the action route. And **the round cap is enforced here too**, not only in the AI service, so a card written before the cap changed cannot hold someone in an interrogation. It belongs to intake rather than to the DAG; see [ai-orchestrator.md](ai-orchestrator.md).
+Three small intake rules sit here for the same reason the router does: each is a decision, has no IO, and a reader should be able to check it without running anything. `remainingRequiredSlots` says which of the slots a question card asked about are still empty, so the route can close the card without a model call; `applyAnswer` states the rule the database's `answer_question_slot` enforces, that a person's answer replaces a model's inference and an earlier answer alike; and `dismissableQuestion` says whether an owner's new goal makes a card moot. `decideIntakeTurn`, which used to decide whether a chat message was a goal or an answer, is gone with the ambiguity it resolved: an answer is an embed action now, and a message is a goal. The owner-only rule lives on the action route, where `required_role` is checked for every card. The round cap is enforced in the runner as well as in the AI service, so a card written before the cap changed cannot hold someone in an interrogation. See [ai-orchestrator.md](ai-orchestrator.md).
 
 ## Kill-switch / pause
 

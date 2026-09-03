@@ -267,9 +267,16 @@ export function PlanCard({ embed, canAct, onAct }: Props) {
       {/* State is text, never colour alone. And the two states get different
           colours: the accent reads as success, so styling a rejection with it
           made the colour contradict the words beside it. */}
+      {/* A superseded plan is neither approved nor sent back: the person
+          answered the questions beside it and a sharper plan replaced it. Said
+          as a sentence, and not in the rejected banner's words. */}
       {!pending && (
         <div className={approved ? 'plan-approved-banner' : 'plan-rejected-banner'}>
-          {approved ? 'Plan approved.' : 'Changes requested.'}
+          {approved
+            ? 'Plan approved.'
+            : embed.state === 'expired'
+              ? 'Replaced by the plan below, which uses what you answered.'
+              : 'Changes requested.'}
         </div>
       )}
 

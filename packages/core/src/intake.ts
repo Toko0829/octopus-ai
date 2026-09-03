@@ -1,188 +1,157 @@
 /**
- * What a new message in a room means while an intake is open.
+ * What a question card means, decided without IO.
  *
- * A goal arrives as a chat message, and so does the answer to a question the
- * agent asked about it. They are the same event on the wire, and only the room's
- * state tells them apart. Getting that wrong is not a cosmetic failure: reading a
- * fresh goal as an answer buries it inside a stale intake, and reading an answer
- * as a fresh goal throws away everything the person just told us and asks again.
+ * A question card used to decide what the room's next chat message MEANT: an
+ * answer to it, or a fresh goal. That decision lived here as `decideIntakeTurn`,
+ * and it was the mechanism by which an open card claimed every message the owner
+ * wrote for two hours. Answers now arrive on the card itself, one slot at a time
+ * through the embed action route, so a chat message is always a goal and the
+ * decisions that remain are smaller: what a card still needs, whether a new goal
+ * should close it, what a finished card says to a running plan, and what a
+ * workspace already knows before the first question is asked.
  *
- * This is a decision, so it lives here with no IO. `apps/api` fetches the pending
- * card and writes the outcome; what any of it MEANS is decided in one pure
- * function that a reader can check without a database.
+ * Pure, so `apps/api` fetches and writes while what any of it means is checkable
+ * without a database.
  */
 
-import type { IntakeSlot, QuestionEmbedPayload } from '@octopus/contracts';
-
-/** The open question card, if the room has one. */
-export interface PendingIntake {
-  embedId: string;
-  payload: QuestionEmbedPayload;
-}
-
-export interface IntakeTurnInput {
-  /** The message that just arrived. */
-  message: string;
-  /** Who wrote it. */
-  authorId: string;
-  /** The room's owner, or null if the room has none. */
-  roomOwnerId: string | null;
-  /** The open question card, or null. */
-  pending: PendingIntake | null;
-  /** Rounds allowed before intake stops asking. Mirrors INTAKE_MAX_ROUNDS. */
-  maxRounds: number;
-}
-
-export type IntakeTurn =
-  | {
-      /** No intake is open: this message is a goal in its own right. */
-      kind: 'new_goal';
-      goal: string;
-      stalls: 0;
-      /**
-       * Set only when the person overrode an open card to start something new.
-       * The caller closes that card before planning, so the question does not
-       * sit waiting for an answer nobody is going to give.
-       */
-      dismissedEmbedId?: string;
-    }
-  | {
-      /**
-       * A card was open and waiting for a goal rather than for answers, because
-       * the previous turn produced none: a greeting, or a request from a field
-       * this system cannot ground. This message becomes the goal.
-       */
-      kind: 'restated_goal';
-      goal: string;
-      /** Carried so the conversation cannot circle forever. */
-      stalls: number;
-      embedId: string;
-    }
-  | {
-      /**
-       * This message answers a question the PLAN raised, about work only this
-       * person can do. Their reply is the step's deliverable, not context.
-       */
-      kind: 'task_answer';
-      answer: string;
-      taskIds: string[];
-      embedId: string;
-    }
-  | {
-      /** This message answers an open question card. */
-      kind: 'answer';
-      /** The ORIGINAL goal, not this message. */
-      goal: string;
-      answers: string[];
-      slots: IntakeSlot[];
-      round: number;
-      embedId: string;
-    };
+import {
+  BUDGET_BAND_LABELS,
+  REQUIRED_INTAKE_SLOTS,
+  TIMELINE_LABELS,
+  type BudgetBand,
+  type IntakeSlot,
+  type IntakeSlotKey,
+  type QuestionEmbedPayload,
+  type Timeline,
+} from '@octopus/contracts';
 
 /**
- * Decide what this message is, given what the room was waiting for.
+ * Write one stated answer into a card's slots, replacing whatever was there for
+ * that key.
  *
- * Three rules, and the order matters.
- *
- * **1. No open card means a new goal.** The ordinary case, and the behaviour that
- * existed before intake.
- *
- * **2. A non-owner never answers an open question.** `discord-chat-spec.md` marks
- * the Question embed owner-only, and intake answers describe the person's own
- * business: their budget, their customers, their timeline. A human node sitting in
- * the room must not be able to supply those, and the enforcement has to be here
- * rather than on the embed's `required_role`, because an answer arrives as a chat
- * message and never touches the embed action route where that role is checked.
- *
- * Their message is still a message. It is simply not an answer, so it is treated
- * as a goal, which is what it would have been without an intake in flight.
- *
- * **3. The round cap is enforced on this side too**, not only inside the AI
- * service. A card written before the cap was lowered, or a service that keeps
- * asking, must not be able to hold someone in an interrogation: past the cap the
- * message is a goal and the run proceeds to planning with whatever is known.
- *
- * A room with an owner of `null` has nobody who can answer, which is the same
- * safe default `rooms.owner_id` already takes for approvals: nullable on purpose,
- * so an unowned room means nobody rather than anybody.
- *
- * **4. A card can be waiting for a goal rather than for answers**, and then this
- * message replaces the goal instead of extending it. See the branch below.
+ * The database does this too, in `answer_question_slot`, and that copy is the
+ * one that runs. This one exists so a client can render the card as it will be
+ * before the round trip returns, and so the rule "a person's answer replaces a
+ * model's inference and an earlier answer alike" is stated once in code a test
+ * can read.
  */
-export function decideIntakeTurn(input: IntakeTurnInput): IntakeTurn {
-  const goal = input.message.trim();
+export function applyAnswer(
+  payload: QuestionEmbedPayload,
+  slot: IntakeSlotKey,
+  value: string,
+): QuestionEmbedPayload {
+  const trimmed = value.trim();
+  const kept = payload.slots.filter((s) => s.key !== slot);
+  const stated: IntakeSlot = { key: slot, value: trimmed, source: 'stated' };
+  return { ...payload, slots: [...kept, stated] };
+}
 
-  if (!input.pending) {
-    return { kind: 'new_goal', goal, stalls: 0 };
+/**
+ * The required slots a card is still missing.
+ *
+ * Only the slots the card actually asked about count as missing. Intake asks
+ * for what it needs and nothing else, so a card that asked two questions is
+ * finished when those two are answered, even though four slots are required for
+ * a whole-funnel request: the other two were already known. `timeline` is never
+ * required and is never returned here.
+ *
+ * A filled slot is filled whatever its source. A model's inference counts, on
+ * the same reasoning `completeness` in `intake.py` uses: the card exists to fill
+ * gaps, and a slot the model already filled is not a gap. The person can still
+ * correct it, which is why the card renders an inferred value as a guess.
+ */
+export function remainingRequiredSlots(payload: QuestionEmbedPayload): IntakeSlotKey[] {
+  const asked = new Set(payload.questions.map((q) => q.slot));
+  const filled = new Set(payload.slots.map((s) => s.key));
+  return REQUIRED_INTAKE_SLOTS.filter((key) => asked.has(key) && !filled.has(key));
+}
+
+/**
+ * Whether a new goal from the owner should close this card.
+ *
+ * An intake card is about the goal that produced it, so a new goal makes it
+ * moot: the questions it asked were sharpening a plan the person has now moved
+ * on from. A task-answers card is different. It belongs to a plan that already
+ * exists and is still running, and the steps it names still need answers
+ * whatever the person types next, so it stays open.
+ *
+ * A card waiting for a goal is a leftover of the chat-answer path and is closed
+ * too, because nothing can ever answer it now.
+ */
+export function dismissableQuestion(payload: QuestionEmbedPayload): boolean {
+  return payload.awaiting !== 'task_answers';
+}
+
+/** What each slot is called in a sentence. */
+const SLOT_WORDS: Record<IntakeSlotKey, string> = {
+  icp: 'the audience is',
+  offer: 'the offer is',
+  target_metric: 'the target is',
+  budget_band: 'the budget is',
+  timeline: 'the timeline is',
+};
+
+/** A stored chip value in its own words; anything else as itself. */
+function slotValue(slot: IntakeSlot): string {
+  if (slot.key === 'budget_band' && slot.value in BUDGET_BAND_LABELS) {
+    return BUDGET_BAND_LABELS[slot.value as BudgetBand].toLowerCase();
   }
-
-  const isOwner = input.roomOwnerId !== null && input.authorId === input.roomOwnerId;
-  if (!isOwner) {
-    return { kind: 'new_goal', goal, stalls: 0 };
+  if (slot.key === 'timeline' && slot.value in TIMELINE_LABELS) {
+    return TIMELINE_LABELS[slot.value as Timeline].toLowerCase();
   }
+  return slot.value.trim().replace(/\s+/g, ' ');
+}
 
-  const { payload, embedId } = input.pending;
+const REPLAN_REASON_MAX = 1000;
 
-  // **6. The owner can always say "this is something else".**
-  //
-  // Every branch below reads the message as a reply to what the room is already
-  // waiting for, which is right almost always and has no way out. It cost a real
-  // goal: four steps were waiting on decisions, the person typed a brand new
-  // request, and it was filed as the answer to all four. Nothing failed, and
-  // what they actually asked for was gone.
-  //
-  // No content heuristic decides this. Guessing whether a sentence is "a new
-  // topic" would be wrong in both directions, and the expensive direction is
-  // discarding an answer someone was asked for. An explicit prefix is
-  // unambiguous, and the copy that asks the question advertises it.
-  const escape = /^new(\s+goal)?\s*[:：]\s*/i.exec(goal);
-  if (escape) {
-    const rest = goal.slice(escape[0].length).trim();
-    // "new goal:" with nothing after it is a person who has not said what they
-    // want yet. Treating that as a goal would plan for an empty string, so the
-    // card stays open and this falls through to the branches below.
-    if (rest) {
-      return { kind: 'new_goal', goal: rest, stalls: 0, dismissedEmbedId: embedId };
-    }
-  }
+/**
+ * The reason a finished question card gives to the replan path.
+ *
+ * When the plan was approved before the card was finished, the card's answers
+ * reach the project as a replan diff, and a diff needs a reason in words the
+ * owner would recognise on the card. Templated rather than generated, for the
+ * reason every sentence on a trust surface is: brand voice is a rule (no em
+ * dashes, rule 22) and a generated one is one prompt drift away from breaking
+ * it. Only stated slots are named, because a model's inference is not something
+ * the owner added, and the whole thing stays inside the replan body's limit.
+ */
+export function replanReason(slots: IntakeSlot[]): string {
+  const stated = slots.filter((s) => s.source === 'stated');
+  const parts = stated.map((s) => `${SLOT_WORDS[s.key]} ${slotValue(s)}`);
+  const head = 'The owner answered the questions beside the plan:';
+  const tail = 'Adjust the steps to fit what they said.';
+  let body = parts.join('; ');
+  const room = REPLAN_REASON_MAX - head.length - tail.length - 3;
+  if (body.length > room) body = `${body.slice(0, room - 3).trimEnd()}...`;
+  return parts.length === 0 ? `${head} nothing new. ${tail}` : `${head} ${body}. ${tail}`;
+}
 
-  // **5. A card waiting on TASK answers is the plan asking, not intake.**
-  //
-  // The plan gave this person work only they can do: a budget, a positioning
-  // call, which analytics source counts. Their reply completes a step that
-  // already exists, so it is checked before the intake branches below. Handing it
-  // to intake would file a budget figure as context for a plan nobody is making.
-  if (payload.awaiting === 'task_answers') {
-    return { kind: 'task_answer', answer: goal, taskIds: payload.taskIds, embedId };
-  }
+/** The fields a workspace profile holds, as the database names them. */
+export interface RoomProfileFields {
+  icp?: string | null;
+  offer?: string | null;
+  budget_band?: string | null;
+  timeline?: string | null;
+}
 
-  // **4. A card waiting for a goal means this message IS the goal.**
-  //
-  // The previous turn produced no usable one, because the person said hello or
-  // asked about something outside what this system can ground. Filing their reply
-  // as an "answer" would leave the goal as "Hello" and bury everything real
-  // underneath it, so the reply replaces the goal instead of extending it.
-  //
-  // The stall count comes with it, and that is the only thing carried forward:
-  // following someone's thread is right, following it forever is a system that
-  // will not take no for an answer.
-  if (payload.awaiting === 'goal') {
-    return { kind: 'restated_goal', goal, stalls: payload.stalls, embedId };
-  }
-
-  if (payload.round >= input.maxRounds) {
-    return { kind: 'new_goal', goal, stalls: 0 };
-  }
-
-  return {
-    kind: 'answer',
-    goal: payload.goal,
-    // Appended rather than replaced: round two must still see round one's answer,
-    // since a slot filled earlier is only re-derivable from the words that filled
-    // it. The AI service is stateless, so whatever is dropped here is gone.
-    answers: [...payload.answers, goal],
-    slots: payload.slots,
-    round: payload.round + 1,
-    embedId,
+/**
+ * What a workspace already knows, as stated slots for intake's first round.
+ *
+ * Stated rather than inferred, because the owner typed or confirmed each one.
+ * Empty fields are skipped rather than passed as empty strings, which the slot
+ * contract refuses, and `target_metric` is never produced because a profile
+ * never holds one: it belongs to a goal.
+ */
+export function profileSlots(profile: RoomProfileFields | null | undefined): IntakeSlot[] {
+  if (!profile) return [];
+  const out: IntakeSlot[] = [];
+  const push = (key: IntakeSlotKey, value: string | null | undefined) => {
+    const trimmed = value?.trim() ?? '';
+    if (trimmed) out.push({ key, value: trimmed.slice(0, 400), source: 'stated' });
   };
+  push('icp', profile.icp);
+  push('offer', profile.offer);
+  push('budget_band', profile.budget_band);
+  push('timeline', profile.timeline);
+  return out;
 }

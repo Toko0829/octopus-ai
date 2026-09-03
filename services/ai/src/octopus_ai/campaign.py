@@ -120,6 +120,7 @@ async def draft_campaign(
             query,
             room_id=request.trace.room_id,
             project_id=request.trace.project_id,
+            agent_run_id=request.trace.agent_run_id,
         )
     except Exception:
         logger.exception(

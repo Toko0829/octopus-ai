@@ -32,7 +32,7 @@ import logging
 
 from .config import Settings
 from .groundedness import assess
-from .plan_graph import find_cycle
+from .plan_graph import find_cycle, normalise_op_ids
 from .planner import build_context_block, build_sources_block
 from .providers import ProviderError, Providers
 from .retrieval import RetrievalResult, Retriever
@@ -116,7 +116,8 @@ Rules:
   are visible on the card.
 - `add_step` follows the same rules as planning. Ground it in the SOURCES block,
   cite the sources you used by their 1-based number, and give it an `id` of
-  lowercase letters, digits and hyphens. `depends_on` may name another step you
+  lowercase letters, digits and hyphens, two to four words and at most 32
+  characters. `depends_on` may name another step you
   are adding, by its id, or a current step, by its task id. Only add an edge when
   the new step genuinely consumes that step's output.
 - Do not add a step the sources do not support. A gap the corpus cannot fill is
@@ -330,6 +331,7 @@ async def replan(
             query,
             room_id=request.trace.room_id,
             project_id=request.trace.project_id,
+            agent_run_id=request.trace.agent_run_id,
         )
     except Exception:
         logger.exception("retrieval failed while replanning", extra={"project": request.project_id})
@@ -433,4 +435,9 @@ def _with_project(raw: str, project_id: str) -> str:
     data = json.loads(raw)
     data["project_id"] = project_id
     data.pop("kind", None)
+    # Same repair as `parse_plan`, for the same reason: an added step's id is a
+    # slug the model makes readable and the pattern makes short, and a diff
+    # should not be lost over the difference.
+    for problem in normalise_op_ids(data):
+        logger.warning("step id normalised: %s", problem, extra={"project": project_id})
     return json.dumps(data)

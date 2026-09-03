@@ -1,8 +1,20 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import type { Channel, Room, RoomMember } from '@octopus/contracts';
+import {
+  PutRoomProfileBody,
+  type Channel,
+  type Room,
+  type RoomMember,
+  type RoomProfile,
+} from '@octopus/contracts';
 import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
 import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
+import {
+  profileFieldsFromBody,
+  toRoomProfile,
+  writeProfileFields,
+  type RoomProfileRow,
+} from '../lib/room-profile';
 
 /**
  * Room structure reads: the guild rail, the channel sidebar and the member panel.
@@ -228,6 +240,105 @@ export async function roomRoutes(app: FastifyInstance, opts: RoomRoutesOptions):
       } catch (err) {
         request.log.error({ err, userId: request.user?.sub }, 'listMembers failed');
         return fail(reply, 500, 'internal_error', 'Could not load members.');
+      }
+    },
+  );
+
+  /**
+   * What the workspace knows about its own business (ADR-0029, decision 3).
+   *
+   * **Owner only, both ways, and checked here.** The read runs as the caller,
+   * so RLS returns the row to the owner and nothing to anybody else; a member
+   * gets an empty profile rather than a refusal, because the API does not say
+   * whether a row exists for a room it will not show them. The write runs as
+   * `service_role` after the room has been read as the caller and `owner_id`
+   * compared, the idiom `sources.ts` uses for the same reason: `room_profiles`
+   * has no client write grant, so a client could not state somebody else's
+   * budget even if this check were wrong.
+   *
+   * **Only the keys sent are written.** An intake that established a budget
+   * band must not erase an audience typed here a minute earlier, and a panel
+   * that sends every field on every save would do exactly that to what intake
+   * found. `null` clears a field; an absent key leaves it alone.
+   */
+  app.get(
+    '/api/rooms/:roomId/profile',
+    { preHandler: requireAuth },
+    async (request, reply): Promise<{ profile: RoomProfile } | FastifyReply> => {
+      const params = RoomParams.safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'roomId must be a UUID.');
+      const { roomId } = params.data;
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+      try {
+        const { data, error } = await db
+          .from('room_profiles')
+          .select('room_id, icp, offer, budget_band, timeline, updated_at')
+          .eq('room_id', roomId)
+          .maybeSingle();
+        if (error) throw error;
+        return { profile: toRoomProfile((data as RoomProfileRow | null) ?? null, roomId) };
+      } catch (err) {
+        request.log.error({ err, roomId }, 'readProfile failed');
+        return fail(reply, 500, 'internal_error', 'Could not load what I know about the business.');
+      }
+    },
+  );
+
+  app.patch(
+    '/api/rooms/:roomId/profile',
+    { preHandler: requireAuth },
+    async (request, reply): Promise<{ profile: RoomProfile } | FastifyReply> => {
+      const params = RoomParams.safeParse(request.params);
+      if (!params.success) return fail(reply, 400, 'bad_request', 'roomId must be a UUID.');
+      const body = PutRoomProfileBody.safeParse(request.body);
+      if (!body.success) {
+        return fail(
+          reply,
+          400,
+          'bad_request',
+          'Each field is 1 to 400 characters or null; budgetBand and timeline take their listed values.',
+        );
+      }
+
+      const { roomId } = params.data;
+      const userId = (request.user as NonNullable<typeof request.user>).sub;
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+
+      const { data: room, error: roomError } = await db
+        .from('rooms')
+        .select('id, owner_id')
+        .eq('id', roomId)
+        .maybeSingle();
+      if (roomError) {
+        request.log.error({ err: roomError, roomId }, 'room lookup failed');
+        return fail(reply, 500, 'internal_error', 'Could not check the workspace.');
+      }
+      if (!room) return fail(reply, 404, 'not_found', 'No such workspace.');
+      if (!room.owner_id || room.owner_id !== userId) {
+        return fail(
+          reply,
+          403,
+          'forbidden',
+          'Only the workspace owner can say what the business is.',
+        );
+      }
+
+      try {
+        const admin = createServiceClient(opts.supabase);
+        const row = await writeProfileFields(
+          admin,
+          roomId,
+          profileFieldsFromBody(body.data),
+          userId,
+        );
+        request.log.info(
+          { roomId, userId, keys: Object.keys(body.data) },
+          'workspace profile written',
+        );
+        return { profile: toRoomProfile(row, roomId) };
+      } catch (err) {
+        request.log.error({ err, roomId, userId }, 'writeProfile failed');
+        return fail(reply, 500, 'internal_error', 'Could not save that.');
       }
     },
   );

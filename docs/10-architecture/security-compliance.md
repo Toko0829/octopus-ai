@@ -48,6 +48,10 @@
 
   The load-bearing case is that an **expired node sees nothing at all**: not the room, not the messages, not the plan card. Time-boxed access is what the entire marketplace model rests on, and until this file existed the only evidence it worked was that nothing had visibly leaked.
 
+- **What a workspace knows about its business is the owner's alone to read** (`supabase/tests/room_profiles.sql`, 10 assertions, verified green against the live database). `room_profiles` carries the first owner-only policy in the database: a member of the room reads zero rows, because a budget band is the one thing a human node admitted to the room has no business seeing and RLS filters rows, not columns. No client write grant; the API writes after an ownership check.
+
+- **Answering a question card is owner-only on the route, and the functions behind it are `service_role`-only** (`supabase/tests/question_answers.sql`, 12 assertions, verified green against the live database). An answer used to be a chat message that never reached the action route, so the owner-only rule lived inside the agent run; it is now checked on the route before anything is written, and `answer_question_slot` / `answer_question_task` refuse `authenticated` outright, so the only path to a card's payload is through that check.
+
   The suite also asserts **privileges, not only policies**, because RLS filters rows a grant already permits and the two fail very differently. `TRUNCATE` is checked explicitly since it bypasses RLS entirely.
 
   Tests run as `authenticated` with `request.jwt.claims` set, exactly as PostgREST would. Running them as `postgres` would prove nothing: that role bypasses RLS, which is precisely how a policy bug survives review. Everything is inside a transaction that `ROLLBACK`s, so it is safe against a live database.

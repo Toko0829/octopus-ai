@@ -95,16 +95,24 @@ what is on disk.
 
 **Memory is the one setting that decides whether this works.** Measured on the
 running stack rather than inherited from the service's own 8 GB deployment floor:
-`ai` peaks at **5.3 GiB** once the reranker has loaded on first use, `api` and
-`web` take about 130 MiB each, so the whole stack sits near **5.6 GiB**. It runs
-comfortably on a 7.6 GB Docker VM. Below roughly 6.5 GB it will not, and the
-failure is worth recognising because it names nothing: the container is killed
-while warming the embedder, before it ever serves, so it looks like a crash with
-no error of its own. On Docker Desktop the setting is Settings, Resources, Memory.
+`ai` sits at **4.0 GiB** with both models warmed and peaks at **5.9 GiB** during a
+planning turn, `api` and `web` take about 150 MiB each, so the whole stack peaks
+near **6.2 GiB**. It runs on a 7.6 GB Docker VM with less headroom than it used
+to: the peak was 5.3 GiB before `RERANK_FANOUT` was raised to 2, and a second
+concurrent rerank pass carries a second pass's activations. Below roughly 7 GB it
+will not run, and the failure is worth recognising because it names nothing: the
+container is killed while warming, before it ever serves, so it looks like a crash
+with no error of its own. On Docker Desktop the setting is Settings, Resources,
+Memory.
 
-Note the reranker is **lazy**, so the AI container sits around 3.7 GiB until the
-first goal is planned and then jumps. A stack that looked fine at startup can
-still be too tight for real work.
+Both models are now **warmed at startup**, so the container holds both sets of
+weights (4.0 GiB) before it serves rather than loading the reranker inside the
+first goal. It used to sit around 3.7 GiB until something was planned. **The peak
+still arrives with the first real pass**, because what grows is activations rather
+than weights, so a VM that is tight will still find out during a request; what
+warming removes is the model-load stall, measured at 18.4s for a cold first rerank
+against roughly 2s warm. Health went green **37s** after `docker compose up`, well
+inside the 180s healthcheck `start-period`.
 
 **The first `up` is slow and then it is not.** The reasoning core's image bakes
 ~4.6 GB of model weights, and the web image runs a full `next build`. Afterwards
@@ -301,6 +309,15 @@ RERANK_LOCAL_PATH=<the snapshot path printed above>
 ```
 
 > **It is CPU work, and the cost scales with cores.** Measured on the current pipeline: ~21s per rerank of 25 candidates on 12 threads, so a goal costs about **71s on a 16-core machine and ~230s on a single vCPU**. A smaller container is slower than your laptop, not faster. Agent runs are asynchronous (`202 + runId`), so this decides how long a plan takes rather than whether it works, but size the instance deliberately.
+>
+> **A goal pays one pass per sub-query, and `RERANK_FANOUT` decides how many run at once.** It defaults to `1`, the sequential loop, and raising it DIVIDES `TORCH_NUM_THREADS` across the concurrent passes rather than adding threads, so it reorders the cost rather than removing it. Whether that helps depends on how much of a pass is fixed cost, which is a measurement rather than an argument. Take it with the bench, service stopped, since a second model-holding process beside uvicorn is ~10 GB against an 8 GB floor:
+>
+> ```
+> docker compose stop ai
+> docker compose run --rm --no-deps -e TORCH_NUM_THREADS=16 ai >   python -m octopus_ai.bench "launch my app and get me to my first 100 customers" >   --fanout 1 2 3 --candidates 25 12 --batch-size 0 8
+> ```
+>
+> It prints per-stage timings, the padding ratio, the fixed-versus-per-candidate split of a pass, and the score drift across batch sizes. Pick the fastest row whose drift is float noise. `ai-orchestrator.md` carries the rows this repository measured.
 >
 > If a local turn trips Node's 90s step budget, raise it in `apps/api/.env` rather than lowering quality:
 >

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { failureNotice, planEmbedPayload } from './agent-runs';
+import { continuationRunId } from '../lib/agent-runner';
 import { AiServiceError, ProposePlanProposal } from '../lib/ai';
 import { PlanEmbedPayload } from '@octopus/contracts';
 
@@ -235,5 +236,41 @@ describe('planEmbedPayload', () => {
     expect(parsed.success).toBe(true);
     expect(parsed.success && parsed.data.stages[0]?.steps[0]?.dependsOn).toEqual([]);
     expect(parsed.success && parsed.data.stages[0]?.steps[0]?.id).toBeUndefined();
+  });
+});
+
+describe('planEmbedPayload provenance', () => {
+  const plan: ProposePlanProposal = {
+    kind: 'propose_plan',
+    title: 't',
+    summary: 's',
+    stages: [],
+  } as unknown as ProposePlanProposal;
+
+  it('carries the run id and the card it replaces only when given', () => {
+    const bare = planEmbedPayload(plan, 'g', []);
+    expect('runId' in bare).toBe(false);
+    expect('supersedes' in bare).toBe(false);
+
+    const traced = planEmbedPayload(plan, 'g', [], [], {
+      runId: 'run-1',
+      supersedes: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(traced.runId).toBe('run-1');
+    expect(traced.supersedes).toBe('11111111-1111-4111-8111-111111111111');
+    expect(PlanEmbedPayload.safeParse(traced).success).toBe(true);
+  });
+});
+
+describe('continuationRunId', () => {
+  it('is deterministic from the card, so a card finished twice collides rather than doubling', () => {
+    const a = continuationRunId({ runId: 'run-1', round: 0 }, 'embed-1');
+    const b = continuationRunId({ runId: 'run-1', round: 0 }, 'embed-1');
+    expect(a).toBe(b);
+    expect(a).toBe('run-1:r1');
+  });
+
+  it('falls back to the card id for a card written before runs were named', () => {
+    expect(continuationRunId({ round: 1 }, 'embed-1')).toBe('embed-1:r2');
   });
 });

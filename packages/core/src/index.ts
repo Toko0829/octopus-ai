@@ -35,10 +35,12 @@ export {
 } from './critic';
 
 export {
-  decideIntakeTurn,
-  type IntakeTurn,
-  type IntakeTurnInput,
-  type PendingIntake,
+  applyAnswer,
+  dismissableQuestion,
+  profileSlots,
+  remainingRequiredSlots,
+  replanReason,
+  type RoomProfileFields,
 } from './intake';
 
 export {

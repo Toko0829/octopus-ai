@@ -69,8 +69,7 @@ export function waitingMessage(summary: WaitingSummary, titles: Map<string, stri
     parts.push(
       `I have started on the plan and ${summary.needsUser.length === 1 ? 'one step needs' : `${summary.needsUser.length} steps need`} you:\n\n${lines}\n\n` +
         'Each is a decision, an authorisation, or something only you know. ' +
-        'Tell me what you want and I will carry on. To start on something else ' +
-        'instead, begin your message with "new goal:".',
+        'Answer on the card below, or from the project panel, and I will carry on.',
     );
   }
 
@@ -156,11 +155,13 @@ export async function notifyWaiting(
       .maybeSingle();
     if (postError && postError.code !== '23505') throw postError;
 
-    // The card is what makes the answer attachable. Without it the person reads
-    // "this step needs you", replies, and the reply is understood as a brand new
-    // goal, because nothing in the room records which steps the question was
-    // about. Only for `needs_user`: an escalated task is waiting on an expert, and
-    // a card inviting an answer nobody can act on would be a false offer.
+    // The card is where the answer is given: one field per step, so the person
+    // answers the step they mean rather than typing a sentence something has to
+    // attribute. Only for `needs_user`: an escalated task is waiting on an
+    // expert, and a card inviting an answer nobody can act on would be a false
+    // offer. The titles ride on the card so it can label each field without a
+    // second fetch; `taskIds` stays beside them because it is what
+    // `answer_question_task` matches on.
     const answerable = summary.needsUser.map((r) => r.taskId);
     if (message && answerable.length > 0) {
       const payload = QuestionEmbedPayload.safeParse({
@@ -172,6 +173,7 @@ export async function notifyWaiting(
         answers: [],
         stalls: 0,
         taskIds: answerable,
+        tasks: answerable.map((id) => ({ id, title: titles.get(id) ?? 'an unnamed step' })),
       });
       if (!payload.success) {
         throw new Error(`refusing to store an invalid question payload: ${payload.error.message}`);
@@ -182,9 +184,7 @@ export async function notifyWaiting(
         room_id: roomId,
         component: 'question',
         payload: payload.data,
-        // Echoed for the UI. What actually stops a human node answering on the
-        // owner's behalf is `decideIntakeTurn`, because an answer arrives as a
-        // chat message and never touches the route where this is checked.
+        // Enforced on the embed action route, which is where an answer arrives.
         required_role: 'owner',
         state: 'pending',
       });

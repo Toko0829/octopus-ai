@@ -38,9 +38,149 @@ edit, and the guard that outlives all of those is the one in the database.
 
 from __future__ import annotations
 
-from .schemas import PlanStage, PlanStep
+import re
 
-__all__ = ["find_cycle", "sanitise_dependencies"]
+from .schemas import STEP_ID_PATTERN, PlanStage, PlanStep
+
+__all__ = [
+    "STEP_ID_MAX_LENGTH",
+    "find_cycle",
+    "normalise_op_ids",
+    "normalise_plan_ids",
+    "normalise_step_ids",
+    "sanitise_dependencies",
+    "slugify_step_id",
+]
+
+# The length `STEP_ID_PATTERN` allows. Held here as a number as well as inside
+# the regex because truncation needs the number and a regex cannot be asked for
+# one. The two must agree; `test_plan_parsing` pins that they do.
+STEP_ID_MAX_LENGTH = 32
+
+_STEP_ID = re.compile(STEP_ID_PATTERN)
+_NOT_SLUG = re.compile(r"[^a-z0-9]+")
+
+
+def slugify_step_id(raw: object) -> str | None:
+    """The nearest valid step id to what the model wrote, or None if there is none.
+
+    Lowercased, every run of anything but a letter or digit collapsed to one
+    hyphen, trimmed to the pattern's length, and hyphens stripped from both ends
+    so the trim cannot leave one dangling. `None` means nothing usable survived,
+    and the caller drops the id rather than inventing one: a step with no id is
+    a step nothing can depend on, which is the flat plan and is safe.
+    """
+    if not isinstance(raw, str):
+        return None
+    slug = _NOT_SLUG.sub("-", raw.lower()).strip("-")
+    if not slug:
+        return None
+    slug = slug[:STEP_ID_MAX_LENGTH].rstrip("-")
+    return slug or None
+
+
+def normalise_step_ids(steps: list[dict]) -> list[str]:
+    """Rewrite each step's `id` and `depends_on` in place to satisfy the pattern.
+
+    Why this exists: the model was asked for "readable" ids and never told the
+    length, so it wrote `define-signup-event-and-cpa-ceiling`, Pydantic rejected
+    the id, and `parse_plan` threw the entire fifteen-step plan away over one
+    slug. Measured on a live run, and the second plan in the same container went
+    the same way. An id is a join key and nothing more, so the safe repair is to
+    shorten it and carry every reference to it along, not to lose the plan.
+
+    Rules, in order:
+
+    * An id that already matches the pattern is left exactly as written, and its
+      value is reserved first, so a shortened id can never collide into it and
+      quietly steal its dependants.
+    * The same raw id appearing twice maps to the same new id both times, so a
+      genuine duplicate stays a duplicate for `sanitise_dependencies` to report;
+      only a collision *created* by truncation gets a `-2`, `-3` suffix.
+    * `depends_on` entries are rewritten through the same map. An entry naming
+      something else (a task uuid on the replan path, or an id that was dropped)
+      is left alone for the next layer to judge.
+
+    Returns one problem string per repair. None of them is fatal.
+    """
+    problems: list[str] = []
+    taken: set[str] = set()
+    for step in steps:
+        raw = step.get("id")
+        if isinstance(raw, str) and _STEP_ID.fullmatch(raw):
+            taken.add(raw)
+
+    mapping: dict[str, str] = {}
+    for step in steps:
+        raw = step.get("id")
+        if raw is None or (isinstance(raw, str) and _STEP_ID.fullmatch(raw)):
+            continue
+        title = step.get("title", "?")
+        if isinstance(raw, str) and raw in mapping:
+            step["id"] = mapping[raw]
+            continue
+
+        slug = slugify_step_id(raw)
+        if slug is None:
+            step["id"] = None
+            problems.append(
+                f"step {title!r} has id {raw!r}, which has nothing a slug can be made "
+                "from; dropped, so nothing can depend on this step"
+            )
+            continue
+
+        candidate = slug
+        n = 2
+        while candidate in taken:
+            suffix = f"-{n}"
+            candidate = slug[: STEP_ID_MAX_LENGTH - len(suffix)].rstrip("-") + suffix
+            n += 1
+        if candidate != slug:
+            problems.append(
+                f"step {title!r} id {raw!r} shortened to {slug!r} collided with another "
+                f"step; renamed {candidate!r}"
+            )
+        else:
+            problems.append(f"step {title!r} id {raw!r} normalised to {candidate!r}")
+        taken.add(candidate)
+        if isinstance(raw, str):
+            mapping[raw] = candidate
+        step["id"] = candidate
+
+    if mapping:
+        for step in steps:
+            deps = step.get("depends_on")
+            if isinstance(deps, list):
+                step["depends_on"] = [
+                    mapping.get(dep, dep) if isinstance(dep, str) else dep for dep in deps
+                ]
+
+    return problems
+
+
+def normalise_plan_ids(data: dict) -> list[str]:
+    """`normalise_step_ids` over every step of a plan object, in place."""
+    stages = data.get("stages")
+    if not isinstance(stages, list):
+        return []
+    steps: list[dict] = []
+    for stage in stages:
+        if isinstance(stage, dict) and isinstance(stage.get("steps"), list):
+            steps.extend(step for step in stage["steps"] if isinstance(step, dict))
+    return normalise_step_ids(steps)
+
+
+def normalise_op_ids(data: dict) -> list[str]:
+    """`normalise_step_ids` over the `add_step` ops of a replan diff, in place.
+
+    Only added steps carry a slug; cancel and modify name existing tasks by uuid,
+    and those pass through `depends_on` untouched because they match no slug.
+    """
+    ops = data.get("ops")
+    if not isinstance(ops, list):
+        return []
+    added = [op for op in ops if isinstance(op, dict) and op.get("op") == "add_step"]
+    return normalise_step_ids(added)
 
 
 def _drop_all_edges(stages: list[PlanStage]) -> list[PlanStage]:

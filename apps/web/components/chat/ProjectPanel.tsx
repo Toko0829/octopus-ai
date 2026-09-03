@@ -1,18 +1,26 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type {
-  CampaignSummary,
-  ProjectDetail,
-  ProjectSummary,
-  Task,
-  TaskState,
+import {
+  BUDGET_BAND_LABELS,
+  BudgetBand,
+  TIMELINE_LABELS,
+  Timeline,
+  type CampaignSummary,
+  type ProjectDetail,
+  type ProjectSummary,
+  type PutRoomProfileBody,
+  type RoomProfile,
+  type Task,
+  type TaskState,
 } from '@octopus/contracts';
 import {
   disputeStep,
   getArtifactFileUrl,
   getProject,
   getProjects,
+  getRoomProfile,
+  putRoomProfile,
   rateExpert,
   requestReplan,
   resolveStep,
@@ -213,6 +221,13 @@ export function ProjectPanel({ roomId, canAct, onClose }: Props) {
           </p>
         )}
 
+        {/* What this workspace knows about its business, above the projects
+            because it belongs to the room and every project reads it. Owner
+            only: the server returns nulls to anybody else, and the block says
+            nothing rather than showing four empty fields to a person who could
+            not fill them. */}
+        {canAct && <AboutBusiness roomId={roomId} />}
+
         {/* Loading and empty are different answers and are never collapsed into
             one. "Nothing here" while a request is still in flight is a false
             statement, and this whole panel exists because an absent surface was
@@ -289,6 +304,158 @@ export function ProjectPanel({ roomId, canAct, onClose }: Props) {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * What this workspace knows about its own business, and the place to correct it.
+ *
+ * Intake used to ask for the audience, the offer and the budget band on every
+ * goal, because nothing stored them. They are stored on the room now (ADR-0029,
+ * decision 3): the question card and intake write them, this block shows them
+ * and lets the owner change them, and the next goal in the room asks nothing.
+ *
+ * Same rules as the question card. A choice is a chip, a phrase is a short
+ * field with its own Save, each field saves on its own so nothing typed here
+ * can erase a neighbour, and every state is a word. "Nothing yet" is shown for
+ * an empty field rather than a blank, because a blank on a surface built for
+ * checking reads as something the agent forgot.
+ */
+function AboutBusiness({ roomId }: { roomId: string }) {
+  const [profile, setProfile] = useState<RoomProfile | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{ icp: string; offer: string }>({ icp: '', offer: '' });
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    getRoomProfile(roomId)
+      .then((res) => {
+        if (live) setProfile(res.profile);
+      })
+      .catch((err) => {
+        if (live) setError(err instanceof Error ? err.message : 'Could not load this.');
+      });
+    return () => {
+      live = false;
+    };
+  }, [roomId]);
+
+  async function save(input: PutRoomProfileBody, key: string) {
+    setBusy(key);
+    setError(null);
+    try {
+      const res = await putRoomProfile(roomId, input);
+      setProfile(res.profile);
+      if (key === 'icp' || key === 'offer') setDraft((d) => ({ ...d, [key]: '' }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save that.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const textField = (key: 'icp' | 'offer', label: string, placeholder: string) => (
+    <li className="q-item">
+      <div className="q-label">{label}</div>
+      <div className="q-current">
+        <span className="q-value">{profile?.[key] ?? 'Nothing yet'}</span>
+        {profile?.[key] ? <span className="q-state mono">saved</span> : null}
+      </div>
+      <form
+        className="q-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const value = draft[key].trim();
+          if (value) void save({ [key]: value }, key);
+        }}
+      >
+        <label className="sr-only" htmlFor={`about-${roomId}-${key}`}>
+          {label}
+        </label>
+        <input
+          id={`about-${roomId}-${key}`}
+          className="auth-input"
+          type="text"
+          maxLength={400}
+          value={draft[key]}
+          onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
+          placeholder={placeholder}
+          disabled={busy !== null}
+        />
+        <button
+          className="btn btn-primary"
+          type="submit"
+          disabled={busy !== null || !draft[key].trim()}
+        >
+          {busy === key ? 'Saving' : 'Save'}
+        </button>
+      </form>
+    </li>
+  );
+
+  const chipField = <K extends 'budgetBand' | 'timeline'>(
+    key: K,
+    label: string,
+    options: { value: NonNullable<RoomProfile[K]>; label: string }[],
+  ) => (
+    <li className="q-item">
+      <div className="q-label">{label}</div>
+      <div className="q-current">
+        <span className="q-value">
+          {profile?.[key]
+            ? (options.find((o) => o.value === profile[key])?.label ?? profile[key])
+            : 'Nothing yet'}
+        </span>
+        {profile?.[key] ? <span className="q-state mono">saved</span> : null}
+      </div>
+      <div className="chip-group" role="group" aria-label={label}>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className="chip"
+            aria-pressed={profile?.[key] === option.value}
+            disabled={busy !== null}
+            onClick={() => void save({ [key]: option.value } as PutRoomProfileBody, key)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </li>
+  );
+
+  return (
+    <section className="work-about" aria-label="About your business">
+      <p className="work-campaigns-head">About your business</p>
+      <p className="work-empty">
+        What I already know, so the next goal here starts without the questions. Each field saves on
+        its own.
+      </p>
+      {profile === null && !error ? <p className="work-empty">Loading.</p> : null}
+      {profile !== null && (
+        <ul className="q-list">
+          {textField('icp', 'Who it is for', 'A sentence about your customer')}
+          {textField('offer', 'What you sell', 'The product or service, in a few words')}
+          {chipField(
+            'budgetBand',
+            'Budget',
+            BudgetBand.options.map((value) => ({ value, label: BUDGET_BAND_LABELS[value] })),
+          )}
+          {chipField(
+            'timeline',
+            'Timeline',
+            Timeline.options.map((value) => ({ value, label: TIMELINE_LABELS[value] })),
+          )}
+        </ul>
+      )}
+      {error ? (
+        <p className="work-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
   );
 }
 

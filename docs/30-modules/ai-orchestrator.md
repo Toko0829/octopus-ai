@@ -11,7 +11,7 @@
 > **RAG is live and the core now answers from it.** `/plan` retrieves before it reasons and picks a core from the result:
 >
 > - **`grounded-plan-v1`** — retrieval found in-scope sources, so the core returns a **structured full-funnel plan**: six fixed stages, up to three steps each, every step carrying an owner (AI / HUMAN / YOU) and the source indices it rests on. Node persists it as an `action_embeds` row and the chat renders it as the plan card.
-> - **`grounded-v1`** — the sources were good but the model could not produce a valid plan, so the reply falls back to cited prose. This degrades **sideways, not down**: a cited paragraph is still worth posting. It never falls back to an ungrounded plan, which is why the fallback re-generates from the same sources rather than salvaging malformed JSON.
+> - **`grounded-v1`** — the sources were good but the model could not produce a valid plan, so the reply falls back to cited prose. This degrades **sideways, not down**: a cited paragraph is still worth posting. It never falls back to an ungrounded plan, which is why the fallback re-generates from the same sources rather than salvaging malformed JSON. **Two things now stand between a rejected plan and that paragraph, and both were paid for by a measured loss.** Run `b47781ca` ("get signups for bluelly.com, $3000, students") passed intake and retrieval, the model returned a fifteen-step plan, and Pydantic rejected the whole thing over six step ids one to three characters past `STEP_ID_PATTERN`'s 32 (`define-signup-event-and-cpa-ceiling`). The prompt had asked for a "readable" id and never stated a length. Both plans requested on that container went the same way; zero cards. So `parse_plan` now **normalises step ids before validation** (`plan_graph.normalise_step_ids`: lowercase, slug, truncate to 32, suffix a collision that truncation itself created, and rewrite every `depends_on` through the same map), the prompt states the limit, and a shape the normaliser cannot fix earns **exactly one corrective retry** with the validation error appended before prose. A provider error is not retried there, because `providers` already backs off on those. The prose fallback is **marked in code** with a first line saying the card could not be built, since an unmarked paragraph where a card was expected is a fallback the person cannot see. `reasoning_summary` records `(after 1 retry)`. The same normaliser runs on `add_step` ids in `/replan`. Pinned by `test_plan_parsing.py` (rules), `test_plan_retry.py` (control flow) and `test_replan.py`.
 > - **`refusing-v0`** — nothing cleared the relevance threshold, so it declines to plan and says why. Retrieval failing or generation failing both degrade to this, never to an ungrounded answer.
 > - **`refusing-ungrounded-v1`** — chunks cleared the threshold, and the **groundedness gate** judged that they do not actually answer the goal. This is the case a threshold cannot catch, because a rerank score ranks chunks within the corpus and says nothing about whether the corpus covers the question.
 > - **`refusing-unverified-v1`** — the gate could not run. Kept distinct so the copy never tells a person their covered question is out of scope because a provider call failed.
@@ -193,15 +193,17 @@ Measured against the live service, both directions, because a fix that only loos
 
 The last two both leave the conversation open rather than ending it, and they are separate because **the words differ where the mechanism does not**. A greeting has nothing to decline. A request from another field has something to decline, and the decline has to come **before** the question, or the question is a way of keeping someone talking rather than an honest redirect. Someone opening a cafe cannot be helped to open it, and may well want customers through its door, which is work this system does.
 
-**That redirect is bounded.** `stalls` counts consecutive turns producing no usable goal, capped at two, and it is counted separately from the answer rounds because the two limit different things: rounds limit interrogating someone who **has** said what they want, stalls limit asking someone who has not. Following a thread is right; following it forever is a system that will not take no for an answer, so it stops and says so.
-
-**A card knows whether it is waiting for a goal or for answers**, and that is the detail the multi-turn behaviour rests on. When it waits for a goal, the next message **replaces** the goal rather than being filed as an answer to it. Without that, a conversation opening with "Hello" would plan for the goal "Hello" forever with everything real buried in `answers`.
+**Neither reply opens a card, and nothing counts stalls any more.** Both used to write a card `awaiting: 'goal'` so the room's next message would replace the goal rather than be filed as an answer, and a stall counter capped how long that could go on. That machinery existed only because a pending card claimed the room's next message. It does not now: every chat message is a goal, so a greeting is answered with the opener, an out-of-domain request with the redirect, and whatever the person types next is simply run. Somebody who says hello twice gets the opener twice, which is the honest behaviour of a system that replies to what it is sent.
 
 **Intake can block and can never authorise.** It stops a plainly out-of-domain request before it costs a retrieval. The converse does not hold: an intake that finishes says nothing about whether the corpus can ground an answer, and the **groundedness gate still runs exactly as before**. Non-zero proximity means "in the right field", which is precisely the property the measured leaks in [rag-knowledge.md](rag-knowledge.md) also have. Same rule decomposition carries, worded the same way: additive to grounding, never a source of it.
 
 **User-facing copy is templated in the API, not generated.** `planner.py` already templates its refusals for the same reason: brand voice is an enforced rule (no em dashes, no hype, rule 22) and a generated sentence is one prompt drift away from breaking it on a trust surface. The model classifies; the words are ours.
 
-**Rounds are capped at two, and that is a product decision rather than a measurement.** [vision.md](../00-overview/vision.md) makes user-touch-count per result a guardrail to drive down and this doc requires user-only facts to be raised as a single batched question, so a tree of one-question-at-a-time turns would satisfy the module and violate the product. Questions go out in one batch of at most four, ordered by the required list. An intake that ends incomplete produces a thinner plan, which the card renders as visibly empty stages, and that is a better outcome than a third round.
+**Rounds are capped at two, and that is a product decision rather than a measurement.** [vision.md](../00-overview/vision.md) makes user-touch-count per result a guardrail to drive down and this doc requires user-only facts to be raised as a single batched question, so a tree of one-question-at-a-time turns would satisfy the module and violate the product. Questions go out on one card of at most four, ordered by the required list. An intake that ends incomplete produces a thinner plan, which the card renders as visibly empty stages, and that is a better outcome than a third round.
+
+**Asking no longer delays the plan, and the workspace answers first.** `needs_detail` used to end the run at the card. Node now posts the card and plans in the same run from `refined_goal` and the slots intake already has, so the person sees a plan with visibly empty stages beside the questions instead of an interview, and a finished card runs intake again with `round + 1` and the merged slots: the result supersedes a plan nobody approved, or becomes a replan diff for one that is running. Before round 0 Node hands this service what the room already knows, `room_profiles` (audience, offer, budget band, timeline) as `stated` slots, so a whole-funnel goal in a room that has answered before is `ready` without a question. That seeding is what forced the one change here: `merge_slots` now lets a **newer stated value replace an older stated one**, since a budget band stored last month must not beat the one typed into today's goal, and an answer on the card must be able to correct the round before. An inference still never overwrites a statement.
+
+**The batch is one card, and the answers are one act each.** The questions used to go out as plain text and come back as one chat message, which this service parsed into slots from the `answers` list. They come back as `slots` now: the card in `apps/web` writes each answer as a `stated` slot through the embed action route (chips for the budget band and the timeline, a short field for the rest), Node hands the card's slots to `/intake` with `round + 1`, and `answers` arrives empty. This service did not change for that, which is the point of having kept it stateless: `merge_slots` already treats an incoming stated slot as the person's word, `completeness` already counts keys whatever their source, and `select_questions` already skips what is filled. The `answers` field stays in the contract for a caller that still has sentences to hand over.
 
 **Failure degrades to the path that existed before it.** Any error, malformed JSON included, proceeds on the original goal rather than refusing: intake improves a query, it is not a precondition for answering, and letting an optional step take down a working path is the trade `decompose` already refused. Passing through grants nothing downstream, which is what makes it safe.
 
@@ -281,6 +283,8 @@ The last row is intake behaving correctly rather than leaking. GA4 tracking is a
 - **The refusal message describes the domain, never the document list.** Enumerating covered topics drifts the moment the corpus grows, and it fails in one direction only: the agent advertises a narrower corpus than it has, so a user whose question _is_ covered is told it is not and does not retry. The domain is fixed by the first vertical rather than by how many documents happen to be ingested.
 
 - **The thread budget reached the service and nothing else, which is the same defect one level out.** `configure_torch_threads` lived in `main.py` and was therefore called only from the FastAPI lifespan, so the eval harness, `octopus_ai.seed` and `tools/rag-lens/probe.py` all ran torch on its own default and ignored `TORCH_NUM_THREADS` entirely. That matters most in the eval, which is the most CPU-bound thing in the repository: reranking is N forward passes per query and a run is dozens of queries, which is why `infra-devops.md` records CI shard timeouts being raised to 40 minutes. **CI runs `python -m octopus_ai.evaluation` directly rather than the container**, so the budget `docker-compose.yml` sets never reached the gate at all. Moved to `runtime.py`, a module that imports torch lazily and drags no FastAPI into a CLI, and called from all three eval entry points, the seeder and the probe. Unset still means "leave torch alone", so nothing changes for a caller that has not opted in. Measured on the machine that found it: torch defaults to **12 of 16** threads here, so the local gap is smaller than the 8-of-16 case the service hit, and it is a gap on every runner whose physical and logical counts differ.
+
+- **Two settings decide how that budget is spent, and both default to doing nothing.** `RERANK_FANOUT` (default `1`) is how many sub-query rerank passes run at once; `runtime.thread_budget` divides `TORCH_NUM_THREADS` by it, so the two compose rather than compete, and `RERANK_FANOUT=0` is refused at startup because `asyncio.Semaphore(0)` never releases. `RERANK_BATCH_SIZE` (default `0`, one batch) is how many `(query, document)` pairs go through the cross-encoder per forward pass, length-sorted so a long chunk stops being padded onto every short one. The defaults are today's behaviour exactly, because the right value is a fact about a box; `docker-compose.yml` carries the measured pair and the section below carries the rows. `python -m octopus_ai.bench` is what produced them, and it is the first thing in this service that can time itself.
 
 - **Torch is the CPU build, everywhere, and that is pinned in `uv.lock`.** Measured from the previous lockfile: `nvidia-*` plus `triton` came to **2,480 MB of the 3,179 MB** of Linux wheels, 78% of the dependency payload, for hardware no environment here has. CI runners are CPU, the Fly.io target is CPU, and this service already falls back to fp32 on CPU-only hosts. Pinned in the lockfile rather than only inside the container, because the alternative has CI scoring the golden set on one torch build while production runs another, and ADR-0009 records that such a bump moves model scores. `uv.lock` is already in the eval's trigger paths, so the gate re-measures the change rather than the change routing around the gate.
 
@@ -418,16 +422,15 @@ the reasoning service failed when it in fact answered, and answered "your goal i
 outside my sources", is the same class of defect as reporting a timeout as an
 outage. The latency itself is unfixed and recorded below.
 
-### Sub-query fan-out is the dominant planning cost, and the loop is sequential
+### Sub-query fan-out is the dominant planning cost, and it is now measured rather than argued
 
-`retrieval.py` runs `for sub in queries: await self._retrieve_one(...)`, and
 `config.py` states the trade plainly: decomposition costs **one rerank per
 sub-query**, because the cheap alternative (search every sub-query, rerank once
 against the original goal) was built, measured, and found to change nothing.
 That trade was priced when rerank was a metered Cohere call, where serialising
 was the point and `rerank_rpm` was the ceiling. Since [ADR-0009](../40-adr/0009-local-reranker.md)
-rerank runs in-process on CPU and is explicitly not rate-limited, so the loop now
-serialises CPU work for a reason that no longer applies.
+rerank runs in-process on CPU and is explicitly not rate-limited, so the loop
+serialised CPU work for a reason that had expired.
 
 Measured on a 16-core host with torch on 8 threads: 6 sub-queries, 498s end to
 end, roughly 83s per pass. Nothing is wrong with any single pass; there are just
@@ -439,8 +442,10 @@ so the service ran on 8 of 16 threads on a number nobody had chosen. Isolating
 one rerank pass over 25 candidates in-container: **69.7s at the default 8, 36.8s
 at 16.** `TORCH_NUM_THREADS` now carries that budget, applied at startup by
 `configure_torch_threads` and set to 16 in `docker-compose.yml`. The same goal
-that took **498s now takes 267s**, a 1.86x improvement that matches the isolated
+that took **498s then took 267s**, a 1.86x improvement that matches the isolated
 measurement, and it lands under even the 300s budget that had been discarding it.
+(It now takes **121s**; the rest of this section is how, and what had to be
+measured before anything could be chosen.)
 
 Two smaller levers were measured and **not** taken. Capping `MAX_LENGTH` at 512
 instead of 1024 saves only 32.5s against 36.8s, because `padding=True` pads to
@@ -448,13 +453,113 @@ the longest pair in the batch and real chunks tokenise to ~585, so the cap is
 rarely what binds. Halving `retrieval_candidates` to 12 gives 34.0s against
 36.8s, which is far less than linear and buys nothing worth the recall.
 
-**The sequential fan-out itself is still unfixed.** The loop serialises CPU work
-for a reason that expired with [ADR-0009](../40-adr/0009-local-reranker.md): the
-trade was priced when rerank was a metered Cohere call, where serialising was the
-point and `rerank_rpm` was the ceiling, and in-process rerank is explicitly not
-rate-limited. A bare `gather` is not the fix, because concurrent passes now each
-want all 16 threads and would contend; it needs a bounded fan-out that divides
-the thread budget rather than multiplying demand for it.
+**Both of those conclusions are amended below by instrumentation neither had.**
+The first identified the right culprit and drew the wrong lever from it: padding
+to the longest pair is real and expensive, but the fix is to batch pairs of
+similar length rather than to cap the length, and per-pair lengths measured on
+the live corpus run 440-480 at the maximum against a ~250 mean, not ~585. The
+second is simply not reproducible: with per-stage timing, 25 candidates against 12
+is close to linear at 1.28s each, and the sublinear-looking 34.0-against-36.8 was
+a hand-taken pair of numbers on a contended box.
+
+**Nothing in this service could time itself, which is why every figure above was
+taken by hand.** There was exactly one `time.monotonic()` in the whole codebase,
+inside the rate limiter. `retrieval.py` now times embed, hybrid search and rerank
+separately per pass: `retrieval complete` carries `embed_ms`, `search_ms` and
+`rerank_ms`; `decomposed retrieval` adds `fanout`, `passes`, `base_ms`,
+`subqueries_ms` (the wall of the gathered section), `rerank_ms` (the sum across
+passes) and `total_ms`; and `local rerank pass` carries `pairs`, `batches`,
+`max_tokens`, `padding_ratio`, `tokenize_ms` and `forward_ms`. The gap between
+`subqueries_ms` and the summed `rerank_ms` is the concurrency actually achieved,
+which is the one number that says whether a fan-out did anything. Every retrieval
+log line now also carries `agent_run_id`; the retrieval path had never been given
+one, so its logs could be read for what happened but not joined to the run they
+happened in ([observability.md](../10-architecture/observability.md)).
+
+**The fan-out is bounded, and the thread budget is divided rather than
+multiplied.** `RERANK_FANOUT` runs at most K sub-query passes concurrently under
+an `asyncio.Semaphore` while `runtime.thread_budget` sets torch to
+`TORCH_NUM_THREADS // K`, so total CPU demand is unchanged and only the ordering
+differs. The semaphore lives on the `Retriever`, of which `main.py` builds exactly
+one, so two concurrent `/plan` requests share the bound the budget was divided
+for. **The goal pass still runs first and alone**, outside the semaphore, because
+`if not base.chunks: return base` is the grounding gate: a car-licence goal
+decomposes into plausible marketing sub-queries that each legitimately retrieve
+and clear the threshold, and the golden set's negative half caught exactly that.
+Folding the goal into the gathered section would mean the sub-queries had already
+run before the gate could refuse them.
+
+**Fan-out was expected to be a wash and measured as a win, for a reason nobody had
+guessed.** The arithmetic said it should barely help: if a pass saturates the box,
+K passes at `budget/K` cost the same total CPU, and the goal pass runs alone at
+the divided count with no concurrency to pay for its halving. The suspected escape
+was a large fixed per-pass cost, implied by the recorded 34.0s-against-36.8s when
+candidates were halved. **Both halves of that story are wrong.** The bench puts
+the fixed cost at **1.4s, 4% of a 25-candidate pass**, and the pass is essentially
+linear in candidates at 1.28s each. What actually makes concurrency win is that
+**thread scaling is sublinear past 8**: halving a pass's threads costs about
+**21%** more CPU time rather than 100%, so two passes sharing the budget finish
+sooner than two passes taking turns with all of it. The near-linear 69.7s-at-8
+against 36.8s-at-16 recorded above does not reproduce on the host these rows were
+taken on.
+
+**Batching is the larger win, and it was not the headline going in.** Every pass
+tokenised 25 pairs with `padding=True`, which pads all of them to the longest, so
+one long chunk was paid for 25 times. `RERANK_BATCH_SIZE` sorts pairs by length
+(descending, so peak memory lands in the first batch) and chunks them, which took
+padding from **37.4% of every token computed to 11.3%**. It cannot move a score,
+because the attention mask already excludes padding, and it does not: **max drift
+across the whole grid was 1.9e-07**.
+
+Measured with `python -m octopus_ai.bench`, 6 sub-queries, `TORCH_NUM_THREADS=16`,
+wall seconds for the whole retrieval:
+
+| candidates | batch | fanout 1 | fanout 2 | fanout 3 |
+| ---------- | ----- | -------- | -------- | -------- |
+| 25         | 0     | 209.3    | 157.6    | 164.6    |
+| 25         | 8     | 152.8    | 116.9    | 109.8    |
+| 12         | 0     | 100.3    | 86.2     | 70.7     |
+| 12         | 8     | 88.5     | 62.6     | 60.4     |
+
+`docker-compose.yml` takes `RERANK_FANOUT: '2'` and `RERANK_BATCH_SIZE: '8'`:
+**209.3s to 116.9s, a 1.79x improvement on top of the 1.86x the thread budget
+already bought.** Confirmed in the container on the goal that produced the 267s
+figure above, driven through `/plan` for real: 6 sub-queries, **`total_ms=121007`
+against the recorded 267s**, with `subqueries_ms=92507` against a summed
+`rerank_ms=185866` — the gap between those two is the concurrency, visible in the
+log line rather than inferred. Fanout 3 measured marginally faster at 25 candidates and was not
+taken, because `16 // 3` is 5 and leaves a core idle, and the 6% gap between them
+is inside the run-to-run spread this benchmark showed on nominally identical
+settings. Both settings **default to today's behaviour** (`1` and `0`), because
+the right value is a fact about a box rather than about this code, and a
+deployment that has not measured its own should not silently inherit ours.
+
+**The reranker is warmed at startup now, beside the embedder.** It was lazy, so
+the first plan on every fresh process paid the model load inside the request:
+**18.4s for a cold first rerank against roughly 2s warm.** The warm-up is a real
+forward pass rather than a bare load, because the first pass initialises kernels
+that loading does not touch. What warming removes is the stall, not the peak: the
+weights are resident before `/health` goes green (4.0 GiB, at **37s** against a
+180s `start-period`), while the peak still arrives with the first real pass,
+because what grows there is activations. The fan-out raises that peak from 5.3 to
+**5.9 GiB**, which is the one thing `RERANK_FANOUT=2` costs and the reason to lower
+it rather than the thread count on a small instance.
+
+**One race was closed on the way**, because the fan-out would have made it
+routine: `Providers` built the `LocalReranker` on an unguarded `is None` check, so
+two coroutines arriving together each built one and each loaded ~1 GB of weights.
+It needed two concurrent requests to surface under the sequential loop; concurrent
+passes are now the normal case.
+
+**Still not taken, and recorded rather than implied:** int8 dynamic quantisation
+of the cross-encoder is the one remaining lever likely to halve a pass, and it is
+out of scope here because it **changes scores**. It would need the full 65-minute
+gate plus a recalibration of `RERANK_LOCAL_MIN_SCORE` against the 1.76x margin
+([ADR-0009](../40-adr/0009-local-reranker.md)), which is the narrowest safety
+property in retrieval. Everything in this section was chosen precisely because it
+could not move a score, and the golden negatives were re-run through the real
+pipeline at both configurations to prove it: all five still keep zero chunks on
+identical digits, including the 0.001007 that defines the margin's lower bound.
 
 ## State model
 

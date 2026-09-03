@@ -58,7 +58,7 @@ class _Retriever:
         self._retrieval = retrieval or _Retrieval()
         self._boom = boom
 
-    async def retrieve(self, query, room_id=None, project_id=None):
+    async def retrieve(self, query, room_id=None, project_id=None, agent_run_id=None):
         if self._boom:
             raise RuntimeError("retrieval is down")
         return self._retrieval

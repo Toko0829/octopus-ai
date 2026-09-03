@@ -96,14 +96,26 @@ def _bool(name: str, default: bool) -> bool:
     raise ConfigError(f"{name} must be a boolean, got {raw!r}")
 
 
-def _int(name: str, default: int) -> int:
+def _int(name: str, default: int, *, minimum: int | None = None) -> int:
+    """Read an integer setting, optionally with a floor.
+
+    The floor fails the way `_choice` does, at startup with the variable named.
+    `RERANK_FANOUT=0` would otherwise construct `asyncio.Semaphore(0)`, which
+    never releases: every sub-query pass would hang forever on a value that reads
+    like "off". A setting whose invalid values deadlock has to be rejected where
+    it is read.
+    """
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
-        return default
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{name} must be >= {minimum}, got {value}")
+    return value
 
 
 def _float(name: str, default: float) -> float:
@@ -366,10 +378,51 @@ class Settings:
     # that was never chosen.
     #
     # Not raised above the CPU count by default, and worth not doing by hand
-    # either: past saturation the threads contend and the pass gets slower, and
-    # any parallel sub-query fan-out would have to divide this budget rather than
-    # multiply it.
+    # either: past saturation the threads contend and the pass gets slower.
+    # `RERANK_FANOUT` below DIVIDES this budget rather than multiplying demand for
+    # it, so the two settings compose: the number here stays the box, and the
+    # fan-out decides how many passes share it. Note what that implies, because it
+    # is the arithmetic that makes fan-out a measurement rather than a win: at
+    # fanout 2 every pass runs at half the threads, INCLUDING the goal pass, which
+    # runs first and alone as the grounding gate and therefore gets no
+    # concurrency to pay for its halving.
     torch_num_threads: int = 0
+
+    # How many sub-query rerank passes may run at once.
+    #
+    # 1 is today's behaviour exactly: a sequential await loop. Above 1, sub-query
+    # passes run under an `asyncio.Semaphore` while the thread budget above is
+    # divided by the same number, so total CPU demand is unchanged and only the
+    # ordering differs.
+    #
+    # Defaulted to 1 because the arithmetic says fan-out alone may be a LOSS, and
+    # the recorded numbers are what say so. A pass scales almost linearly with
+    # threads (69.7s at 8, 36.8s at 16), so a pass already saturates the box and
+    # K concurrent passes at budget/K each cost the same total CPU. The goal pass
+    # is the difference: it must complete before any sub-query starts, so at
+    # fanout 2 with 6 sub-queries the goal runs alone at half threads and the
+    # sub-queries take 3 rounds, against 7 full-speed passes sequentially. Which
+    # way that lands depends on the fixed per-pass cost, which is why
+    # `octopus_ai.bench` measures it rather than this comment asserting it.
+    #
+    # Only sub-queries fan out. The goal pass is the gate that decides whether
+    # sub-queries run at all (see `Retriever.retrieve`), so it cannot be one of
+    # the concurrent passes without destroying the property it exists for.
+    #
+    # On the Cohere path this buys nothing and breaks nothing: `_RateLimiter`
+    # still serialises inside `rerank`.
+    rerank_fanout: int = 1
+
+    # How many (query, document) pairs go through the local cross-encoder in one
+    # forward pass. 0 means one batch over all of them, which is what the pass did
+    # before this setting existed.
+    #
+    # It matters because `padding=True` pads every pair to the LONGEST pair in the
+    # batch, so one 900-token chunk makes all 25 pairs cost 900 tokens. Batching
+    # length-sorted pairs confines that waste to the pairs that are genuinely
+    # long. It does not change scores beyond float noise, because the attention
+    # mask already excludes padding; it changes how much padding is computed.
+    rerank_batch_size: int = 0
 
     # Batch size for embedding calls. The API accepts arrays; sending one request
     # per chunk would be both slower and more expensive in overhead.
@@ -483,6 +536,11 @@ def get_settings() -> Settings:
         rerank_top_n=_int("RERANK_TOP_N", 8),
         rerank_rpm=_int("COHERE_RERANK_RPM", 0),
         torch_num_threads=_int("TORCH_NUM_THREADS", 0),
+        # Floors rather than clamps: a fan-out of 0 deadlocks on the semaphore and
+        # a negative batch size would silently mean "one batch". Both read like
+        # "off" and neither is, so they fail at startup with the variable named.
+        rerank_fanout=_int("RERANK_FANOUT", 1, minimum=1),
+        rerank_batch_size=_int("RERANK_BATCH_SIZE", 0, minimum=0),
         embed_batch_size=_int("EMBED_BATCH_SIZE", 96),
         request_timeout_s=_int("AI_REQUEST_TIMEOUT_S", 60),
     )

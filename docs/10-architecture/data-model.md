@@ -975,11 +975,30 @@ Verified by `supabase/tests/room_sources.sql`, **14 assertions against the live 
 
 The same migration adds `dismissed` to `embed_state`, for a question card somebody walked away from. Not `expired`, which means nobody acted in time, and not `rejected`, which is a verdict on something they were shown.
 
+### An answer on a question card is one statement (`20260910120000_answer_question_slot.sql`)
+
+Two functions and no table. `answer_question_slot(embed, slot, value)` replaces-or-appends one `{key, value, source: 'stated'}` in `payload.slots` and `answer_question_task(embed, task, value)` writes one entry into `payload.taskAnswers`, both with `jsonb_set` inside a single `UPDATE ... where id = $1 and component = 'question' and state = 'pending'`, both returning the new payload or null. The task function additionally requires the task to be one the card named (`payload.taskIds ? task`), so the route cannot be used to record an answer against a step the card never asked about.
+
+**One statement per answer, because answers now arrive one at a time.** They used to arrive as a whole chat message; they arrive from a card whose chips can be clicked in the same second, and a read-modify-write of the whole jsonb from Node would let the second write drop the first with nothing raising. The condition on `state` in the same statement is the verdict path's guard, moved into the function.
+
+Both validate their own input and raise `23514` on a slot outside the playbook's five or an empty answer, on the rule this seam holds everywhere: unknown values raise rather than default, and a guard that lives only in TypeScript is not a guard on the row the planner reads. `security invoker`, executable by `service_role` only; `action_embeds` keeps no client UPDATE policy, so the grant is the whole control and the owner check is the route's.
+
+Verified by `supabase/tests/question_answers.sql`, **12 assertions against the live database**: a stated answer replaces the inference, the same slot twice keeps one entry, a second slot is appended, nothing outside `slots` moves, an unknown slot and an empty answer raise, a closed card returns null, a task answer lands under its id, a task the card never named returns null, an intake card takes no task answer, and `authenticated` cannot execute either function.
+
+### What a workspace knows about its business, as facts (`20260911120000_room_profiles.sql`)
+
+`room_profiles` is one row per room: `icp`, `offer`, `budget_band`, `timeline`, each nullable text of at most 400 characters, plus `updated_at` and `updated_by`. It exists because intake asked for the same four things on every goal and nothing stored them; `documents.owner_room_id` holds what a workspace says about itself as prose for retrieval, and intake deliberately does not retrieve. `target_metric` is absent on purpose, because it belongs to a goal.
+
+**The first owner-only policy in this database.** Every other client policy admits a room's members. A budget band is the one thing a human node admitted to the room has no business seeing, and RLS filters rows rather than columns, so `room_profiles_select_owner` admits `private.is_room_owner(room_id)` and nobody else. The helper is shaped like `private.is_room_member`: security definer so a policy can read `rooms`, executable by `anon` so the function itself never raises. The table has **no client write grant**; `apps/api` writes it as `service_role` after reading the room as the caller and comparing `owner_id`, and the agent run writes it when intake finishes with something the owner stated. The `channel_connections` precedent (no client policy at all, an API projection) was the alternative and was not taken: that precedent exists for a table holding credentials, and a policy that says "owner" in SQL is a control a suite can assert directly.
+
+Verified by `supabase/tests/room_profiles.sql`, **10 assertions against the live database**: the owner reads one row, a member of the room reads zero, an outsider reads zero, `anon` is refused outright (no grant, as on every table here), the owner cannot insert, update or delete as a client, the helper is security definer, the harness itself succeeds as a client so the refusals are real, and deleting the room deletes its profile.
+
 ## ERD overview (domains)
 
 ```
 Identity      users ─1:1─ profiles ─*─ node_profiles ─*─ node_skills/credentials
-Chat          rooms ─*─ channels ─*─ threads ─*─ messages ─*─ reactions
+Chat          rooms ─1:1─ room_profiles (what the business is; owner reads, server writes)
+              rooms ─*─ channels ─*─ threads ─*─ messages ─*─ reactions
               rooms ─*─ room_members (user_id, role)          messages ─*─ action_embeds
 Workflow      projects ─*─ tasks ─*─ task_deps (DAG)   tasks ─*─ task_runs ─*─ agent_steps
               tasks ─*─ artifacts   tasks ─*─ escalations   projects ─*─ playbook_versions

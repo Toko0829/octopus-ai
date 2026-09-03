@@ -1,330 +1,177 @@
 import { describe, expect, it } from 'vitest';
-import { decideIntakeTurn, type PendingIntake } from './intake';
+import type { QuestionEmbedPayload } from '@octopus/contracts';
+import {
+  applyAnswer,
+  dismissableQuestion,
+  profileSlots,
+  remainingRequiredSlots,
+  replanReason,
+} from './intake';
 
 /**
- * The failures here are all silent ones. Reading a fresh goal as an answer buries
- * it inside a stale intake; reading an answer as a goal discards what the person
- * just said and asks again; letting a non-owner answer lets someone else describe
- * a business that is not theirs. None of these throw.
+ * What a question card means, now that answers arrive on the card.
+ *
+ * The old suite pinned `decideIntakeTurn`, which decided whether a chat message
+ * was an answer or a goal. That decision no longer exists: a message is a goal.
+ * What is pinned here is the smaller set of rules the card and the route still
+ * share, and the one rule about a new goal that replaced the escape prefix.
  */
 
-const OWNER = 'owner-1';
-
-function pending(overrides: Partial<PendingIntake['payload']> = {}): PendingIntake {
+function card(over: Partial<QuestionEmbedPayload> = {}): QuestionEmbedPayload {
   return {
-    embedId: 'embed-1',
-    payload: {
-      awaiting: 'answers',
-      goal: 'get me my first 100 customers',
-      questions: [{ slot: 'budget_band', question: 'What can you spend?' }],
-      slots: [{ key: 'icp', value: 'indie makers', source: 'stated' }],
-      round: 0,
-      answers: [],
-      stalls: 0,
-      taskIds: [],
-      ...overrides,
-    },
+    awaiting: 'answers',
+    goal: 'get my first 100 customers',
+    questions: [
+      { slot: 'icp', question: 'Who is it for?' },
+      { slot: 'budget_band', question: 'How much a month?' },
+    ],
+    slots: [],
+    round: 0,
+    answers: [],
+    stalls: 0,
+    taskIds: [],
+    ...over,
   };
 }
 
-describe('decideIntakeTurn', () => {
-  it('treats a message as a goal when no question is open', () => {
-    const turn = decideIntakeTurn({
-      message: 'my CPA is too high',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: null,
-      maxRounds: 2,
-    });
-
-    expect(turn).toEqual({ kind: 'new_goal', goal: 'my CPA is too high', stalls: 0 });
+describe('applyAnswer', () => {
+  it('replaces an inference with what the person said', () => {
+    const before = card({ slots: [{ key: 'icp', value: 'founders', source: 'inferred' }] });
+    const after = applyAnswer(before, 'icp', '  solo founders in the US ');
+    expect(after.slots).toEqual([
+      { key: 'icp', value: 'solo founders in the US', source: 'stated' },
+    ]);
   });
 
-  it('lets a reply replace the goal when the card was waiting for one', () => {
-    // The person said "Hello", so there was no usable goal. Filing "I sell a
-    // budgeting app" as an ANSWER would leave the goal as "Hello" and bury
-    // everything real underneath it.
-    const turn = decideIntakeTurn({
-      message: 'I sell a budgeting app and need users',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: pending({ awaiting: 'goal', goal: '', stalls: 1, answers: [], slots: [] }),
-      maxRounds: 2,
-    });
-
-    expect(turn.kind).toBe('restated_goal');
-    if (turn.kind !== 'restated_goal') return;
-    expect(turn.goal).toBe('I sell a budgeting app and need users');
-    // Carried, so a conversation that never lands cannot circle forever.
-    expect(turn.stalls).toBe(1);
-    expect(turn.embedId).toBe('embed-1');
+  it('replaces an earlier answer of their own too', () => {
+    // A person correcting themselves is the ordinary case, and a card that kept
+    // both would hand the planner two audiences.
+    const before = card({ slots: [{ key: 'icp', value: 'creators', source: 'stated' }] });
+    const after = applyAnswer(before, 'icp', 'agencies');
+    expect(after.slots.filter((s) => s.key === 'icp')).toHaveLength(1);
+    expect(after.slots[0]?.value).toBe('agencies');
   });
 
-  it('does not apply the answer round cap to a card waiting for a goal', () => {
-    // The two caps bound different things: `round` limits interrogating someone
-    // who HAS told us what they want, `stalls` limits asking someone who has not.
-    const turn = decideIntakeTurn({
-      message: 'ok, I want more newsletter subscribers',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: pending({ awaiting: 'goal', goal: '', round: 5, stalls: 1 }),
-      maxRounds: 2,
-    });
-
-    expect(turn.kind).toBe('restated_goal');
-  });
-
-  it('reads a reply to a task question as completing a step, not as a goal', () => {
-    // The plan asked for work only this person can do. Handing their budget
-    // figure to intake would file it as context for a plan that already exists,
-    // and the step it answers would stay waiting forever.
-    const turn = decideIntakeTurn({
-      message: '2000 dollars a month, and CPA under 40',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: pending({ awaiting: 'task_answers', goal: '', taskIds: ['task-1', 'task-2'] }),
-      maxRounds: 2,
-    });
-
-    expect(turn.kind).toBe('task_answer');
-    if (turn.kind !== 'task_answer') return;
-    expect(turn.answer).toBe('2000 dollars a month, and CPA under 40');
-    expect(turn.taskIds).toEqual(['task-1', 'task-2']);
-    expect(turn.embedId).toBe('embed-1');
-  });
-
-  it('does not let a non-owner answer a task question either', () => {
-    // A human node must not be able to state this person's budget or make their
-    // positioning call, and that is a stronger rule here than for intake: this
-    // answer becomes a deliverable and completes a step.
-    const turn = decideIntakeTurn({
-      message: 'their budget is about 5000',
-      authorId: 'node-9',
-      roomOwnerId: OWNER,
-      pending: pending({ awaiting: 'task_answers', taskIds: ['task-1'] }),
-      maxRounds: 2,
-    });
-
-    expect(turn.kind).toBe('new_goal');
-  });
-
-  it('does not apply the intake round cap to a task question', () => {
-    // The cap exists to stop intake interrogating someone. A step the plan
-    // raised is not an interrogation, and it must stay answerable however many
-    // intake rounds happened earlier.
-    const turn = decideIntakeTurn({
-      message: 'use GA4 as the source of truth',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: pending({ awaiting: 'task_answers', round: 9, taskIds: ['task-1'] }),
-      maxRounds: 2,
-    });
-
-    expect(turn.kind).toBe('task_answer');
-  });
-
-  it('treats the owner reply to an open question as an answer, not a new goal', () => {
-    const turn = decideIntakeTurn({
-      message: 'about 300 dollars a month',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: pending(),
-      maxRounds: 2,
-    });
-
-    expect(turn.kind).toBe('answer');
-    if (turn.kind !== 'answer') return;
-    // The ORIGINAL goal survives. Planning from "about 300 dollars a month"
-    // would be planning from the answer and losing the question.
-    expect(turn.goal).toBe('get me my first 100 customers');
-    expect(turn.answers).toEqual(['about 300 dollars a month']);
-    expect(turn.round).toBe(1);
-    expect(turn.embedId).toBe('embed-1');
-  });
-
-  it('keeps earlier answers rather than replacing them', () => {
-    const turn = decideIntakeTurn({
-      message: 'by the end of the quarter',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: pending({ round: 1, answers: ['about 300 dollars a month'] }),
-      maxRounds: 3,
-    });
-
-    if (turn.kind !== 'answer') throw new Error('expected an answer');
-    // The AI service is stateless, so anything dropped here is gone: a slot
-    // filled in round one is only re-derivable from the words that filled it.
-    expect(turn.answers).toEqual(['about 300 dollars a month', 'by the end of the quarter']);
-  });
-
-  it('carries prior slots forward untouched', () => {
-    const turn = decideIntakeTurn({
-      message: '300 a month',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: pending(),
-      maxRounds: 2,
-    });
-
-    if (turn.kind !== 'answer') throw new Error('expected an answer');
-    expect(turn.slots).toEqual([{ key: 'icp', value: 'indie makers', source: 'stated' }]);
-  });
-
-  it('refuses to let a non-owner answer an open question', () => {
-    // A human node in the room must not be able to state this person's budget,
-    // customers, or timeline. The embed's required_role cannot enforce it: an
-    // answer is a chat message and never reaches the action route.
-    const turn = decideIntakeTurn({
-      message: 'their budget is about 5000',
-      authorId: 'node-9',
-      roomOwnerId: OWNER,
-      pending: pending(),
-      maxRounds: 2,
-    });
-
-    expect(turn.kind).toBe('new_goal');
-  });
-
-  it('treats an unowned room as having nobody who can answer', () => {
-    // Same safe default rooms.owner_id already takes for approvals: null means
-    // nobody, never anybody.
-    const turn = decideIntakeTurn({
-      message: 'about 300 a month',
-      authorId: OWNER,
-      roomOwnerId: null,
-      pending: pending(),
-      maxRounds: 2,
-    });
-
-    expect(turn.kind).toBe('new_goal');
-  });
-
-  it('stops treating messages as answers once the round cap is reached', () => {
-    // Enforced on this side as well as in the AI service. A card written before
-    // the cap was lowered must not be able to hold someone in an interrogation.
-    const turn = decideIntakeTurn({
-      message: 'and my timeline is three months',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: pending({ round: 2 }),
-      maxRounds: 2,
-    });
-
-    expect(turn.kind).toBe('new_goal');
-  });
-
-  it('trims the incoming message', () => {
-    const turn = decideIntakeTurn({
-      message: '   my CPA is too high  ',
-      authorId: OWNER,
-      roomOwnerId: OWNER,
-      pending: null,
-      maxRounds: 2,
-    });
-
-    expect(turn).toEqual({ kind: 'new_goal', goal: 'my CPA is too high', stalls: 0 });
+  it('leaves the other slots and everything else alone', () => {
+    const before = card({ slots: [{ key: 'offer', value: 'a course', source: 'stated' }] });
+    const after = applyAnswer(before, 'budget_band', '500_2k');
+    expect(after.slots.map((s) => s.key)).toEqual(['offer', 'budget_band']);
+    expect(after.goal).toBe(before.goal);
+    expect(after.questions).toBe(before.questions);
   });
 });
 
-describe('starting something new while a card is open', () => {
-  const pendingAnswers = {
-    embedId: 'embed-1',
-    payload: {
-      goal: 'get my first 100 customers',
-      round: 1,
-      stalls: 0,
-      answers: [],
-      slots: [],
-      questions: [],
-      taskIds: [],
-      awaiting: 'answers' as const,
-    },
-  };
+describe('remainingRequiredSlots', () => {
+  it('counts only what the card asked about', () => {
+    // Intake asks for what it does not know. A card with two questions is done
+    // when those two are answered, even though four slots are required.
+    expect(remainingRequiredSlots(card())).toEqual(['icp', 'budget_band']);
+  });
 
-  const pendingTasks = {
-    embedId: 'embed-2',
-    payload: {
-      goal: '',
-      round: 0,
-      stalls: 0,
-      answers: [],
-      slots: [],
-      questions: [],
-      taskIds: ['task-1', 'task-2'],
-      awaiting: 'task_answers' as const,
-    },
-  };
+  it('shrinks as answers land, whatever their source', () => {
+    const half = card({ slots: [{ key: 'icp', value: 'founders', source: 'inferred' }] });
+    expect(remainingRequiredSlots(half)).toEqual(['budget_band']);
+    expect(remainingRequiredSlots(applyAnswer(half, 'budget_band', 'over_10k'))).toEqual([]);
+  });
 
-  function turn(message: string, pending: unknown = pendingAnswers) {
-    return decideIntakeTurn({
-      message,
-      authorId: 'owner-1',
-      roomOwnerId: 'owner-1',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      pending: pending as any,
-      maxRounds: 2,
+  it('never requires a timeline', () => {
+    // Collected when offered and never blocking, which is the rule intake.py
+    // holds; a card must not hold somebody for a slot the service would not.
+    const asked = card({ questions: [{ slot: 'timeline', question: 'By when?' }] });
+    expect(remainingRequiredSlots(asked)).toEqual([]);
+  });
+
+  it('is in the required order, not the order asked', () => {
+    const reversed = card({
+      questions: [
+        { slot: 'budget_band', question: 'How much?' },
+        { slot: 'offer', question: 'What do you sell?' },
+      ],
     });
-  }
+    expect(remainingRequiredSlots(reversed)).toEqual(['offer', 'budget_band']);
+  });
+});
 
-  it('overrides an open question card, and names the card to close', () => {
-    // The failure this exists for: four steps were waiting on decisions, the
-    // person typed a brand new request, and it was filed as the answer to all
-    // four. Nothing raised, and what they asked for was gone.
-    const result = turn('new goal: promote bluelly.com to US students');
-    expect(result.kind).toBe('new_goal');
-    if (result.kind !== 'new_goal') throw new Error('expected new_goal');
-    expect(result.goal).toBe('promote bluelly.com to US students');
-    expect(result.dismissedEmbedId).toBe('embed-1');
+describe('dismissableQuestion', () => {
+  it('closes an intake card when the owner moves on', () => {
+    expect(dismissableQuestion(card())).toBe(true);
   });
 
-  it('overrides a card waiting on task answers too', () => {
-    const result = turn('new goal: something else entirely', pendingTasks);
-    expect(result.kind).toBe('new_goal');
+  it('closes a leftover card that was waiting for a goal', () => {
+    // Nothing can answer one now: the chat path that fed it is gone.
+    expect(dismissableQuestion(card({ awaiting: 'goal', goal: '', questions: [] }))).toBe(true);
   });
 
-  it('accepts the short form', () => {
-    const result = turn('new: promote bluelly.com');
-    expect(result.kind).toBe('new_goal');
-    if (result.kind !== 'new_goal') throw new Error('expected new_goal');
-    expect(result.goal).toBe('promote bluelly.com');
+  it('keeps a task-answers card open', () => {
+    // It belongs to a plan that is still running, and the steps it names still
+    // need the person whatever they type next.
+    expect(
+      dismissableQuestion(
+        card({
+          awaiting: 'task_answers',
+          goal: '',
+          questions: [],
+          taskIds: ['11111111-1111-4111-8111-111111111111'],
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('replanReason', () => {
+  it('names only what the person stated, in the chip vocabulary', () => {
+    const reason = replanReason([
+      { key: 'icp', value: 'solo founders', source: 'stated' },
+      { key: 'offer', value: 'a course', source: 'inferred' },
+      { key: 'budget_band', value: '500_2k', source: 'stated' },
+    ]);
+    expect(reason).toContain('the audience is solo founders');
+    expect(reason).toContain('the budget is $500 to $2,000 a month');
+    // A model's inference is not something the owner added.
+    expect(reason).not.toContain('a course');
   });
 
-  it('is case insensitive, because people type how they type', () => {
-    expect(turn('New Goal: promote bluelly.com').kind).toBe('new_goal');
+  it('says so when nothing was stated, rather than sending an empty reason', () => {
+    expect(replanReason([{ key: 'offer', value: 'x', source: 'inferred' }])).toContain(
+      'nothing new',
+    );
   });
 
-  it('does not fire on a message that merely starts with the word new', () => {
-    // No content heuristic decides this. "new customers from paid social" is an
-    // answer, and reading it as an escape would discard what was asked for.
-    const result = turn('new customers from paid social would be ideal');
-    expect(result.kind).toBe('answer');
+  it('never uses an em dash and stays inside the replan body limit', () => {
+    const long = replanReason([
+      { key: 'icp', value: 'x'.repeat(400), source: 'stated' },
+      { key: 'offer', value: 'y'.repeat(400), source: 'stated' },
+      { key: 'target_metric', value: 'z'.repeat(400), source: 'stated' },
+    ]);
+    expect(long).not.toContain('—');
+    expect(long.length).toBeLessThanOrEqual(1000);
+  });
+});
+
+describe('profileSlots', () => {
+  it('turns stored facts into stated slots and skips what is empty', () => {
+    expect(
+      profileSlots({
+        icp: ' solo founders ',
+        offer: null,
+        budget_band: '',
+        timeline: 'this_quarter',
+      }),
+    ).toEqual([
+      { key: 'icp', value: 'solo founders', source: 'stated' },
+      { key: 'timeline', value: 'this_quarter', source: 'stated' },
+    ]);
   });
 
-  it('ignores an empty escape rather than planning for nothing', () => {
-    // "new goal:" alone is somebody who has not said what they want yet.
-    const result = turn('new goal:');
-    expect(result.kind).toBe('answer');
+  it('yields nothing for a workspace with no profile', () => {
+    expect(profileSlots(null)).toEqual([]);
+    expect(profileSlots(undefined)).toEqual([]);
   });
 
-  it('is the owner only, like every other write to the room state', () => {
-    const result = decideIntakeTurn({
-      message: 'new goal: something else',
-      authorId: 'node-7',
-      roomOwnerId: 'owner-1',
-      pending: pendingAnswers,
-      maxRounds: 2,
-    });
-    // A human node in the room gets the non-owner path, which never touches the
-    // card. They cannot dismiss a question that was asked of somebody else.
-    expect(result.kind).toBe('new_goal');
-    if (result.kind !== 'new_goal') throw new Error('expected new_goal');
-    expect(result.dismissedEmbedId).toBeUndefined();
-  });
-
-  it('leaves an ordinary answer alone', () => {
-    const result = turn('students in the USA, budget 2000 a month');
-    expect(result.kind).toBe('answer');
-    if (result.kind !== 'answer') throw new Error('expected answer');
-    expect(result.goal).toBe('get my first 100 customers');
+  it('never produces a target metric, which belongs to a goal', () => {
+    const keys = profileSlots({ icp: 'a', offer: 'b', budget_band: 'c', timeline: 'd' }).map(
+      (s) => s.key,
+    );
+    expect(keys).not.toContain('target_metric');
   });
 });

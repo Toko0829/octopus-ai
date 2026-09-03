@@ -188,6 +188,48 @@ export const IntakeSlot = z.object({
 });
 export type IntakeSlot = z.infer<typeof IntakeSlot>;
 
+/**
+ * The two slots a person answers by choosing rather than by typing.
+ *
+ * Defined once, here, so the card that offers the chips and the route that
+ * accepts a click agree on the vocabulary by construction. A budget band is
+ * deliberately a band and not a number: `ai-orchestrator.md` never parses it
+ * into a spend figure, so the value is a label the planner reads and nothing
+ * downstream computes with. The label map is the copy; the enum is the key
+ * that gets stored.
+ */
+export const BudgetBand = z.enum(['under_500', '500_2k', '2k_10k', 'over_10k']);
+export type BudgetBand = z.infer<typeof BudgetBand>;
+export const BUDGET_BAND_LABELS: Record<BudgetBand, string> = {
+  under_500: 'Under $500 a month',
+  '500_2k': '$500 to $2,000 a month',
+  '2k_10k': '$2,000 to $10,000 a month',
+  over_10k: 'Over $10,000 a month',
+};
+
+export const Timeline = z.enum(['this_month', 'this_quarter', 'this_year']);
+export type Timeline = z.infer<typeof Timeline>;
+export const TIMELINE_LABELS: Record<Timeline, string> = {
+  this_month: 'This month',
+  this_quarter: 'This quarter',
+  this_year: 'This year',
+};
+
+/**
+ * The slots a whole-funnel request needs before the plan stops being thin.
+ *
+ * Mirrors `BROAD_REQUIRED_SLOTS` in `intake.py`. `timeline` is a slot and is
+ * never required: it is collected when offered and never blocks. Held here so
+ * the card can say which questions still matter without asking the AI service,
+ * and so the route can decide when a card is complete without a model call.
+ */
+export const REQUIRED_INTAKE_SLOTS: readonly IntakeSlotKey[] = [
+  'icp',
+  'offer',
+  'target_metric',
+  'budget_band',
+];
+
 /** The `payload` of an `action_embeds` row whose component is `plan`. */
 export const PlanEmbedPayload = z.object({
   /**
@@ -228,8 +270,61 @@ export const PlanEmbedPayload = z.object({
    * this do not have it, and absent must keep working rather than raising.
    */
   context: z.array(IntakeSlot).optional(),
+  /**
+   * The agent run that produced this plan. A question card written by the same
+   * run carries the same id, which is how finishing the card finds the plan it
+   * refines. Absent on cards written before planning started beside the card.
+   */
+  runId: z.string().optional(),
+  /**
+   * The plan card this one replaces, when the person answered the questions
+   * before approving. The old card is moved to `expired`, and the client uses
+   * this to mark it on screen without a second fetch.
+   */
+  supersedes: z.string().uuid().optional(),
 });
 export type PlanEmbedPayload = z.infer<typeof PlanEmbedPayload>;
+
+/* ------------------------------------------------------------ room profile */
+
+/**
+ * What a workspace knows about its own business, as facts rather than as
+ * documents.
+ *
+ * Intake asks for the audience, the offer and the budget band on every goal
+ * because nothing stored them, and what somebody sells is not in the corpus.
+ * These four are facts about the business rather than about a goal, so they
+ * live on the room: intake seeds its first round from them and the second goal
+ * in a room asks nothing. `target_metric` is deliberately absent, because it
+ * belongs to a goal.
+ *
+ * Read by the owner only. A budget band is the one thing here a human node in
+ * the room has no business seeing, and RLS filters rows, not columns.
+ */
+export const RoomProfile = z.object({
+  roomId: z.string().uuid(),
+  icp: z.string().nullable(),
+  offer: z.string().nullable(),
+  budgetBand: BudgetBand.nullable(),
+  timeline: Timeline.nullable(),
+  updatedAt: z.string().nullable(),
+});
+export type RoomProfile = z.infer<typeof RoomProfile>;
+
+/**
+ * Only the keys present are written, so a field the owner typed on the panel
+ * survives an intake that established a different one. `null` clears a field;
+ * an absent key leaves it alone.
+ */
+export const PutRoomProfileBody = z
+  .object({
+    icp: z.string().trim().min(1).max(400).nullable().optional(),
+    offer: z.string().trim().min(1).max(400).nullable().optional(),
+    budgetBand: BudgetBand.nullable().optional(),
+    timeline: Timeline.nullable().optional(),
+  })
+  .strict();
+export type PutRoomProfileBody = z.infer<typeof PutRoomProfileBody>;
 
 /* --------------------------------------------------------- replan embeds */
 
@@ -339,19 +434,26 @@ export type IntakeQuestion = z.infer<typeof IntakeQuestion>;
  * room, and already visible to the person is a better place for it than a new
  * table nothing else would use. It also means the state and the questions it
  * produced can never disagree, because they are one row.
+ *
+ * **Answered on the card, not in the composer.** Each slot is answered by its own
+ * action on the embed route, one chip or one short field at a time, and the
+ * answer is written into `slots` by `answer_question_slot` under the row's own
+ * state check. A chat message is never an answer: every message the owner writes
+ * is a goal again, which is what removed the two-hour window during which a card
+ * used to claim the room.
  */
 export const QuestionEmbedPayload = z.object({
   /**
-   * What this card is waiting for, and it changes what the next message MEANS.
+   * What this card is collecting.
    *
-   * `answers` is the ordinary case: the goal is known and we are filling slots, so
-   * the reply is appended to `answers`.
+   * `answers` is the ordinary case: the goal is known and the slots are being
+   * filled. `task_answers` is the plan asking about work only this person can do,
+   * one answer per task.
    *
-   * `goal` is the case where there is no usable goal yet, because the person said
-   * hello or asked about something this system cannot ground. Their next message
-   * **replaces** the goal rather than being filed as an answer to it. Without this
-   * distinction a conversation opening with "Hello" would plan for the goal
-   * "Hello" forever, with everything real buried in `answers`.
+   * `goal` is kept so rows written before answers moved onto the card still
+   * parse: a greeting or an out-of-domain request used to open a card waiting for
+   * the next message. Nothing writes it any more, and a client renders it as a
+   * closed conversation opener rather than as something to answer.
    */
   awaiting: z.enum(['goal', 'answers', 'task_answers']),
   /** The goal so far. Empty while `awaiting` is `goal`. */
@@ -363,22 +465,21 @@ export const QuestionEmbedPayload = z.object({
    * label on the answer when it comes back.
    */
   questions: z.array(IntakeQuestion).max(4),
-  /** What rounds so far established. Handed straight back to `/intake`. */
+  /** What rounds so far established, and what the card's answers have added. */
   slots: z.array(IntakeSlot),
   /** Rounds already completed, so the cap is enforceable across requests. */
   round: z.number().int().min(0).max(10),
-  /** Everything the person has said since the goal, oldest first. */
-  answers: z.array(z.string()),
   /**
-   * Consecutive turns that produced no usable goal.
-   *
-   * Bounded separately from `round` because the two measure different things.
-   * `round` limits how much we interrogate someone who HAS told us what they
-   * want. This limits how long we keep asking someone who has not. Following the
-   * thread is right; following it forever is a system that will not take no for
-   * an answer, so it stops and says so.
+   * Everything the person said in the composer while cards were answered that
+   * way, oldest first. Nothing appends to it now; kept so old rows parse.
    */
-  stalls: z.number().int().min(0).max(10),
+  answers: z.array(z.string()).default([]),
+  /**
+   * Deprecated. Counted consecutive turns with no usable goal while a card could
+   * hold the room; a card no longer can, so nothing reads or writes this. Kept
+   * with a default so rows written before still parse.
+   */
+  stalls: z.number().int().min(0).max(10).default(0),
   /**
    * The tasks this card is collecting answers for, when `awaiting` is
    * `task_answers`.
@@ -390,6 +491,23 @@ export const QuestionEmbedPayload = z.object({
    * for a future plan, it is the deliverable for a step that already exists.
    */
   taskIds: z.array(z.string().uuid()).default([]),
+  /**
+   * The same tasks with their titles, so the card can label one field per step
+   * without a second fetch. `taskIds` stays for rows written before this field
+   * existed; a card carrying `tasks` is what makes a task answerable on it.
+   */
+  tasks: z.array(z.object({ id: z.string().uuid(), title: z.string() })).optional(),
+  /**
+   * What has been answered per task, keyed by task id. Written by
+   * `answer_question_task` as each answer lands, so a card re-read after a
+   * reload shows which steps are already done.
+   */
+  taskAnswers: z.record(z.string().uuid(), z.string()).optional(),
+  /**
+   * The agent run that asked. The plan produced by that same run carries the
+   * same id, which is how finishing the card finds the plan it refines.
+   */
+  runId: z.string().optional(),
 });
 export type QuestionEmbedPayload = z.infer<typeof QuestionEmbedPayload>;
 
@@ -484,7 +602,7 @@ export type EmbedState = z.infer<typeof EmbedState>;
  * useful part of a rejection is why, and that note is the labelled signal the
  * flywheel is built from (learning-flywheel.md, mechanism 2).
  */
-export const EmbedActionBody = z.object({
+export const EmbedVerdictBody = z.object({
   action: z.enum(['approve', 'request_changes']),
   note: z.string().trim().max(2000).optional(),
   /**
@@ -499,11 +617,60 @@ export const EmbedActionBody = z.object({
    */
   budgetCap: z.number().finite().nonnegative().optional(),
 });
+export type EmbedVerdictBody = z.infer<typeof EmbedVerdictBody>;
+
+/**
+ * One answer on a question card: a slot, or a task, never both.
+ *
+ * The value length matches `IntakeSlot.value`, because that is where a slot
+ * answer is stored. A task answer is the step's deliverable and is stored as an
+ * artifact, which allows far more, but a field on a card is not where anybody
+ * writes a page, and one limit is easier to reason about than two.
+ */
+export const EmbedAnswerBody = z
+  .object({
+    action: z.literal('answer'),
+    slot: IntakeSlotKey.optional(),
+    taskId: z.string().uuid().optional(),
+    value: z.string().trim().min(1).max(400),
+  })
+  .refine((b) => (b.slot === undefined) !== (b.taskId === undefined), {
+    message: 'An answer names a slot or a task, never both and never neither.',
+  });
+export type EmbedAnswerBody = z.infer<typeof EmbedAnswerBody>;
+
+/** Close a question card with whatever has been answered. */
+export const EmbedFinishBody = z.object({ action: z.literal('finish') });
+export type EmbedFinishBody = z.infer<typeof EmbedFinishBody>;
+
+/**
+ * Everything the embed action route accepts. A union rather than one object with
+ * every field optional, so a verdict cannot arrive carrying a slot and an answer
+ * cannot arrive carrying a budget: the route refuses shapes it was not written
+ * for instead of ignoring the parts it does not read.
+ */
+export const EmbedActionBody = z.union([EmbedVerdictBody, EmbedAnswerBody, EmbedFinishBody]);
 export type EmbedActionBody = z.infer<typeof EmbedActionBody>;
 
 export const EmbedActionResponse = z.object({
   id: z.string().uuid(),
   state: EmbedState,
+  /**
+   * The card's payload as the action left it, when the action changed it.
+   *
+   * A verdict on a campaign writes the owner's cap into the payload, and an
+   * answer on a question card writes the slot. Neither reached the client
+   * before this field: Realtime broadcasts `messages` inserts only, so the card
+   * on screen kept rendering the payload it was first fetched with. Present
+   * only when something changed, so a client can patch in place.
+   */
+  payload: z.unknown().optional(),
+  /**
+   * The required slots a question card is still missing after this answer, so
+   * the card can say what is left without asking the AI service. Only on an
+   * `answer` to a slot question.
+   */
+  remaining: z.array(IntakeSlotKey).optional(),
   /**
    * The project an approval created, when it created one.
    *

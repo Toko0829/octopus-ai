@@ -121,4 +121,13 @@ describe('waitingMessage', () => {
     const message = waitingMessage(summariseWaiting(report([result('t1', 'needs_user')])), titles);
     expect(message).toContain('one step needs you');
   });
+
+  it('points at the card rather than advertising a chat escape that no longer exists', () => {
+    // Answers used to be chat messages, and the copy taught a "new goal:" prefix
+    // for typing something else while a card was open. Every message is a goal
+    // now, so the prefix would be a lie about how the room works.
+    const message = waitingMessage(summariseWaiting(report([result('t1', 'needs_user')])), titles);
+    expect(message).not.toContain('new goal');
+    expect(message).toContain('card');
+  });
 });

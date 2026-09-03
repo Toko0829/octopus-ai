@@ -122,6 +122,25 @@ export function mergeMessages(current: UiMessage[], incoming: UiMessage[]): UiMe
     const existing = byId.get(m.id);
     byId.set(m.id, existing?.embed && !m.embed ? { ...m, embed: existing.embed } : m);
   }
+
+  // A plan that replaces another names it, and the old card was moved to
+  // `expired` server-side. Nothing broadcasts that change, so the old card on
+  // screen would keep offering its buttons until a reload; the reference on the
+  // new card is what lets it be marked here, on every path a card arrives by.
+  const superseded = new Set<string>();
+  for (const m of byId.values()) {
+    if (m.embed?.component === 'plan' && m.embed.payload.supersedes) {
+      superseded.add(m.embed.payload.supersedes);
+    }
+  }
+  if (superseded.size > 0) {
+    for (const [id, m] of byId) {
+      if (m.embed && superseded.has(m.embed.id) && m.embed.state === 'pending') {
+        byId.set(id, { ...m, embed: { ...m.embed, state: 'expired' } });
+      }
+    }
+  }
+
   return [...byId.values()].sort((a, b) => {
     // Unconfirmed sends have no seq and belong at the end, in arrival order.
     if (a.seq === null && b.seq === null) return 0;

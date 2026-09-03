@@ -199,14 +199,24 @@ apps' tsconfigs extend it and its absence fails as `TS5083` during `next build`.
 
 Weights are baked rather than fetched on boot because a cold start otherwise takes minutes and needs the network healthy at the worst moment, and because it would undo [ADR-0008](../40-adr/0008-local-bge-m3-embeddings.md)'s startup warm-up: a missing or corrupt model is supposed to fail at boot with a named error, not on someone's first question.
 
+**Both models are warmed at startup now, not just the embedder.** The reranker was lazy, so the first plan on every fresh container paid its load inside the request: measured on this machine, a cold first rerank is **18.4s** against roughly 2s warm, on top of a pass that is already the dominant cost of a planning turn. That is the defect ADR-0008 fixed for the embedder, surviving in the other model. The warm-up is a real forward pass rather than a bare load, because the first pass initialises kernels that loading does not touch. The cost is that peak RSS is reached BEFORE the container serves rather than on the first goal, so an instance below the floor now fails while warming instead of mid-request; the 180s healthcheck `start-period` already covers the extra boot time, and `DEVELOPMENT.md` says so for the local stack.
+
 **Measured on the built image, not estimated:**
 
-|                                |                                             |
-| ------------------------------ | ------------------------------------------- |
-| Image layers                   | **6.44 GB** (4.59 GB weights, 1.71 GB venv) |
-| Peak RSS, both models resident | **5.15 GB** (embedder 4.22, reranker +0.93) |
-| Cold start to `/health`        | ~17s, embedder warmed                       |
-| Reranker first load            | ~22s, lazy on first use                     |
+|                               |                                              |
+| ----------------------------- | -------------------------------------------- |
+| Image layers                  | **6.44 GB** (4.59 GB weights, 1.71 GB venv)  |
+| RSS at rest, both models warm | **4.0 GiB**, before it serves anything       |
+| Peak RSS, planning turn       | **5.9 GiB** at `RERANK_FANOUT=2` (5.3 at 1)  |
+| Cold start to `/health`       | **37s**, both models warmed first            |
+| Reranker first load           | 18.4s cold against ~2s warm, paid at startup |
+
+**The fan-out moved the peak, and that is the one cost of it.** Two concurrent
+rerank passes hold two passes' activations, so a planning turn peaks at 5.9 GiB
+against 5.3 at `RERANK_FANOUT=1`. The weights are unchanged and dominate; what
+grew is the part that scales with concurrency. It stays inside the floor below,
+and it is the reason to lower the fan-out rather than the thread count on a small
+instance.
 
 So the deployment floor is an **8 GB instance**, and that answers the sizing question [roadmap.md](../10-architecture/roadmap.md) defers to Phase 2. One uvicorn worker, deliberately: each worker holds its own copy of both models, so a second doubles memory to buy concurrency on a service whose bottleneck is per-request CPU. Scale with instances.
 
@@ -214,7 +224,7 @@ So the deployment floor is an **8 GB instance**, and that answers the sizing que
 
 Two things the build gets right only because running it proved them wrong first. **Model paths are stable symlinks (`/opt/models/embed`) set as plain `ENV`**, not resolved into a shell wrapper: the first version put them in the CMD's shell only, so `docker run <image> python -m octopus_ai.evaluation --shard ...` — exactly how a CI shard would invoke it — saw an empty path and failed with a repo-id error. That is now a smoke test in the workflow rather than a thing to remember. And the container takes **secrets from the environment but never model location**; passing a developer's `services/ai/.env` straight in drags a host-specific `EMBED_LOCAL_PATH` along with it and breaks the image's own layout.
 
-**The container is given a thread budget, because torch's default gave it half the box.** `torch.set_num_threads` defaults to the **physical** core count while a container is scheduled on the **logical** one, so in-process embedding and reranking ran on 8 threads of a 16-thread host on a number nobody had chosen. Reranking is the dominant cost in a planning turn and it is pure CPU, so the halving was paid directly by whoever was waiting. Isolated in-container, one rerank pass over 25 candidates: **69.7s at the default 8, 36.8s at 16**; end to end on a six-sub-query goal, **498s before and 267s after**. `TORCH_NUM_THREADS: '16'` on the `ai` service carries it, and the setting defaults to `0` meaning "leave torch alone" so nothing changes for a deployment that does not own its box. A fixed number rather than a share of the host, because compose cannot express "all of them" and guessing high makes it slower rather than merely unbalanced: past saturation the threads contend. **Lower it on a smaller box**, and lower it again if the sub-query fan-out is ever parallelised, since concurrent passes would have to divide this budget rather than each claim it.
+**The container is given a thread budget, because torch's default gave it half the box.** `torch.set_num_threads` defaults to the **physical** core count while a container is scheduled on the **logical** one, so in-process embedding and reranking ran on 8 threads of a 16-thread host on a number nobody had chosen. Reranking is the dominant cost in a planning turn and it is pure CPU, so the halving was paid directly by whoever was waiting. Isolated in-container, one rerank pass over 25 candidates: **69.7s at the default 8, 36.8s at 16**; end to end on a six-sub-query goal, **498s before and 267s after**. `TORCH_NUM_THREADS: '16'` on the `ai` service carries it, and the setting defaults to `0` meaning "leave torch alone" so nothing changes for a deployment that does not own its box. A fixed number rather than a share of the host, because compose cannot express "all of them" and guessing high makes it slower rather than merely unbalanced: past saturation the threads contend. **Lower it on a smaller box.** `RERANK_FANOUT` divides it per concurrent pass rather than multiplying demand for it, so leave `TORCH_NUM_THREADS` at the box and set the fan-out from `python -m octopus_ai.bench`; the two settings compose rather than competing, and the measured rows live in [ai-orchestrator.md](ai-orchestrator.md).
 
 The `ai-image` CI job builds it on any PR touching `services/ai/`, and publishes to **GHCR** from `main` as `:${{ github.sha }}` and `:latest`. Layer cache lives in the registry rather than the Actions cache, because the weights layer alone is 4.6 GB against a 10 GB per-repository cache limit that the uv and HF caches already share.
 

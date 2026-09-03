@@ -62,9 +62,10 @@ Rich cards embedded in the stream, **permission-gated by role**:
 | **Pay / release escrow** | Release funds to node                                    | Owner                  |
 | **Sign**                 | Route a document to the owner/node to sign               | Owner / node           |
 | **Assign / Offer**       | Send/accept a node offer (scope, escrow price, deadline) | Node (accept) / system |
-| **Question**             | Answer a batched user-only question                      | Owner                  |
+| **Question**             | Answer on the card: one chip or short field per question | Owner                  |
 
-- Embeds carry state (`pending`/`done`/`expired`), show **money in tabular numerics**, and enforce `required_role` server-side (not just in UI).
+- Embeds carry state (`pending`, then `approved`/`rejected` for a verdict, `answered` for a question, `reported` for a deliverable, `dismissed` or `expired` when nobody did), show **money in tabular numerics**, and enforce `required_role` server-side (not just in UI).
+- A **Question** is never answered in the composer. A chat message is always a goal; each answer is its own embed action, saved as it lands, and the card closes itself when what it needs is there or when the owner says to plan with what they have said.
 - A node **cannot** see or act on owner-only embeds; RLS + the embed's `required_role` both enforce this.
 
 ## Threads & topics

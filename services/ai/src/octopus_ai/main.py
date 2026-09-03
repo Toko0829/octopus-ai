@@ -182,6 +182,20 @@ async def lifespan(_: FastAPI):
         logger.info("warming local embedder", extra={"model": settings.active_embed_model})
         await state.providers.embed(["warmup"])
 
+    # And the reranker, which was lazy and therefore paid its ~22s load inside the
+    # first plan on every fresh container, on top of a pass that is already the
+    # dominant cost of the turn. Same argument as the embedder above, in the model
+    # ADR-0008 did not cover. It is a real forward pass rather than a bare load,
+    # because the first pass initialises kernels that loading does not.
+    #
+    # The cost is stated rather than discovered: the container now reaches its
+    # ~5.3 GiB peak BEFORE it serves instead of on the first goal, so a Docker VM
+    # too small for this fails at boot rather than mid-request. That is the better
+    # failure, and DEVELOPMENT.md says so.
+    if settings.rerank_provider == "local":
+        logger.info("warming local reranker", extra={"model": settings.active_rerank_model})
+        await state.providers.warm_reranker()
+
     # A disabled safety gate must be loud, not merely absent from the logs. The
     # symptom of it being off is the agent confidently answering questions its
     # corpus does not cover, which looks like working software.
@@ -200,6 +214,12 @@ async def lifespan(_: FastAPI):
             "groundedness_check": settings.groundedness_check,
             "groundedness_model": settings.active_groundedness_model,
             "ungrounded_fallback": settings.ungrounded_fallback,
+            # The two settings that decide how long a planning turn takes, on the
+            # line that says the service is up, so a slow deployment can be
+            # diagnosed from its own startup log rather than from someone's
+            # recollection of what compose sets.
+            "rerank_fanout": settings.rerank_fanout,
+            "torch_num_threads": settings.torch_num_threads,
         },
     )
     try:
@@ -317,6 +337,7 @@ async def plan(request: PlanRequest) -> PlanResponse:
             subqueries=subqueries,
             room_id=request.room_id,
             project_id=request.trace.project_id,
+            agent_run_id=request.trace.agent_run_id,
         )
     except Exception:
         # A retrieval failure must not become an ungrounded answer. Refusing is

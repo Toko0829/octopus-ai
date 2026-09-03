@@ -15,7 +15,7 @@ done is dropped rather than repaired, because there is no smaller version of
 import pytest
 from pydantic import ValidationError
 
-from octopus_ai.replan import _MUTABLE_STATES, build_steps_block, sanitise_ops
+from octopus_ai.replan import _MUTABLE_STATES, _with_project, build_steps_block, sanitise_ops
 from octopus_ai.schemas import (
     AddStepOp,
     CancelTaskOp,
@@ -347,3 +347,32 @@ def test_the_steps_block_shows_existing_edges():
     than proposing it and having the sanitiser silently undo the work."""
     block = build_steps_block(_tasks())
     assert f"waits on {TASK_A}" in block
+
+
+# ------------------------------------------------------------------ step ids
+
+
+def test_an_added_step_with_a_long_id_is_shortened_and_its_dependant_follows():
+    """Same repair as parse_plan, at the point the diff is read off the wire."""
+    import json
+
+    long = "launch-a-retargeting-campaign-for-students"
+    # Dicts rather than `_add`, which builds an AddStepOp and would refuse the id
+    # before the wire path under test ever saw it.
+    step = _add().model_dump()
+    raw = json.dumps(
+        {
+            "summary": "Add retargeting.",
+            "ops": [
+                {**step, "op": "add_step", "id": long},
+                {**step, "op": "add_step", "id": "measure", "depends_on": [long]},
+                {"op": "cancel_task", "task_id": TASK_A, "reason": "No longer needed."},
+            ],
+        }
+    )
+    parsed = ProposeReplanProposal.model_validate_json(_with_project(raw, "p"))
+
+    added = [op for op in parsed.ops if op.op == "add_step"]
+    assert added[0].id == long[:32]
+    assert added[1].depends_on == [long[:32]]
+    assert parsed.ops[2].task_id == TASK_A, "cancel and modify ops pass through untouched"

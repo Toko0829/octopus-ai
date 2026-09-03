@@ -8,6 +8,8 @@ import { PlanCard } from './PlanCard';
 import { ArtifactCard } from './ArtifactCard';
 import { ReplanCard } from './ReplanCard';
 import { CampaignCard } from './CampaignCard';
+import { QuestionCard } from './QuestionCard';
+import type { EmbedActionBody, EmbedActionResponse } from '@octopus/contracts';
 
 interface Props {
   channelName: string | null;
@@ -22,6 +24,11 @@ interface Props {
     /** Only a campaign card sends one. The route refuses it on any other component. */
     budgetCap?: number,
   ) => Promise<void>;
+  /**
+   * An answer on a question card. Same route as a verdict, different body, and
+   * the response carries the card's new payload so it can be patched in place.
+   */
+  onQuestionAction: (embedId: string, input: EmbedActionBody) => Promise<EmbedActionResponse>;
 }
 
 /** Author identity for a message whose sender is not in the member list. */
@@ -86,6 +93,7 @@ export function MessageStream({
   membersById,
   canAct,
   onEmbedAction,
+  onQuestionAction,
 }: Props) {
   const streamRef = useRef<HTMLDivElement>(null);
   // Start pinned: a freshly opened room should show the newest message.
@@ -184,6 +192,9 @@ export function MessageStream({
               )}
               {m.embed?.component === 'campaign' && (
                 <CampaignCard embed={m.embed} canAct={canAct} onAct={onEmbedAction} />
+              )}
+              {m.embed?.component === 'question' && (
+                <QuestionCard embed={m.embed} canAct={canAct} onAct={onQuestionAction} />
               )}
             </div>
           </div>

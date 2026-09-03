@@ -9,9 +9,6 @@ exactly what this system produced before dependencies existed. The reasoning is 
 
 import json
 
-import pytest
-from pydantic import ValidationError
-
 from octopus_ai.plan_graph import sanitise_dependencies
 from octopus_ai.planner import parse_plan
 from octopus_ai.schemas import PlanStage, PlanStep
@@ -264,18 +261,31 @@ def test_a_diamond_is_not_a_cycle():
 # ----------------------------------------------------------- shape, at the schema
 
 
-def test_an_id_with_illegal_characters_is_rejected_by_the_schema():
-    """The id is a join key on the other side of the seam, so its shape is checked.
+def test_an_id_with_illegal_characters_is_normalised_and_the_edge_follows_it():
+    """The id is a join key and nothing more, so its shape is repaired, not judged.
 
-    This one does raise, and the plan degrades to prose. That is acceptable where
-    dropping is not, because the model producing "Positioning Step!" as an id means
-    it ignored the format entirely rather than slipped on one reference.
+    This test used to assert the opposite: that "Positioning Step!" raises and the
+    plan degrades to prose, on the argument that a model ignoring the format had
+    not merely slipped. Measured, the format the model ignored was a length it was
+    never told, and the cost was the whole plan twice over. The schema still
+    refuses a bad id (`test_plan_parsing` pins that); `parse_plan` now repairs one
+    before the schema sees it, and every reference to it comes along.
     """
-    with pytest.raises(ValidationError):
-        parse_plan(
-            _plan([{"stage": "strategy", "steps": [_step(id="Positioning Step!")]}]),
-            source_count=3,
-        )
+    plan = parse_plan(
+        _plan(
+            [
+                {"stage": "strategy", "steps": [_step(id="Positioning Step!")]},
+                {
+                    "stage": "creative",
+                    "steps": [_step(id="copy", depends_on=["Positioning Step!"])],
+                },
+            ]
+        ),
+        source_count=3,
+    )
+
+    assert _by_id(plan)["positioning-step"] is not None
+    assert _by_id(plan)["copy"].depends_on == ["positioning-step"]
 
 
 def test_an_unresolvable_reference_shape_is_dropped_not_raised():

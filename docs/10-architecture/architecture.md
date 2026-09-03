@@ -164,11 +164,14 @@ Unsticking one step: `answer` records that the owner did it and completes the
 step, `retry` sends it back through the router.
 
 **It names the step, and that is the design rather than a detail.** The other way
-to answer is a chat message, and a question card claims _every_ message the owner
-writes until it is dealt with, so a new request typed while steps are waiting is
-silently filed as an answer to those steps. Two such cards had been holding rooms
-for nearly two days. Answering a task by id removes the ambiguity at the source:
-nothing has to guess what a sentence was for.
+to answer used to be a chat message, and a question card claimed _every_ message
+the owner wrote until it was dealt with, so a new request typed while steps were
+waiting was silently filed as an answer to those steps. Two such cards had been
+holding rooms for nearly two days. Answering a task by id removed the ambiguity
+at the source, and the card followed: it now carries one field per step and
+answers through the embed action route by task id too, so nothing anywhere has
+to guess what a sentence was for. Both paths complete the step through
+`completeTaskWithAnswer`, so the arc is written once.
 
 **Owner only, checked here.** Resolving a step either records the owner's own work
 as a deliverable or spends compute retrying, and a human node in the room must do
@@ -445,34 +448,24 @@ Four properties this path depends on:
 
 An agent run no longer goes straight to `/plan`. It calls `POST /intake` first, and that call decides whether this turn plans or asks. Details of the scoring are in [ai-orchestrator.md](../30-modules/ai-orchestrator.md); what belongs here is the seam.
 
-**A goal and an answer are the same event on the wire.** Both arrive as a chat message that starts an agent run, and only the room's state tells them apart. Reading a fresh goal as an answer buries it inside a stale intake; reading an answer as a goal throws away what the person just said and asks again. `decideIntakeTurn` in `@octopus/core` makes that call, with no IO, so the rule is checkable without a database.
+**A goal is a chat message, and an answer is an embed action.** They used to be the same event on the wire, both a chat message starting a run, with only the room's state telling them apart, and `decideIntakeTurn` made that call. It was right almost always and it had no way out: to know which message was an answer, a pending card had to claim every message the owner wrote until it was dealt with. Two cards were found holding rooms for nearly two days, one having swallowed a request its author meant as a new goal, and a two-hour `expires_at` was the patch. The ambiguity is gone at the source now. An answer arrives as `POST /api/rooms/:roomId/embeds/:embedId/actions` with `action: 'answer'` and a slot or a task, or `action: 'finish'`, and a chat message is always a goal. Nothing expires, because nothing claims.
 
-**The question card is where the intake's state lives.** The AI service is stateless by design (ADR-0006), so something on this side has to carry the slots between rounds, and an `action_embeds` row is already written, already RLS-scoped to the room, and already visible to the person whose answers it holds. A new table would have been a second place for the same facts. It also means the state and the questions it produced cannot disagree, because they are one row.
+**The question card is where the intake's state lives, and where its answers land.** The AI service is stateless by design (ADR-0006), so something on this side has to carry the slots between rounds, and an `action_embeds` row is already written, already RLS-scoped to the room, and already visible to the person whose answers it holds. A new table would have been a second place for the same facts. It also means the state and the questions it produced cannot disagree, because they are one row.
 
 Four properties this path depends on:
 
-- **Only the room's owner answers.** Intake answers describe the person's own budget, customers and timeline, and a human node sitting in the room must not be able to state them. `required_role` on the embed cannot enforce this, because an answer arrives as a chat message and never reaches the action route where that role is checked, so the check lives in the run. A message from anyone else is treated as a new goal, which is what it would have been without an intake in flight.
-- **The card is consumed with a conditional update**, `eq('state','pending')` in the same statement, so two runs racing on one answer cannot both proceed. Same guard the approve path uses.
-- **It is consumed after the intake call, not before.** Marking first would mean a failed or timed-out intake silently swallows what the person typed. This way the card stays pending and the next message tries again.
-- **Intake failing plans anyway.** Any error falls through to planning on the original message, which is the behaviour that existed before intake. It improves a query; it is not a precondition for answering. Nothing is granted by passing through, because the groundedness gate still runs inside `/plan`.
+- **Only the room's owner answers**, and it is the route that says so. Intake answers describe the person's own budget, customers and timeline, and a human node sitting in the room must not be able to state them. `required_role` on the embed used to be a hint the UI read, because an answer never reached the route where it is checked; it is the whole control now, checked before anything is written, and a refusal writes nothing.
+- **Each answer is one statement.** `answer_question_slot` and `answer_question_task` (`20260910120000`) replace-or-append the one value they were given with `jsonb_set`, `where state = 'pending'` in the same statement, so two chips clicked in the same second cannot lose one another. A miss returns null, which the route reports as "already acted on" rather than as a fault. Executable by `service_role` only: `action_embeds` has no client UPDATE policy, so the grant is the control.
+- **The card closes itself, conditionally.** When the last required slot the card asked about lands, or on `finish`, the route moves it `pending -> answered` with the same conditional update the verdict path uses, and only the writer that won continues the run. `remainingRequiredSlots` in `@octopus/core` decides "last" from the card alone, so closing needs no model call. A task card closes when every step it named has an answer, and continues nothing: its plan is already running.
+- **Intake failing plans anyway.** Any error falls through to planning on the goal with whatever slots the card holds, which is the behaviour that existed before intake. It improves a query; it is not a precondition for answering. Nothing is granted by passing through, because the groundedness gate still runs inside `/plan`.
 
-**An open question card now has a window, and it never had one.** While one is
-pending it claims every message the owner writes, which is right for a
-conversation and wrong for a mode. `expires_at` has existed on `action_embeds`
-since `20260812120000` and nothing ever wrote it, so cards were found holding
-rooms for **nearly two days**, one having already swallowed a request its author
-meant as a new goal. Nothing failed and nothing said so.
+**The response carries the payload.** Realtime broadcasts `messages` inserts only, so a card on screen kept rendering the payload it was first fetched with: a campaign approved at 2000 read "approved at 0", and a question card would never have shown the answer just saved. `EmbedActionResponse.payload` travels back whenever the action changed it, and `remaining` names the required slots still open, so the client patches the one card in place.
 
-Two hours, chosen from the asymmetry rather than from taste. Expiring early means
-an answer is read as a new goal while the step it answered still sits in
-`needs_user`, visible and answerable in the project panel: annoying, recoverable.
-Expiring late means a real request disappears into a step it was never about, with
-no trace. **That asymmetry is the reverse of the one `decideIntakeTurn` was
-written under**, when losing an answer was the expensive direction because steps
-had no surface at all. The panel changed which way it points.
+**The card does not gate the plan, and finishing it continues the run that asked.** On `needs_detail` the run posts the card, then a `:started` system notice, then plans from the refined goal and whatever slots are known, so the card and the plan share a `runId` in their payloads. A finished card (`finish`, or the last required slot) runs `continueFromCard` under the deterministic run id `${runId}:r${round + 1}`, which is what makes the race harmless: the action side and the run side can both reach it, and every insert below collides on its idempotency key rather than doubling. The continuation looks up the plan the base run produced by `payload->>'runId'`. If a project exists with that card as `source_embed_id` and is still running, the answers become a replan diff through `produceDiff` in `lib/replan-diff.ts`, the same producer the panel uses, with `replanReason(slots)` as the templated reason; nothing is applied without the card. Otherwise, if the continuation's own plan already exists this is a replay and only the old card is retired. Otherwise intake runs again with the merged slots, a new plan is requested, and only then is the pending plan moved to `expired` with `expires_at = now()` (its window closed; a verdict would be a label) and the new plan posted carrying `supersedes`. Requesting before retiring is deliberate: expiring first and then failing would leave the person with no plan at all.
 
-Filtered on read rather than swept from the table, because an expired card is
-still the record of a question that was asked and the audit trail keeps it.
+**The workspace's facts seed round 0.** `room_profiles` holds audience, offer, budget band and timeline for the room, read as `service_role` in the run and handed to `/intake` as `stated` slots, so a room that has answered before is `ready` without a card. It has three writers, all through `writeProfileFields`, which writes only the keys it is given: the question card as each slot lands, the run when intake finishes with something the owner stated, and `PATCH /api/rooms/:roomId/profile` from the panel's "About your business" block. Only the owner's goal writes it, because a member's message is a goal too and is not the workspace's word about itself. It is read by `GET /api/rooms/:roomId/profile` as the caller, and the policy is the first owner-only one in the database: a member reads nulls, which the route does not distinguish from "no row", because the API does not say whether a row exists for a room it will not show.
+
+**An owner's new goal closes the intake cards about the previous one.** Read as `service_role` in the run, decided per card from the parsed payload by `dismissableQuestion` rather than by a filter string on the jsonb, and written `dismissed` conditionally on `pending`. A task card is never closed this way. A member's message is still a goal and touches no card, because the cards are about the owner's business.
 
 `answered` was added to `embed_state` rather than reusing `approved`. The four original states describe a verdict and a question has none, so recording an answered question as approved would put an untrue sentence in the audit trail and hand `feedback_events` a labelled example of a person approving something they were never shown.
 

@@ -21,7 +21,10 @@ skip intake's questions entirely via `_passthrough`.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import logging
+import time
 from dataclasses import dataclass
 
 from .config import Settings
@@ -84,6 +87,27 @@ class ScoredCandidate:
 
 
 @dataclass(frozen=True)
+class PassTiming:
+    """Where one retrieval pass spent its time.
+
+    Recorded per pass rather than per request because the three stages are not
+    remotely comparable and an aggregate hides which one moved: embedding is one
+    forward pass, hybrid search is one round trip to Postgres, and reranking is N
+    forward passes over a cross-encoder. Every latency figure in
+    `ai-orchestrator.md` up to this point was taken by hand with a stopwatch,
+    because the service had no timing instrumentation anywhere: one
+    `time.monotonic()` in the rate limiter and nothing else. A number nobody can
+    reproduce from a log line is a number that goes stale without anyone noticing.
+    """
+
+    query: str
+    candidates: int
+    embed_ms: int
+    search_ms: int
+    rerank_ms: int
+
+
+@dataclass(frozen=True)
 class RetrievalResult:
     chunks: list[RetrievedChunk]
     candidates_considered: int
@@ -91,6 +115,12 @@ class RetrievalResult:
     # Defaulted so every existing construction site stays valid and so a caller
     # that does not care never has to thread it through.
     scored: tuple[ScoredCandidate, ...] = ()
+    # Defaulted for the same reason. `wall_ms` is the whole `retrieve` call
+    # including the gathered section, so it is NOT the sum of `timings`: under
+    # fan-out the passes overlap, and the gap between the sum and the wall is the
+    # concurrency actually achieved.
+    timings: tuple[PassTiming, ...] = ()
+    wall_ms: int = 0
 
     @property
     def grounded(self) -> bool:
@@ -98,11 +128,29 @@ class RetrievalResult:
         return len(self.chunks) > 0
 
 
+def _with_wall(result: RetrievalResult, started: float) -> RetrievalResult:
+    """Stamp the whole-call wall time onto a single-pass result.
+
+    The undecomposed and gate-refused paths return the base pass directly, and
+    that pass's own `wall_ms` covers only itself. Callers reading `wall_ms` should
+    get "how long did retrieve take" on every path, not "on the decomposed one
+    only", so the one-pass paths restate it rather than leaving a field that means
+    something different depending on which branch produced it.
+    """
+    return dataclasses.replace(result, wall_ms=int((time.perf_counter() - started) * 1000))
+
+
 class Retriever:
     def __init__(self, settings: Settings, db: Database, providers: Providers) -> None:
         self._s = settings
         self._db = db
         self._providers = providers
+        # On the Retriever rather than per call, because `main.py` builds exactly
+        # one for the process and the thread budget was divided for a
+        # PROCESS-wide bound. A semaphore created per `retrieve` would let two
+        # concurrent /plan requests run `2 * RERANK_FANOUT` passes on threads
+        # divided for one.
+        self._fanout = asyncio.Semaphore(settings.rerank_fanout)
 
     async def retrieve(
         self,
@@ -113,13 +161,14 @@ class Retriever:
         project_id: str | None = None,
         room_id: str | None = None,
         subqueries: list[str] | None = None,
+        agent_run_id: str | None = None,
     ) -> RetrievalResult:
         """Retrieve for a query, optionally widened by decomposed sub-queries.
 
         **Each sub-query is reranked against itself**, and the survivors are
-        merged. That costs one rerank call per sub-query, which is the expensive,
-        rate-limited stage, and the cost is deliberate: the cheaper design was
-        tried first and measured, and it did not work.
+        merged. That costs one rerank pass per sub-query, and the cost is
+        deliberate: the cheaper design was tried first and measured, and it did
+        not work.
 
         That design searched every sub-query but ran a single rerank against the
         original goal. It changed nothing, for a reason the numbers made obvious.
@@ -137,12 +186,30 @@ class Retriever:
         question the cross-encoder can answer well. Scoring "get my first 100
         customers" against them is not. Hence one rerank per sub-query.
 
+        **The sub-query passes are bounded-concurrent**, at most `RERANK_FANOUT`
+        at a time, and the thread budget is divided by the same number
+        (`runtime.thread_budget`) so total CPU demand is unchanged. The loop was
+        sequential because rerank used to be a metered Cohere call where
+        serialising was the point; since ADR-0009 it is in-process CPU work with
+        no quota. Concurrency is NOT free here: the default is 1, because a pass
+        already saturates the box and the goal pass has to run alone first, so
+        fan-out is a measurement rather than an obvious win. `octopus_ai.bench`
+        is what decides the number, and on the Cohere path `_RateLimiter` still
+        serialises inside `rerank` regardless of what it says.
+
         **Vocabulary is normalised first**, here rather than inside
         `_retrieve_one`, so that function stays a pure "one query, one search"
         and there is exactly one place that rewrites anything. Sub-queries are
         normalised too: they are written by a model that has read the person's
         wording, so they inherit the person's vocabulary along with it.
         """
+        started = time.perf_counter()
+        # Merged into every log line this call emits. `observability.md` requires
+        # the run id to be pivotable from any line, and until now the retrieval
+        # path was never given one: its logs could be read for what happened but
+        # not joined to the run they happened in.
+        trace = {"agent_run_id": agent_run_id} if agent_run_id else {}
+
         query, fired = normalise_query(query)
         if subqueries:
             normalised_subs: list[str] = []
@@ -154,21 +221,27 @@ class Retriever:
         if fired:
             # Logged because a rewrite nobody can attribute is a rewrite nobody
             # can debug, and this one sits upstream of every retrieval.
-            logger.info("vocabulary normalised", extra={"rules": sorted(set(fired))})
+            logger.info(
+                "vocabulary normalised", extra={**trace, "rules": sorted(set(fired))}
+            )
 
         queries = subqueries or [query]
 
-        # The goal itself is always searched first, and it is the gate.
+        # The goal itself is always searched first, alone, and it is the gate. It
+        # is deliberately NOT one of the fanned-out passes: the check below reads
+        # its result to decide whether sub-queries may run at all, so running it
+        # concurrently with them would destroy the property it exists for.
         base = await self._retrieve_one(
             query,
             market=market,
             business_type=business_type,
             project_id=project_id,
             room_id=room_id,
+            agent_run_id=agent_run_id,
         )
 
         if len(queries) == 1:
-            return base
+            return _with_wall(base, started)
 
         # If the goal retrieves nothing, sub-queries must not manufacture
         # grounding for it. Measured, not assumed: with this check absent, "how
@@ -184,23 +257,31 @@ class Retriever:
         if not base.chunks:
             logger.info(
                 "goal retrieved nothing; skipping sub-queries rather than inventing grounding",
-                extra={"subqueries": len(queries)},
+                extra={**trace, "subqueries": len(queries)},
             )
-            return base
+            return _with_wall(base, started)
 
-        results = [base]
-        for sub in queries:
-            if sub == query:
-                continue
-            results.append(
-                await self._retrieve_one(
+        subs = [sub for sub in queries if sub != query]
+
+        async def bounded(sub: str) -> RetrievalResult:
+            async with self._fanout:
+                return await self._retrieve_one(
                     sub,
                     market=market,
                     business_type=business_type,
                     project_id=project_id,
                     room_id=room_id,
+                    agent_run_id=agent_run_id,
                 )
-            )
+
+        subs_started = time.perf_counter()
+        # `gather` preserves INPUT order regardless of completion order, which is
+        # what keeps the concatenated `scored` traces and the timings
+        # deterministic under fan-out. The chunk merge below is order-invariant
+        # anyway (a dict keyed on chunk_id keeping the max score), so the ordering
+        # guarantee is for the diagnostics rather than the result.
+        results = [base, *await asyncio.gather(*(bounded(sub) for sub in subs))]
+        subqueries_ms = int((time.perf_counter() - subs_started) * 1000)
 
         # Merge survivors, keeping the best rerank score each chunk earned under
         # whichever sub-query suited it. Ordering by that score keeps the most
@@ -216,18 +297,34 @@ class Retriever:
         considered = sum(r.candidates_considered for r in results)
         dropped = sum(r.dropped_below_threshold for r in results)
 
+        timings = tuple(t for r in results for t in r.timings)
+        total_ms = int((time.perf_counter() - started) * 1000)
+
         logger.info(
             "decomposed retrieval",
             extra={
+                **trace,
                 "subqueries": len(queries),
                 "kept": len(merged),
                 "documents": len({c.document_id for c in merged}),
+                "fanout": self._s.rerank_fanout,
+                "passes": len(results),
+                "base_ms": base.wall_ms,
+                # Wall of the gathered section, against the sum of the passes
+                # inside it. The two are equal at fanout 1 and diverge by however
+                # much concurrency was actually achieved, which is the one number
+                # that says whether the fan-out did anything.
+                "subqueries_ms": subqueries_ms,
+                "rerank_ms": sum(t.rerank_ms for t in timings),
+                "total_ms": total_ms,
             },
         )
         return RetrievalResult(
             chunks=merged,
             candidates_considered=considered,
             dropped_below_threshold=dropped,
+            timings=timings,
+            wall_ms=total_ms,
             # Concatenated rather than merged: a chunk scored once per sub-query
             # and the per-query scores are the point. Collapsing them to a best
             # score would hide that a chunk clears one stage's question and not
@@ -243,10 +340,22 @@ class Retriever:
         business_type: str | None = None,
         project_id: str | None = None,
         room_id: str | None = None,
+        agent_run_id: str | None = None,
     ) -> RetrievalResult:
-        """One query: embed, hybrid search, rerank, drop below threshold."""
-        [query_vector] = await self._providers.embed([query])
+        """One query: embed, hybrid search, rerank, drop below threshold.
 
+        Each of the three stages is timed. They are not comparable in cost and
+        the whole point of measuring is to stop guessing which one dominates, so
+        an undifferentiated total would be the wrong instrument.
+        """
+        trace = {"agent_run_id": agent_run_id} if agent_run_id else {}
+        started = time.perf_counter()
+
+        stage = time.perf_counter()
+        [query_vector] = await self._providers.embed([query])
+        embed_ms = int((time.perf_counter() - stage) * 1000)
+
+        stage = time.perf_counter()
         rows = await self._db.hybrid_search(
             embedding=query_vector,
             query=query,
@@ -257,10 +366,29 @@ class Retriever:
             project_id=project_id,
             room_id=room_id,
         )
+        search_ms = int((time.perf_counter() - stage) * 1000)
 
         if not rows:
-            logger.info("retrieval returned no candidates", extra={"query_len": len(query)})
-            return RetrievalResult(chunks=[], candidates_considered=0, dropped_below_threshold=0)
+            logger.info(
+                "retrieval returned no candidates",
+                extra={**trace, "query_len": len(query), "embed_ms": embed_ms,
+                       "search_ms": search_ms},
+            )
+            return RetrievalResult(
+                chunks=[],
+                candidates_considered=0,
+                dropped_below_threshold=0,
+                timings=(
+                    PassTiming(
+                        query=query,
+                        candidates=0,
+                        embed_ms=embed_ms,
+                        search_ms=search_ms,
+                        rerank_ms=0,
+                    ),
+                ),
+                wall_ms=int((time.perf_counter() - started) * 1000),
+            )
 
         # Rerank against the contextualised text, which is what was embedded and
         # what actually carries the situating detail. Falling back to the raw
@@ -268,7 +396,9 @@ class Retriever:
         documents = [
             f"{row.get('context_prefix') or ''}\n{row['chunk_text']}".strip() for row in rows
         ]
+        stage = time.perf_counter()
         hits = await self._providers.rerank(query, documents, self._s.rerank_top_n)
+        rerank_ms = int((time.perf_counter() - stage) * 1000)
 
         chunks: list[RetrievedChunk] = []
         scored: list[ScoredCandidate] = []
@@ -309,9 +439,13 @@ class Retriever:
         logger.info(
             "retrieval complete",
             extra={
+                **trace,
                 "candidates": len(rows),
                 "kept": len(chunks),
                 "dropped": dropped,
+                "embed_ms": embed_ms,
+                "search_ms": search_ms,
+                "rerank_ms": rerank_ms,
             },
         )
         return RetrievalResult(
@@ -319,4 +453,14 @@ class Retriever:
             candidates_considered=len(rows),
             dropped_below_threshold=dropped,
             scored=tuple(scored),
+            timings=(
+                PassTiming(
+                    query=query,
+                    candidates=len(rows),
+                    embed_ms=embed_ms,
+                    search_ms=search_ms,
+                    rerank_ms=rerank_ms,
+                ),
+            ),
+            wall_ms=int((time.perf_counter() - started) * 1000),
         )

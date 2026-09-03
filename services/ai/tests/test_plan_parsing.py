@@ -11,8 +11,9 @@ import json
 import pytest
 from pydantic import ValidationError
 
+from octopus_ai.plan_graph import STEP_ID_MAX_LENGTH
 from octopus_ai.planner import parse_plan
-from octopus_ai.schemas import FUNNEL_STAGES
+from octopus_ai.schemas import FUNNEL_STAGES, STEP_ID_PATTERN, PlanStep
 
 
 def _plan(stages, title="Growth plan", summary="A short summary.") -> str:
@@ -192,3 +193,131 @@ def test_more_than_three_criteria_is_rejected_by_the_schema():
             ),
             source_count=3,
         )
+
+
+# ------------------------------------------------------------------ step ids
+#
+# The defect these pin, measured on a live container: the model was asked for a
+# "readable" id and never told the length, wrote
+# `define-signup-event-and-cpa-ceiling`, and the whole fifteen-step plan was
+# thrown away over it. Twice. Ids are join keys, so they are repaired.
+
+
+def _steps_of(plan):
+    return [step for stage in plan.stages for step in stage.steps]
+
+
+def test_the_length_constant_and_the_pattern_agree():
+    assert f"{{0,{STEP_ID_MAX_LENGTH - 1}}}" in STEP_ID_PATTERN
+
+
+def test_the_schema_itself_still_refuses_a_long_id():
+    """The repair lives in parse_plan, not in a loosened schema."""
+    with pytest.raises(ValidationError):
+        PlanStep(
+            id="define-signup-event-and-cpa-ceiling",
+            title="t",
+            detail="d",
+            owner="AI",
+        )
+
+
+def test_a_long_id_is_shortened_rather_than_losing_the_plan():
+    plan = parse_plan(
+        _plan([{"stage": "strategy", "steps": [_step(id="define-signup-event-and-cpa-ceiling")]}]),
+        source_count=3,
+    )
+    (step,) = _steps_of(plan)
+    assert step.id == "define-signup-event-and-cpa-ceili"[:STEP_ID_MAX_LENGTH]
+    assert len(step.id) == STEP_ID_MAX_LENGTH
+
+
+def test_a_dependency_on_a_long_id_follows_it():
+    plan = parse_plan(
+        _plan(
+            [
+                {"stage": "strategy", "steps": [_step(id="define-signup-event-and-cpa-ceiling")]},
+                {
+                    "stage": "channels",
+                    "steps": [_step(id="ads", depends_on=["define-signup-event-and-cpa-ceiling"])],
+                },
+            ]
+        ),
+        source_count=3,
+    )
+    by_id = {s.id: s for s in _steps_of(plan)}
+    assert by_id["ads"].depends_on == ["define-signup-event-and-cpa-ceili"[:STEP_ID_MAX_LENGTH]]
+
+
+def test_ids_that_collide_only_after_truncation_are_told_apart():
+    a = "content-and-email-leading-metrics-a"
+    b = "content-and-email-leading-metrics-b"
+    plan = parse_plan(
+        _plan(
+            [
+                {"stage": "content", "steps": [_step(id=a)]},
+                {"stage": "measurement", "steps": [_step(id=b, depends_on=[a])]},
+            ]
+        ),
+        source_count=3,
+    )
+    first, second = _steps_of(plan)
+    assert first.id == a[:STEP_ID_MAX_LENGTH]
+    assert second.id != first.id
+    assert second.id.endswith("-2") and len(second.id) <= STEP_ID_MAX_LENGTH
+    assert second.depends_on == [first.id], "the edge names the shortened id, not the suffixed one"
+
+
+def test_a_shortened_id_never_steals_an_id_the_model_wrote_validly():
+    valid = "content-and-email-leading-metric"  # exactly 32, already valid
+    long = "content-and-email-leading-metrics"  # 33, truncates to `valid`
+    plan = parse_plan(
+        _plan(
+            [
+                {"stage": "content", "steps": [_step(id=long)]},
+                {"stage": "measurement", "steps": [_step(id=valid, depends_on=[long])]},
+            ]
+        ),
+        source_count=3,
+    )
+    first, second = _steps_of(plan)
+    assert second.id == valid
+    assert first.id != valid and first.id.endswith("-2")
+    assert second.depends_on == [first.id]
+
+
+def test_capitals_spaces_and_underscores_become_a_slug():
+    plan = parse_plan(
+        _plan([{"stage": "creative", "steps": [_step(id="Ad Copy_v1")]}]),
+        source_count=3,
+    )
+    (step,) = _steps_of(plan)
+    assert step.id == "ad-copy-v1"
+
+
+def test_an_id_with_nothing_usable_is_dropped_not_invented():
+    plan = parse_plan(
+        _plan([{"stage": "creative", "steps": [_step(id="---")]}]),
+        source_count=3,
+    )
+    (step,) = _steps_of(plan)
+    assert step.id is None
+
+
+def test_a_genuine_duplicate_stays_a_duplicate_for_the_graph_to_flatten():
+    """Two steps with the same long id map to the same short id, so the duplicate
+    rule in sanitise_dependencies still fires and drops every edge."""
+    long = "define-signup-event-and-cpa-ceiling"
+    plan = parse_plan(
+        _plan(
+            [
+                {"stage": "strategy", "steps": [_step(id=long)]},
+                {"stage": "content", "steps": [_step(id=long)]},
+                {"stage": "channels", "steps": [_step(id="ads", depends_on=[long])]},
+            ]
+        ),
+        source_count=3,
+    )
+    ids = [s.id for s in _steps_of(plan)]
+    assert ids[0] == ids[1]
+    assert all(s.depends_on == [] for s in _steps_of(plan)), "flattened, as before this change"

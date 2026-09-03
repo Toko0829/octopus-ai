@@ -102,6 +102,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     supabase,
     aiServiceUrl: env.AI_SERVICE_URL,
     aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+    // Finishing a question card continues the run that asked, so this route
+    // needs the intake budget as well.
+    intakeTimeoutMs: env.INTAKE_REQUEST_TIMEOUT_MS,
   });
 
   // What the workspace tells us about its own business. Ingestion is embedding

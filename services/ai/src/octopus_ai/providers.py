@@ -16,6 +16,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -166,6 +167,14 @@ class Providers:
         # costs seconds and a couple of GB, so it must not happen per request.
         self._local_embedder: object | None = None
         self._local_reranker: object | None = None
+        # Guards CONSTRUCTION of the reranker, not scoring. `LocalReranker` has
+        # its own internal lock around loading the weights, but the object itself
+        # was built on an unguarded `is None` check, so two coroutines arriving
+        # together each built one and each loaded a ~1 GB model. With the
+        # sequential sub-query loop that race needed two concurrent requests to
+        # show up; `RERANK_FANOUT` makes concurrent passes the normal case, so it
+        # is closed before the fan-out can find it.
+        self._local_reranker_lock = asyncio.Lock()
         # Per-process, which is the honest scope: it governs this service's own
         # spend against the key and claims nothing about anyone else's.
         self._rerank_limiter = _RateLimiter(settings.rerank_rpm)
@@ -360,6 +369,12 @@ class Providers:
         Rate-limited when `rerank_rpm` is set. This is the only metered call in
         the service, and query decomposition made one goal cost up to seven of
         them, so the ceiling belongs here rather than in any one caller.
+
+        `RERANK_FANOUT` above 1 lets several callers arrive here at once. On the
+        Cohere path that buys nothing and breaks nothing: `_RateLimiter` holds its
+        lock across the wait, so concurrent callers are still serialised in
+        arrival order and the rolling window is still respected. The fan-out is a
+        lever on the local path, where the cost is CPU rather than quota.
         """
         if not documents:
             return []
@@ -399,15 +414,7 @@ class Providers:
         comparable across providers though, which is why the threshold applied to
         them is selected per provider (`active_rerank_min_score`).
         """
-        from .local_reranker import LocalReranker
-
-        if self._local_reranker is None:
-            self._local_reranker = LocalReranker(
-                self._s.rerank_local_source,
-                use_fp16=self._s.rerank_local_fp16,
-            )
-
-        reranker = self._local_reranker
+        reranker = await self._get_local_reranker()
         scores = await asyncio.to_thread(reranker.score, query, documents)
 
         ranked = sorted(
@@ -416,3 +423,58 @@ class Providers:
             reverse=True,
         )
         return ranked[: min(top_n, len(documents))]
+
+    async def _get_local_reranker(self) -> Any:
+        """The one cross-encoder for this process, built at most once.
+
+        The unlocked fast path is deliberate and load-bearing beyond speed: tests
+        inject a fake by assigning `p._local_reranker` directly, and that
+        injection has to win without their needing to know a lock exists.
+
+        Double-checked under the lock, because between the fast path failing and
+        the lock being acquired another coroutine may have finished building one.
+        """
+        if self._local_reranker is not None:
+            return self._local_reranker
+
+        from .local_reranker import LocalReranker
+
+        async with self._local_reranker_lock:
+            if self._local_reranker is None:
+                self._local_reranker = LocalReranker(
+                    self._s.rerank_local_source,
+                    use_fp16=self._s.rerank_local_fp16,
+                    batch_size=self._s.rerank_batch_size,
+                )
+            return self._local_reranker
+
+    async def warm_reranker(self) -> None:
+        """Load the cross-encoder and run one real forward pass, before serving.
+
+        The embedder has been warmed at startup since ADR-0008 and the reranker
+        never was, so the first plan on every fresh process paid the model load
+        INSIDE the request, on top of a pass that is already the dominant cost of
+        the turn. Measured on a warm page cache, a cold first rerank is **18.4s**
+        against roughly 2s warm. That is the defect ADR-0008 fixed for the
+        embedder, surviving in the other model.
+
+        A real `score` rather than a bare load, because the first forward pass
+        initialises kernels that loading does not touch. Warming with a load alone
+        would move part of the cost and leave the rest where it was.
+
+        No-op unless the local path is selected, so a Cohere deployment never
+        imports torch to warm something it will not use. Failures surface as
+        `ProviderError` exactly as `_embed_local` does, which is what makes a
+        missing or corrupt model a named startup failure rather than a 500 on
+        somebody's first question.
+        """
+        if self._s.rerank_provider != "local":
+            return
+
+        from .local_reranker import LocalRerankerError
+
+        reranker = await self._get_local_reranker()
+        try:
+            await asyncio.to_thread(reranker.score, "warmup", ["warmup"])
+        except LocalRerankerError as exc:
+            raise ProviderError(str(exc)) from exc

@@ -144,8 +144,12 @@ jobs:
           #   db.py            issues hybrid_search
           #   pyproject/uv.lock a torch or transformers bump moves model scores
           #   supabase/migrations  hybrid_search and the RAG schema ARE retrieval
+          #   runtime.py       sets the thread budget the eval itself runs under,
+          #                    and divides it by RERANK_FANOUT
+          #   bench.py         is what chooses the fan-out and batch size the
+          #                    eval then measures with
           # When in doubt add the path rather than leave the gate blind to it.
-          if echo "$CHANGED" | grep -qE '^(services/ai/(corpus/|eval/|pyproject\.toml$|uv\.lock$|src/octopus_ai/(retrieval|decompose|providers|config|db|ingestion|local_embedder|local_reranker|evaluation)\.py)|supabase/migrations/|\.github/workflows/ci\.yml$)'; then
+          if echo "$CHANGED" | grep -qE '^(services/ai/(corpus/|eval/|pyproject\.toml$|uv\.lock$|src/octopus_ai/(retrieval|decompose|providers|config|db|ingestion|local_embedder|local_reranker|runtime|bench|evaluation)\.py)|supabase/migrations/|\.github/workflows/ci\.yml$)'; then
             echo "retrieval=true" >> "$GITHUB_OUTPUT"
           else
             echo "retrieval=false" >> "$GITHUB_OUTPUT"
