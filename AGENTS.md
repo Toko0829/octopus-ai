@@ -1,6 +1,6 @@
 # AGENTS.md — operating manual for AI build-agents
 
-> This file governs how any AI agent (Claude Code, Cursor, etc.) writes code for **Project Octopus**. [CLAUDE.md](CLAUDE.md) is a mirror of this file for Claude Code tooling. Read [README.md](README.md) and the relevant [`docs/30-modules/`](docs/30-modules/) doc **before** writing any code.
+> This file governs how any AI agent (Claude Code, Cursor, etc.) writes code for **Project Octopus**. [CLAUDE.md](CLAUDE.md) is a mirror of this file for Claude Code tooling. Read [README.md](README.md) and the **Current shape** section of the relevant [`docs/30-modules/`](docs/30-modules/) doc **before** writing any code.
 
 ## Your persona
 
@@ -16,7 +16,20 @@ You are **opinionated and reference-driven**, you never produce "AI slop," and y
 ## The rules (binding)
 
 1. **Source of truth.** Read `README.md` and the relevant `docs/30-modules/*.md` before writing code. If docs and code disagree, **stop and reconcile** — do not silently diverge.
-2. **Doc-maintenance (binding).** Every code change updates the owning module doc AND — when scope / stack / core-loop / module-map / cross-cutting decisions change — the master `README.md`. A PR that changes behavior without updating docs is **incomplete**. Add an ADR in `docs/40-adr/` for any irreversible decision. Append one line to `CHANGELOG.md`.
+2. **Doc-maintenance (binding).** Every code change updates the owning module doc — its **Current shape** section first, because that is the section a later session reads instead of the whole doc, so a stale one misleads by construction. A PR that changes behavior without updating docs is **incomplete**. Add an ADR in `docs/40-adr/` for any irreversible decision. Append one line to `CHANGELOG.md`.
+
+   **Where each kind of prose goes**, so that reading the docs stays cheap as the repository grows:
+
+   | What you wrote                                                                      | Where it goes                                                                                                       |
+   | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+   | What exists now: tables, states, routes, sweeps, test counts, what is **not** built | The **Current shape** section at the top of the owning module doc. Replace what is there; do not append.            |
+   | How this slice went, what it measured, the defect it found, the argument it settled | [`docs/00-overview/status-log.md`](docs/00-overview/status-log.md), appended. Append-only, never edited afterwards. |
+   | One line naming the change                                                          | `CHANGELOG.md`                                                                                                      |
+   | A decision that would be expensive to reverse                                       | A new ADR in `docs/40-adr/`, linked from the module doc                                                             |
+   | Scope, stack, the core loop, the module map, a cross-cutting decision               | The master `README.md`                                                                                              |
+
+   **The master `README.md` is not a slice log.** It carried fifty-five narrative paragraphs and 9,600 words of them, which every session had to read before reaching any code; that text is now the status log and the README's status block is a summary of what runs, what does not, and where to look. Do not grow it back one slice at a time.
+
 3. **Respect the pinned stack.** Next.js 15 (frontend + thin BFF only), Fastify 5 services, Supabase (Postgres+RLS, GoTrue JWKS, Storage, Realtime), pgvector in-Postgres RAG, durable orchestration with human waitpoints. **Do not introduce a new datastore, framework, or vector DB without an ADR** justifying it against the stay-in-Postgres default.
 4. **Next.js and Realtime never do heavy or long work.** Agent loops and multi-step/multi-day work run **only** as durable tasks. Long operations return `202 + runId`; clients follow progress via Realtime, never by holding a request open.
 5. **Postgres is the single source of truth.** Chat, projects, tasks, ledger, embeddings all live in Postgres. The AI participates by `INSERT`ing message rows like any member — no special path.
@@ -41,8 +54,9 @@ You are **opinionated and reference-driven**, you never produce "AI slop," and y
 
 ## PR checklist (every PR must pass)
 
-- [ ] Code matches the module doc; module doc updated for schema/endpoint/tool/state/dependency changes.
-- [ ] Master `README.md` updated **if** scope/stack/core-loop/module-map/cross-cutting behavior changed.
+- [ ] Code matches the module doc; the module doc's **Current shape** section updated for schema/endpoint/tool/state/dependency changes, and its "not built" list still true.
+- [ ] Slice narrative appended to [`docs/00-overview/status-log.md`](docs/00-overview/status-log.md) rather than to the README.
+- [ ] Master `README.md` updated **if** scope/stack/core-loop/module-map/cross-cutting behavior changed — and **not** merely because a slice shipped.
 - [ ] Supporting doc (`docs/10-architecture/` or `docs/20-design/`) updated if architecture/data-model/RAG/security/design/roadmap changed.
 - [ ] New ADR added in `docs/40-adr/` for any irreversible/contested decision, linked from the affected doc.
 - [ ] `.docmeta.yml` mapping present for any new code path; CI doc-drift check passes.
