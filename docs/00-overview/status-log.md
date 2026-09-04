@@ -395,3 +395,39 @@ about `max-width: 100%` against an indefinite container. It was the modal's entr
 animation: measured again once it settled, 320x320 inside a 643px column, capped
 by the rule that was written for it. The screenshot is what corrected it. Measure
 after the thing has finished moving.
+
+### The picture was not in the chat, and the reason it was not was wrong (ADR-0033)
+
+The card printed "1 image, in the project panel." and the owner asked why the
+picture was not in the chat. The recorded reason was that the message stream
+re-renders on every broadcast, so an inline image would mint a signed URL per
+artifact **per re-render** for everybody with the room open, and a signed URL is
+a ten-minute bearer credential.
+
+**That is not how React works.** Messages are keyed by `m.id`, so a broadcast
+re-renders the list without re-mounting an existing card, and an effect keyed on
+the artifact runs once per mount. The claim was reasoned wrong, presented as a
+security argument, and written into an ADR decision and three module docs, where
+it sat until somebody generated a real image and asked an obvious question.
+
+The real cost is smaller and specific: opening a room with many delivered images
+would mint many credentials at once, for every viewer, without anybody asking for
+them. That is an argument against fetching **eagerly**, not against rendering.
+So the card renders the images and each one fetches its link only when its card
+is on screen, through an `IntersectionObserver` that disconnects on first fire.
+One fetch per card per session, however much the list re-renders.
+
+The argument that settled it is the one the card was built on. An approved step
+used to write its work into a table only SQL could reach, which read as the
+product having stopped, and that is why this card exists at all. A picture
+somebody has to go and find in a panel is the same defect one size smaller.
+
+**Verified with a wrinkle worth writing down.** In the preview pane the observer
+never fired and the images stayed blank, which looked exactly like a broken
+effect. `IntersectionObserver` callbacks run as part of the rendering steps, and
+the pane was **hidden**, so the page was not rendering at all. Taking a
+screenshot forced a paint, the observer fired, and precisely one image loaded:
+the one on screen. The three off-screen holders stayed empty, which is the lazy
+behaviour proving itself by accident. A hidden page loading no images is correct
+behaviour, and a verification that cannot tell that apart from a bug is a
+verification worth distrusting.

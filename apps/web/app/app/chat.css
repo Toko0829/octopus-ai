@@ -1563,11 +1563,36 @@
   margin-bottom: 0;
 }
 
-/* The images that came with a deliverable, as a sentence. The card never renders
-   one: the bucket is private, so a picture here means a signed URL, and a signed
-   URL is a ten-minute bearer credential in a stream that re-renders on every
-   broadcast. The panel mints one per click instead. Quiet, because it is a
-   pointer rather than the work. */
+/* The images that came with a deliverable.
+
+   The card renders them, and the credential cost is handled by fetching each
+   signed URL only once its card is on screen rather than by refusing to show the
+   work. `.artifact-files` is the fallback sentence for a card written before the
+   payload carried a project id, and for a link that could not be prepared.
+
+   A minimum height on the holder so the stream does not jump as each image
+   arrives: the list is anchored to the bottom, and reflowing above the reader is
+   how a chat surface loses somebody's place. */
+.artifact-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-5) var(--sp-4);
+}
+
+.artifact-image-holder {
+  min-height: 96px;
+  min-width: 96px;
+}
+
+.artifact-image {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  display: block;
+}
+
 .artifact-files {
   margin: 0;
   padding: 0 var(--sp-5) var(--sp-4);

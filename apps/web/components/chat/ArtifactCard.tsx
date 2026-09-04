@@ -1,7 +1,9 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
 import type { ArtifactActionEmbed } from '@octopus/contracts';
 import { imageCountLine, imageFilesOf } from '../../lib/artifact-files';
+import { getArtifactFileUrl } from '../../lib/api-client';
 
 /**
  * A deliverable the agent produced for one approved step.
@@ -33,17 +35,29 @@ export function ArtifactCard({ embed }: Props) {
   const grounded = citations.length > 0;
 
   /**
-   * The generated images, as a count rather than as pictures.
+   * The generated images, shown here rather than only counted.
    *
-   * **No inline `<img>`, and that is a security decision rather than a layout
-   * one.** The bucket is private, so rendering one means minting a signed URL,
-   * which is a ten-minute bearer credential anybody holding it can fetch without
-   * signing in. The stream re-renders on every broadcast, so an image here would
-   * mint a fresh credential per artifact per re-render for every person with the
-   * room open. The panel mints one on a click, which is one credential for the
-   * one person who asked for it.
+   * **This card used to print "1 image, in the project panel." and that was the
+   * wrong call.** The reason recorded against it was that the stream re-renders
+   * on every broadcast, so an inline image would mint a signed URL per artifact
+   * per re-render. That is not how React works: messages are keyed by id, so a
+   * broadcast re-renders the list without re-mounting a card, and an effect keyed
+   * on the artifact runs once per mount. The argument was wrong and it was
+   * written into an ADR and three module docs before anybody rendered a real
+   * picture and asked why it was not there.
+   *
+   * The real cost is smaller and is handled below: opening a room with many
+   * delivered images would mint many ten-minute credentials at once, for every
+   * viewer, without anybody asking. `CardImage` fetches only once the card is
+   * actually on screen.
+   *
+   * **And the argument the other way is the reason this card exists.** An
+   * approved step used to write its work into a table only SQL could reach, which
+   * read as the product having stopped. A picture you have to go and find in a
+   * panel is that same defect, one size smaller.
    */
-  const images = imageCountLine(imageFilesOf(embed.payload).length);
+  const images = imageFilesOf(embed.payload);
+  const projectId = embed.payload.projectId;
 
   /**
    * Deduplicated, because citations are per CHUNK and a document usually
@@ -77,7 +91,24 @@ export function ArtifactCard({ embed }: Props) {
         ))}
       </div>
 
-      {images && <p className="artifact-files">{images}</p>}
+      {images.length > 0 &&
+        (projectId ? (
+          <div className="artifact-images">
+            {images.map((file, i) => (
+              <CardImage
+                key={file.artifactId}
+                projectId={projectId}
+                artifactId={file.artifactId}
+                alt={`${title}, image ${i + 1}`}
+              />
+            ))}
+          </div>
+        ) : (
+          /* A card written before `projectId` was on the payload. There is no
+             way to mint a link without it, so it says what it has rather than
+             rendering a broken frame. */
+          <p className="artifact-files">{imageCountLine(images.length)}</p>
+        ))}
 
       <footer className="artifact-sources">
         {grounded ? (
@@ -96,5 +127,86 @@ export function ArtifactCard({ embed }: Props) {
         )}
       </footer>
     </article>
+  );
+}
+
+/**
+ * One generated image, fetched when somebody can actually see it.
+ *
+ * **The link is minted on intersection, not on mount**, which is what keeps the
+ * eager-credential cost the card's old copy worried about from being real. A room
+ * with forty delivered images mints nothing when it opens; the one scrolled into
+ * view mints one. `IntersectionObserver` is disconnected as soon as it fires, so
+ * the fetch happens once per card per session however much the list re-renders.
+ *
+ * **A failure is a sentence, not an empty frame.** The bytes are stored either
+ * way and the panel offers the same file, so a link that could not be prepared is
+ * worth saying and not worth shouting about.
+ */
+function CardImage({
+  projectId,
+  artifactId,
+  alt,
+}: {
+  projectId: string;
+  artifactId: string;
+  alt: string;
+}) {
+  const holder = useRef<HTMLDivElement | null>(null);
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    const node = holder.current;
+    if (!node || url) return;
+
+    let live = true;
+    const load = () => {
+      getArtifactFileUrl(projectId, artifactId)
+        .then((res) => {
+          if (live) setUrl(res.url);
+        })
+        .catch(() => {
+          if (live) setFailed(true);
+        });
+    };
+
+    // Older browsers without the observer get the image rather than nothing:
+    // degrading to eager is the same behaviour with a worse credential profile,
+    // and degrading to blank would hide delivered work.
+    if (typeof IntersectionObserver === 'undefined') {
+      load();
+      return () => {
+        live = false;
+      };
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        observer.disconnect();
+        load();
+      }
+    });
+    observer.observe(node);
+    return () => {
+      live = false;
+      observer.disconnect();
+    };
+  }, [projectId, artifactId, url]);
+
+  return (
+    <div className="artifact-image-holder" ref={holder}>
+      {url ? (
+        // eslint-disable-next-line @next/next/no-img-element -- a signed URL on
+        // Storage's own host, minted per card and expiring in minutes. The image
+        // optimiser would proxy and cache it, which is a private object cached on
+        // a public path.
+        <img className="artifact-image" src={url} alt={alt} />
+      ) : failed ? (
+        <p className="artifact-files">
+          This image could not be loaded. It is in the project panel.
+        </p>
+      ) : null}
+    </div>
   );
 }
