@@ -42,12 +42,12 @@ Adjacent digital services → SMB local marketing → e-commerce growth → and 
 
 ## The moat: the data flywheel
 
-The real defensibility isn't the model — it's the **proprietary dataset** built from running real marketing for real customers. Four compounding mechanisms (full architecture in [learning-flywheel.md](../10-architecture/learning-flywheel.md)):
+The real defensibility is **the harness and the dataset**, not the generator. The harness is the part nobody gets for free by buying an API key: the plan card as the authorisation boundary, the spend cap composed across every campaign and every held escrow, the router that parks a step for a human, escrow and the marketplace behind it, the groundedness gate, and the audit trail under all of it. The dataset is built from running real marketing for real customers. Which model does the reasoning is now a workspace's own choice ([ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)), which is the honest position: a frontier model is a commodity input and the guardrails around it are not. Four compounding mechanisms (full architecture in [learning-flywheel.md](../10-architecture/learning-flywheel.md)):
 
 1. **Ingest campaigns + outcomes** — the RAG retrieves _what actually worked for real customers like you_, not generic best-practices.
 2. **Human-node feedback as labeled data** — every expert correction/approval is a training example.
 3. **Auto-optimize on live metrics** — campaigns self-improve from real performance (CTR, ROAS, conversions).
-4. **Fine-tune a proprietary model later** — once enough data accrues.
+4. **Fine-tune later on our own data** — once enough outcome and correction data accrues, inside a provider's own fine-tuning product. Still Phase 4, and now explicitly **never on another model's output**: no training, no distillation, house provider or connector, on the terms all three vendors set and for the stronger reason that ingesting model prose would turn an unverified claim into a citation.
 
 More customers → more outcomes + corrections → smarter Octopus → better results → more customers. That loop is the business.
 

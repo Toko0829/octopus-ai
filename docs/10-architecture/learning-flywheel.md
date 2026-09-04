@@ -32,11 +32,15 @@ We are **not** building the everything-product on day one. We ship one vertical 
 
 > **The first arc is live: pause losers on a CPA ceiling breach** ([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)). The optimize sweep judges the measured whole days against the owner-typed `campaigns.cpa_ceiling` and pauses a breaching campaign, and **the decision is logged as data**: `campaign.auto_paused` carries the full arithmetic (spend, conversions, ceiling, allowance) beside the trigger-written transition, so this mechanism's first decisions are auditable and, later, learnable. Scale, reallocate, creative iteration and the bandit framing are still not built, and the decision _results_ (did pausing help) have no reader yet: the loop has begun deciding and has not begun learning from its decisions.
 
-### 4. Fine-tune a proprietary model (later, deferred)
+### 4. Fine-tune on our own data, later, and never on a model's output
 
-- Once the labeled dataset (mechanisms 1–2) is large and clean enough, **fine-tune a dedicated model** (or train adapters/reward models) on real outcomes + expert corrections.
+- Once the labeled dataset (mechanisms 1–2) is large and clean enough, **fine-tune on real outcomes and expert corrections**, inside a provider's own fine-tuning product, on data that is ours.
 - Deferred until Phase 3 data exists (see [roadmap.md](roadmap.md)); RAG + few-shot carry quality until then.
 - Evaluated against the same golden set + online metrics before it can replace/augment the base model.
+
+> **Reworded by [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md), and the change is a narrowing rather than a phrasing choice.** This mechanism used to read as though the accumulated dataset would train a model of ours. Now that the reasoning provider is a workspace connector, the tempting version of that is training or distilling on what those providers wrote, and it is **excluded permanently, house provider or connector alike.** Three arguments, any one of which is sufficient. OpenAI, Anthropic (Commercial Terms D.4) and Google each prohibit using their output or service to build a competing model, all three read on 2026-09-04. There is no proprietary generator here for a distillation set to be a distillation set for. And a model's prose ingested into the corpus would become a citation, which turns an unverified claim into evidence and is the exact failure the retrieval stack exists to prevent.
+>
+> **A provider's output is a lead, never a source.** What it is allowed to do is point at a gap: `retrieval_gaps` records the question a refusal or a labelled ungrounded answer came from and, from slice 4, the provider and model that answered it; `feedback_events` records a person's verdict; the crawl registry takes candidate sources a human reviews in a diff. Every one of those is a human deciding what enters the corpus. Nothing auto-ingests.
 
 ## Feedback capture (where the data comes from)
 
@@ -46,14 +50,35 @@ We are **not** building the everything-product on day one. We ship one vertical 
 >
 > Two properties of that table matter to this document specifically. It is **append-only including for `service_role`**, so a measurement cannot be rewritten after the fact, which is the same stance `feedback_events` states and this table actually enforces. And a correction is a **new row** with `source = 'manual'` rather than an edit, so the number we pulled and the number a person says is right both survive with their provenance attached, and anyone reading them can see that they differed.
 
-| Source             | Signal                                        | Captured in                                            |
-| ------------------ | --------------------------------------------- | ------------------------------------------------------ |
-| User in chat       | approve / reject / edit, thumbs, comments     | `feedback_events` **(live)**                           |
-| Human node         | corrections, approvals, deliverable diffs     | `node_feedback`, `engagements`                         |
-| Channels/analytics | impressions, clicks, conversions, ROAS, spend | `campaign_outcomes` **(live)**, `creative_performance` |
-| Agent itself       | plan diffs, tool results, confidence          | event-sourced `events`                                 |
+| Source             | Signal                                        | Captured in                                                                                                                                                                                                                                                                       |
+| ------------------ | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| User in chat       | approve / reject / edit, thumbs, comments     | `feedback_events` **(live for card verdicts)**. Helpful / not helpful on a model-written message with no card is **slice 4** of [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md), and is the first label that attaches to a model rather than to a plan |
+| Human node         | corrections, approvals, deliverable diffs     | `node_feedback`, `engagements`                                                                                                                                                                                                                                                    |
+| Channels/analytics | impressions, clicks, conversions, ROAS, spend | `campaign_outcomes` **(live)**, `creative_performance`                                                                                                                                                                                                                            |
+| Agent itself       | plan diffs, tool results, confidence          | event-sourced `events`                                                                                                                                                                                                                                                            |
 
 All capture is **event-sourced and immutable**; the flywheel datasets are **projections** of that log, so nothing is lost and everything is auditable.
+
+**Per-provider rates are a join, not a payload.** Once messages carry the model that wrote them, "which provider does this workspace approve more often" is answerable from tables that already exist, and deliberately not by writing a provider onto a feedback row, which would be a second copy of a fact and would drift the first time a message was re-attributed. Two paths, because a label lands on a card through its embed and on a plain message directly:
+
+```sql
+-- card verdicts, by the model that wrote the card's message
+select m.model, f.verdict, count(*)
+from feedback_events f
+join action_embeds e on e.id = f.embed_id
+join messages m on m.id = e.message_id
+where m.model is not null
+group by 1, 2;
+
+-- helpful / not helpful on a model-written message with no card (slice 4)
+select m.model, f.verdict, count(*)
+from feedback_events f
+join messages m on m.id = f.message_id
+where m.model is not null
+group by 1, 2;
+```
+
+Reading either one before there are labels would rank providers on noise, which is why "Auto chosen from per-provider rates" is in the deferred table with "enough labels to rank them" as its trigger.
 
 ## Data pipeline
 

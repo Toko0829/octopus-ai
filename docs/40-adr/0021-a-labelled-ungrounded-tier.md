@@ -2,6 +2,8 @@
 
 **Status:** Accepted · **Date:** 2026-09-01 · **Supersedes:** nothing · **Amends:** the "grounded, cited, current, or refused" posture in [rag.md](../10-architecture/rag.md), for non-regulated questions only.
 
+> **Amended by [ADR-0032](0032-reasoning-providers-are-workspace-connectors.md):** this tier may run on a workspace's own connected model rather than only on the house key. Every constraint below is unchanged, including that regulated topics are declined in code before any provider is called and that the label is written by `ungrounded.frame` rather than asked of the model.
+
 ## Context
 
 The system had one rule for every question: grounded and cited, or refused. That

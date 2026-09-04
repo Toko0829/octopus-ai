@@ -25,6 +25,7 @@
 - **Auto-optimize loop** — pulling live metrics and adjusting campaigns (pause/scale/reallocate) within guardrails.
 - **Learning flywheel** — the compounding data loop that improves Octopus from real usage: ingest outcomes → human corrections as labeled data → auto-optimize → fine-tune later. The moat. See [[../10-architecture/learning-flywheel]].
 - **Correction rate** — how often a human node must fix the AI's work; a key flywheel metric that should trend **down** over time.
+- **Lead, never a source** — the rule governing what a model's own output may do for the flywheel. It may point at a gap (a `retrieval_gaps` row, a label, a crawl candidate a person reviews); it may never be ingested into the corpus, the golden set, or any training or distillation set, house provider or connector alike. See [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md) decision 3.
 
 ## Agent / orchestration
 
@@ -35,6 +36,11 @@
 - **Replan-by-diff** — reconciling the DAG after each task by applying add/cancel/modify **diffs**, never regenerating from scratch (preserves completed work + audit history).
 - **Maker-checker** — a critic pass (AI, then user for higher-risk) that validates an artifact/proof against its `acceptance_criteria` before it counts as done.
 - **Tool risk tier** — every tool is tagged `read-only | reversible | external | high-risk/irreversible`; read-only auto-runs, irreversible always needs approval.
+- **Model connector** — a reasoning provider a workspace connects with **its own API key** (Anthropic, OpenAI or Google), so its own models compose the proposals. A connector changes **who proposes, never who acts**: the plan card, `routeTask` and the spend cap are unchanged behind it. See [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md).
+- **House default** — the server's own OpenAI key, which answers for any workspace that has connected nothing. It is what the product ran on before connectors existed and what it still runs on by default.
+- **Route** — a workspace's choice of provider and model for one **role**: `strategist`, `content`, `ads`, `analyst`, `fallback`, `creative`. A route is a preference and never a grant; a role with a strong model connected has exactly the authority it had with none.
+- **Auto** — what an unset role means: no route row, so the house default answers. The surface names the model it resolves to rather than leaving "Auto" to be guessed at.
+- **Fallback route** — the role that powers the labelled ungrounded tier ([ADR-0021](../40-adr/0021-a-labelled-ungrounded-tier.md)), the answer given when the corpus does not cover a non-regulated marketing question. Every constraint of that tier holds whichever model is routed to it.
 
 ## Platform / infra
 

@@ -4,6 +4,7 @@
 - **Date:** Phase 1
 - **Context docs:** [tech-stack.md](../10-architecture/tech-stack.md), [rag.md](../10-architecture/rag.md), [rag-knowledge.md](../30-modules/rag-knowledge.md), [integrations.md](../30-modules/integrations.md)
 - **Supersedes (in part):** the Voyage/Anthropic provider pins in [tech-stack.md](../10-architecture/tech-stack.md). [ADR-0002](0002-stay-in-postgres-pgvector.md) (pgvector) and [ADR-0006](0006-python-ai-service-node-backend.md) (Python AI service) are unaffected.
+- **Amended by:** [ADR-0008](0008-local-bge-m3-embeddings.md) and [ADR-0009](0009-local-reranker.md) (embedding and rerank moved in-process), and by [ADR-0032](0032-reasoning-providers-are-workspace-connectors.md), which makes the generation pin below the **house default** among workspace-connected providers rather than the only one. The embedding decision is untouched.
 
 ## Context
 
