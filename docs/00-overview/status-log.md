@@ -304,3 +304,54 @@ contain copy steps and no brief step, and a replan diff is model-generated, so n
 relied on to produce one. `materialise_plan` is untouched and covered by its own 42 pgTAP
 assertions. And the image failure sentences were exercised by test rather than live, because
 making a real vendor refuse mid-run is not something a verification can arrange honestly.
+
+### The first live image call, and the three things it found (ADR-0033, slice 6 follow-up)
+
+The workspace owner connected a real Google AI Studio key and routed Creative at
+`gemini-3.1-flash-image`. Everything in the slice above had been walked with the
+in-repo fake vendor, which returns a constant PNG **before any fetch**, so the
+entire Gemini request shape had never executed once. Three live runs, each one
+finding something the tests could not.
+
+**The connect check is visible and it is not a generation.** Google's usage
+dashboard showed one API request and, under Generate content, "No data
+available": `verifyKey` calls `GET /v1beta/models` before storing, which is the
+whole point of checking a key on the settings surface rather than four minutes
+into an agent run.
+
+**Run one: a 400 that said nothing.** The step delivered its brief and reported
+"The image provider declined to draw this brief." That sentence was wrong and the
+code had no way to know: `statusError` mapped 400 to `policy` on the argument
+that our request shape is pinned by a test, so the field a vendor rejects must be
+the prompt. **The test pins our side of the wire and says nothing about the
+vendor's.** Worse, the response body was discarded, so the log line carried a
+number and no explanation. An error nobody can diagnose is the failure shape rule
+16 exists to prevent, and it took a live call to notice because every stubbed
+test agreed with itself.
+
+**Run two, after keeping the body: the actual answer.** `The value 'image/png' is
+not supported for 'response_format.mime_type'. Supported values: 'image/jpeg'.`
+The format was chosen from documentation, with a comment arguing that ad creative
+somebody may put type over should not be a re-compressed JPEG. The argument is
+sound and the API does not offer the choice. One constant now serves the request,
+the stored `content_type` and the object's extension, because a row that
+describes bytes it does not hold is exactly what that column exists to prevent.
+An ambiguous 400 now reads as **ours** rather than as a verdict on somebody's
+creative, and a safety refusal is read off the vendor's own words instead of
+guessed from a status code.
+
+**Run three: the request was accepted and the account was not.** 429, `Quota
+exceeded for metric: generate_content_free_tier_input_token_count, **limit: 0**,
+model: gemini-3.1-flash-image`. Not an allowance spent: an allowance of none.
+Image generation on that model needs billing enabled on the Google project, which
+is the owner's decision and not something a verification can arrange.
+
+**What is proven and what is not, stated separately.** Proven live against a real
+vendor: the route resolves, the sealed key opens, the request is built and sent,
+the body reaches validation, and every failure ends with the step at `done`, the
+brief delivered with its citations, and a true sentence in the room. Three
+different vendor failures produced three different correct sentences. Still
+unproven: that a **successful** response parses into bytes, uploads and renders,
+because no successful response has ever been received. The success path has been
+exercised end to end only through the fake vendor, whose bytes are real and whose
+wire is not. That gap closes with one billed image call the day billing is on.

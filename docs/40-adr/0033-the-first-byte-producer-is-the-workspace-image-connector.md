@@ -36,6 +36,14 @@ Every failure path therefore ends in the same place: the step reaches `done`, th
 
 The corollary is that **a workspace with no Creative route gets no second message about it.** The brief already says so, in the deliverable, which is where that statement belongs; a room message repeating it would be noise on every creative step of every workspace that has connected nothing, addressed largely to members who could not connect one anyway.
 
+## Decision 3a: the output format is the vendor's to decide, and it is JPEG
+
+The request asked for `image/png`, chosen from the documentation with an argument that reads well: ad creative a person may put type over should not be a re-compressed JPEG. The API does not offer the choice. The first live call this code ever made came back **400: `The value 'image/png' is not supported for 'response_format.mime_type'. Supported values: 'image/jpeg'.`**
+
+One constant now serves the request and the stored `content_type`, because they have to agree: asking for one format and hardcoding another on the way out is how a row ends up describing bytes that are not what it says, on the exact column the panel reads to decide whether to render an image. The object's extension follows the same constant, so a filename cannot disagree with its own row.
+
+**Two things this cost, both worth recording.** A 400 was mapped to `policy` on the argument that our request shape is pinned by a test, so the field a vendor rejects must be the prompt. The test pins **our** side of the wire and says nothing about the vendor's, and that mapping would have told somebody their creative was declined when the truth was our request shape. An ambiguous code now reads as ours unless the body says otherwise, and a safety refusal is read off the vendor's own words rather than guessed from the number. And the vendor's error body was being discarded, so the first failure said only "400" and nothing else; it is now kept, bounded, on the error and in the log line, because an error nobody can diagnose is the shape rule 16 exists to prevent.
+
 ## Decision 4: a file artifact records its own content type
 
 [`20260914120000`](../../supabase/migrations/20260914120000_artifact_content_type.sql) adds `artifacts.content_type`: nullable, no backfill, no default, an open vocabulary with a length bound and a check that it appears only on a row that actually has a file.
@@ -82,7 +90,7 @@ It is a kill switch: set it to `false` and creative steps still produce their br
 
 ## Consequences
 
-- A creative step on a workspace with a Google connector produces a brief and up to three PNGs in the project's own folder of the private artifacts bucket.
+- A creative step on a workspace with a Google connector produces a brief and up to three JPEGs in the project's own folder of the private artifacts bucket.
 - `artifacts` gains a nullable `content_type`; `ArtifactEmbedPayload` gains `projectId` and `files`; `Artifact` gains `contentType`.
 - `services/ai` gains a sixth proposal kind and a `creative` capability on `ExecuteRequest`, and still holds no key, no storage and no bytes.
 - The customer's images live in a private bucket under the project's own prefix, so [security-compliance.md](../10-architecture/security-compliance.md)'s tenancy argument covers them unchanged.

@@ -5,6 +5,7 @@ import { ArtifactEmbedPayload, modelEntryFor, personaForStage } from '@octopus/c
 import { AiServiceError, requestExecution, type GenerateImageProposal } from './ai';
 import { writeFileArtifact } from './artifact-files';
 import {
+  extensionFor,
   generateImages,
   imageFailureSentence,
   ImageGenError,
@@ -673,7 +674,10 @@ async function drawProposedImages(input: {
         title: `Image ${index + 1}`,
         bytes: image.bytes,
         contentType: image.contentType,
-        filename: `image-${index + 1}.png`,
+        // The extension follows the bytes rather than an assumption. It said
+        // `.png` while the vendor only ever returns JPEG, which would have put a
+        // name on the object that disagreed with its own content type.
+        filename: `image-${index + 1}.${extensionFor(image.contentType)}`,
         taskRunId: input.taskRunId,
         createdBy: 'agent',
         // Empty, and that is the honest answer rather than an omission. The

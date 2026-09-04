@@ -36,6 +36,30 @@ const GOOGLE_INTERACTIONS_URL = 'https://generativelanguage.googleapis.com/v1bet
 const IMAGE_TIMEOUT_MS = 60_000;
 
 /**
+ * What the endpoint actually returns, and it is JPEG because the vendor says so.
+ *
+ * This was `image/png`, chosen from the documentation with a comment arguing
+ * that ad creative a person may put type over should not be a re-compressed
+ * JPEG. That argument is fine and the API does not offer the choice: the first
+ * live call came back **400 with `The value 'image/png' is not supported for
+ * 'response_format.mime_type'. Supported values: 'image/jpeg'.`**
+ *
+ * One constant for the request and for the stored type, because they must agree.
+ * Hardcoding `image/png` on the way out while asking for something else is how a
+ * row ends up describing bytes that are not what it says, and the panel decides
+ * whether to render an image from exactly that column.
+ */
+const IMAGE_MIME = 'image/jpeg';
+
+/** The file extension for a media type, so an object's name is not a lie. */
+export function extensionFor(contentType: string): string {
+  if (contentType === 'image/jpeg') return 'jpg';
+  if (contentType === 'image/png') return 'png';
+  if (contentType === 'image/webp') return 'webp';
+  return 'bin';
+}
+
+/**
  * What we are willing to store per image.
  *
  * A cap rather than a trust in the vendor, for the reason every bound in this
@@ -169,11 +193,8 @@ async function generateOne(
         input: request.prompt,
         response_format: {
           type: 'image',
-          // PNG rather than JPEG, and it is the one place this file has an
-          // opinion about the output: these are ad creative that a person may
-          // put type over, and a re-compressed JPEG of a re-compressed JPEG is
-          // the artefact nobody can explain later.
-          mime_type: 'image/png',
+          // The only value this endpoint accepts. See IMAGE_MIME.
+          mime_type: IMAGE_MIME,
           aspect_ratio: request.aspect,
         },
       }),
@@ -191,7 +212,22 @@ async function generateOne(
     clearTimeout(timer);
   }
 
-  if (!res.ok) throw statusError(res.status);
+  if (!res.ok) {
+    // **The vendor's own explanation, kept rather than discarded.** Without it a
+    // rejected call says only "400", and a 400 from an image endpoint is at
+    // least two very different events: a prompt the vendor's policy refused, and
+    // a request shape of ours it does not accept. The first is the person's to
+    // act on and the second is ours, and a log line that cannot tell them apart
+    // sends somebody to reword a brief over our bug. Found exactly that way, on
+    // the first live call this code ever made.
+    //
+    // Bounded, because it is an untrusted string that reaches a log line, and
+    // read as text rather than JSON because an error body is the one response
+    // least likely to be the shape we expect. Our key cannot appear in it: it
+    // travelled in a header and this is the vendor's own prose.
+    const detail = await res.text().catch(() => '');
+    throw statusError(res.status, detail.replace(/\s+/g, ' ').trim().slice(0, 400));
+  }
 
   let payload: unknown;
   try {
@@ -216,28 +252,45 @@ async function generateOne(
     );
   }
 
-  return { bytes: new Uint8Array(bytes), contentType: 'image/png' };
+  return { bytes: new Uint8Array(bytes), contentType: IMAGE_MIME };
 }
 
 /**
  * A status code, as the thing a person would do about it.
  *
- * 400 is `policy` rather than `provider` because the request shape is ours and is
- * pinned by a test: on a live call the field the vendor rejects is the prompt,
- * which came from a brief, and telling somebody their brief was declined is more
- * useful than telling them a number.
+ * **400 is `provider`, not `policy`, and that was corrected by a live call.** It
+ * read `policy` on the argument that the request shape is ours and pinned by a
+ * test, so the field a vendor rejects must be the prompt. The test pins OUR side
+ * of the wire and says nothing about the vendor's, and the very first live call
+ * this code made came back 400 for a benign brief about ad hooks. Telling
+ * somebody their creative was declined when the truth is our request shape is a
+ * false statement on the surface they would act on, so the ambiguous code now
+ * reads as ours until the body says otherwise.
+ *
+ * A safety refusal is still reported as one, read off the vendor's own body
+ * rather than guessed from the number.
  */
-function statusError(status: number): ImageGenError {
+function statusError(status: number, detail = ''): ImageGenError {
+  const because = detail ? ` The provider said: ${detail}` : '';
   if (status === 401 || status === 403) {
-    return new ImageGenError('auth', 'The image provider refused the key for this workspace.');
+    return new ImageGenError(
+      'auth',
+      `The image provider refused the key for this workspace.${because}`,
+    );
   }
   if (status === 429) {
-    return new ImageGenError('rate_limited', 'The image provider is rate limiting this key.');
+    return new ImageGenError(
+      'rate_limited',
+      `The image provider is rate limiting this key.${because}`,
+    );
   }
-  if (status === 400 || status === 422) {
-    return new ImageGenError('policy', 'The image provider declined to generate from this brief.');
+  if (/safety|blocked|policy|prohibited/i.test(detail)) {
+    return new ImageGenError(
+      'policy',
+      `The image provider declined to generate from this brief.${because}`,
+    );
   }
-  return new ImageGenError('provider', `The image provider returned ${status}.`);
+  return new ImageGenError('provider', `The image provider returned ${status}.${because}`);
 }
 
 /**

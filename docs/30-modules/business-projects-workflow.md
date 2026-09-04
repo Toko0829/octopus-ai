@@ -122,7 +122,7 @@ leaves both null, because no model was involved in a scheduler transition.
 [ADR-0033](../40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)). The
 `asset` kind has existed since `20260813160000` and nothing could write one: `writeFileArtifact`
 had exactly one caller, a human node's proof. A creative step on a workspace that routed its
-Creative role at an image model now produces its brief **and** up to three PNGs, written through
+Creative role at an image model now produces its brief **and** up to three JPEGs, written through
 the same writer into the same private bucket under the same `<project_id>/<artifact_id>/` path.
 
 `artifacts.content_type` came with them: nullable, no backfill, no default, and constrained to

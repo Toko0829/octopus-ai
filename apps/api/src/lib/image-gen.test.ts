@@ -15,7 +15,13 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { generateImages, imageFailureSentence, ImageGenError, MAX_IMAGE_BYTES } from './image-gen';
+import {
+  extensionFor,
+  generateImages,
+  imageFailureSentence,
+  ImageGenError,
+  MAX_IMAGE_BYTES,
+} from './image-gen';
 import type { GenerationTarget } from './model-routing';
 
 const GOOGLE: GenerationTarget = {
@@ -58,9 +64,11 @@ describe('generateImages', () => {
     const body = JSON.parse(String(init.body));
     expect(body.model).toBe('gemini-3.1-flash-image');
     expect(body.input).toBe(REQUEST.prompt);
+    // JPEG, and not by preference: the first live call returned 400 saying
+    // `image/png` is not supported and `image/jpeg` is the only accepted value.
     expect(body.response_format).toEqual({
       type: 'image',
-      mime_type: 'image/png',
+      mime_type: 'image/jpeg',
       aspect_ratio: '1:1',
     });
   });
@@ -75,7 +83,7 @@ describe('generateImages', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(images).toHaveLength(3);
-    expect(images[0]?.contentType).toBe('image/png');
+    expect(images[0]?.contentType).toBe('image/jpeg');
     expect(images[0]?.bytes.length).toBeGreaterThan(0);
   });
 
@@ -102,11 +110,33 @@ describe('generateImages', () => {
     ).rejects.toMatchObject({ kind: 'rate_limited' });
   });
 
-  it('reads a 400 as the brief being declined, because the shape is ours and pinned', async () => {
-    const fetchImpl = vi.fn(async () => new Response('bad', { status: 400 }));
+  it('reads a bare 400 as ours, not as the brief being declined', async () => {
+    // It read `policy` until the first live call came back 400 for a benign
+    // brief about ad hooks. The stubbed-fetch tests pin OUR side of the wire and
+    // say nothing about the vendor's, so an ambiguous code must not be reported
+    // as a verdict on somebody's creative.
+    const fetchImpl = vi.fn(async () => new Response('Invalid JSON payload', { status: 400 }));
+    await expect(
+      generateImages(GOOGLE, REQUEST, fetchImpl as unknown as typeof fetch),
+    ).rejects.toMatchObject({ kind: 'provider' });
+  });
+
+  it('reads a safety refusal as one, off the body rather than off the number', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('{"error":"blocked by safety"}', { status: 400 }),
+    );
     await expect(
       generateImages(GOOGLE, REQUEST, fetchImpl as unknown as typeof fetch),
     ).rejects.toMatchObject({ kind: 'policy' });
+  });
+
+  it('keeps the vendor explanation, so a rejected call is diagnosable', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('Unknown name "response_format"', { status: 400 }),
+    );
+    await expect(
+      generateImages(GOOGLE, REQUEST, fetchImpl as unknown as typeof fetch),
+    ).rejects.toThrow(/response_format/);
   });
 
   it('refuses a response with no image rather than storing nothing', async () => {
@@ -154,6 +184,9 @@ describe('generateImages', () => {
     );
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(images).toHaveLength(2);
+    // PNG here and JPEG on the Google path, which is not an inconsistency: the
+    // fake vendor really does hand back a PNG, and a vendor that declared a type
+    // it was not returning is the defect this pair exists to make impossible.
     expect(images[0]?.contentType).toBe('image/png');
     expect(images[0]?.bytes.length).toBeGreaterThan(0);
   });
@@ -168,5 +201,19 @@ describe('imageFailureSentence', () => {
       expect(sentence).not.toContain('—');
       expect(sentence.endsWith('.')).toBe(true);
     }
+  });
+});
+
+describe('extensionFor', () => {
+  it('names the file after the bytes', () => {
+    expect(extensionFor('image/jpeg')).toBe('jpg');
+    expect(extensionFor('image/png')).toBe('png');
+    expect(extensionFor('image/webp')).toBe('webp');
+  });
+
+  it('refuses to guess for a type it does not know', () => {
+    // A wrong extension is a filename that disagrees with the row's own content
+    // type, which is exactly what the column exists to settle.
+    expect(extensionFor('application/octet-stream')).toBe('bin');
   });
 });
