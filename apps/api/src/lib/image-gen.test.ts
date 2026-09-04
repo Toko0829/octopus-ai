@@ -87,11 +87,39 @@ describe('generateImages', () => {
     expect(images[0]?.bytes.length).toBeGreaterThan(0);
   });
 
+  it('finds the image wherever the vendor nested it', async () => {
+    // Two live calls proved the named paths insufficient: a real 200 carrying a
+    // real image put the bytes inside a step's content block under a key this
+    // code did not know. Searching for the value beats guessing a third path.
+    const fetchImpl = stub({
+      steps: [
+        { signature: 'x'.repeat(140), type: 'thought' },
+        {
+          content: [
+            { type: 'image', inline_data: { mime_type: 'image/jpeg', data: 'A'.repeat(2048) } },
+          ],
+        },
+      ],
+    });
+    const images = await generateImages(GOOGLE, REQUEST, fetchImpl as unknown as typeof fetch);
+    expect(images).toHaveLength(1);
+    expect(images[0]?.bytes.length).toBeGreaterThan(0);
+  });
+
+  it('does not mistake a short signature for an image', async () => {
+    // The same response carries a 140-character `signature` under a step. A
+    // looser rule would have uploaded that as a JPEG.
+    const fetchImpl = stub({ steps: [{ signature: 'x'.repeat(140), type: 'thought' }] });
+    await expect(
+      generateImages(GOOGLE, REQUEST, fetchImpl as unknown as typeof fetch),
+    ).rejects.toThrow(/no image data/);
+  });
+
   it('reads the steps shape as well as the convenience field', async () => {
     // `output_image` is documented and its presence in the raw JSON is not
     // promised; the steps array is the response's own structure, which is what
     // the text path already walks.
-    const fetchImpl = stub({ steps: [{ content: [{ type: 'image', data: PIXEL }] }] });
+    const fetchImpl = stub({ steps: [{ content: [{ type: 'image', data: 'A'.repeat(2048) }] }] });
     const images = await generateImages(GOOGLE, REQUEST, fetchImpl as unknown as typeof fetch);
     expect(images).toHaveLength(1);
   });

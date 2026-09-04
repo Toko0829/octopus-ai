@@ -44,6 +44,16 @@ One constant now serves the request and the stored `content_type`, because they 
 
 **Two things this cost, both worth recording.** A 400 was mapped to `policy` on the argument that our request shape is pinned by a test, so the field a vendor rejects must be the prompt. The test pins **our** side of the wire and says nothing about the vendor's, and that mapping would have told somebody their creative was declined when the truth was our request shape. An ambiguous code now reads as ours unless the body says otherwise, and a safety refusal is read off the vendor's own words rather than guessed from the number. And the vendor's error body was being discarded, so the first failure said only "400" and nothing else; it is now kept, bounded, on the error and in the log line, because an error nobody can diagnose is the shape rule 16 exists to prevent.
 
+## Decision 3b: the image is found by value, not by path
+
+The reader knew two paths: `output_image.data`, which the documentation names, and a walk of `steps[].content[]`, which is the response's own structure and what `services/ai` does for text. A real 200 carrying a real image matched neither. The bytes were nested inside a step's content block under a key this code did not have, and the response also carries `usage`, `service_tier`, a `signature` per step and several token-count breakdowns.
+
+Guessing one more key name would have been the third guess in a row, after `image/png` and after reading 400 as a policy refusal. So the reader searches for the **value**: the first string, at the shallowest level, under a key that looks like a payload (`data`, `b64`, `bytes`), long enough to be a picture. What this code needs is not a path, it is the image, and the vendor does not promise a nesting.
+
+**Two guards keep that from finding something that is not an image.** The key has to look like a payload, and the string has to clear 1024 characters, because the same response carries a 140-character `signature` under a step and a looser rule would have uploaded that as a JPEG. Depth is bounded so a pathological body cannot spin.
+
+**The failure path carries the response's shape rather than its content.** A 200 whose image cannot be found is the hardest thing to diagnose from a log, and the body is megabytes of base64, so `describeShape` replaces every string with its length. The log line then says where the data is without carrying any of it, which is what turned "no image data" into a fix in one read.
+
 ## Decision 4: a file artifact records its own content type
 
 [`20260914120000`](../../supabase/migrations/20260914120000_artifact_content_type.sql) adds `artifacts.content_type`: nullable, no backfill, no default, an open vocabulary with a length bound and a check that it appears only on a row that actually has a file.

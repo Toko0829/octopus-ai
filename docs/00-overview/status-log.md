@@ -355,3 +355,43 @@ unproven: that a **successful** response parses into bytes, uploads and renders,
 because no successful response has ever been received. The success path has been
 exercised end to end only through the fake vendor, whose bytes are real and whose
 wire is not. That gap closes with one billed image call the day billing is on.
+
+### The first real picture, and the two guesses between it and us (ADR-0033)
+
+Billing was enabled on the workspace's Google project, which is what the free
+tier's `limit: 0` had been asking for, and the run that followed produced this
+system's first generated image: **1024x1024, 543 KB, `image/jpeg`**, stored as an
+`asset` artifact under `<project>/<artifact>/image-1.jpg`, delivered beside its
+brief, counted on the card as "1 image, in the project panel." and rendered in
+the panel at 320px on one click of one signed URL. The picture is on brief: the
+Content voice wrote a concept about testing genuinely different hooks rather than
+micro-tweaking, and that is what the frame shows.
+
+**It took two more calls to get there and both were the same mistake.** The call
+came back 200 with 858 output tokens, and the reader said "no image data". It
+knew two paths: `output_image.data`, which the documentation names, and a walk of
+`steps[].content[]`, which is the response's own structure and what the text path
+already does. The bytes were under neither, nested in a step's content block
+under a key this code did not have, in a body that also carries `usage`,
+`service_tier`, per-step signatures and several token-count breakdowns.
+
+Guessing one more key would have been the **third** guess in a row, after
+`image/png` and after reading a 400 as a policy refusal. So the reader stopped
+looking for a path and started looking for the value: the shallowest string under
+a payload-shaped key that is long enough to be a picture. What this code needs is
+not a path, it is the image, and the vendor does not promise a nesting. Two
+guards keep it honest, because the same response carries a 140-character
+`signature` and a looser rule would have uploaded that as a JPEG.
+
+**The diagnostic that found it is worth more than the fix.** A 200 whose image
+cannot be located is the hardest failure to read from a log, and the body is
+megabytes of base64, so the error now carries the response's **shape** with every
+string replaced by its length. One log line, one read, one fix.
+
+**And one measurement error worth recording, because it nearly became a defect
+report.** The image was measured at 2x2 pixels for a 1024x1024 source and that
+looked exactly like a flex sizing bug, complete with a plausible explanation
+about `max-width: 100%` against an indefinite container. It was the modal's entry
+animation: measured again once it settled, 320x320 inside a 643px column, capped
+by the rule that was written for it. The screenshot is what corrected it. Measure
+after the thing has finished moving.

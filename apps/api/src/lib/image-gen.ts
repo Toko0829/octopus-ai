@@ -238,7 +238,18 @@ async function generateOne(
 
   const encoded = firstImageData(payload);
   if (!encoded) {
-    throw new ImageGenError('provider', 'The image provider returned no image data.');
+    // **The shape, never the payload.** A 200 whose image we cannot find is the
+    // hardest failure to diagnose from a log, and dumping the body is not an
+    // option: it is megabytes of base64. `describeShape` replaces every string
+    // with its length, so a log line says where the data is without carrying
+    // any of it, which is what turns "no image data" into something somebody
+    // can act on in one read.
+    throw new ImageGenError(
+      'provider',
+      `The image provider returned no image data. Response shape: ${JSON.stringify(
+        describeShape(payload),
+      ).slice(0, 2000)}`,
+    );
   }
 
   const bytes = Buffer.from(encoded, 'base64');
@@ -294,14 +305,29 @@ function statusError(status: number, detail = ''): ImageGenError {
 }
 
 /**
- * The base64 payload, from either shape the API can answer in.
+ * The base64 image out of the response, wherever the vendor put it.
  *
- * `output_image.data` is the documented convenience field. The steps array is the
- * response's own structure, which is what `services/ai` walks for text, and it is
- * read as the fallback for the same reason it is there: the convenience field's
- * presence in the raw JSON is not promised, and a reader that knows only one
- * shape breaks on a response that is perfectly valid.
+ * **A named path first, then a bounded search**, and the search is there because
+ * two live calls proved the named paths insufficient. `output_image.data` is the
+ * documented convenience field and the steps walk is the response's own
+ * structure, which is what `services/ai` does for text. A real 200 carrying a
+ * real image matched neither: the bytes were nested inside a step's content
+ * block under a key this code did not know.
+ *
+ * Guessing one more key name would have been the third guess in a row. Searching
+ * for the value instead is the honest version, because what we need is not a
+ * path, it is the image, and the vendor's nesting is not something they promise.
+ *
+ * **Two guards keep the search from finding something that is not an image.**
+ * The key has to look like a payload (`data`, `b64`, `bytes`), and the string has
+ * to be big enough to be a picture: the same response carries a 140-character
+ * `signature` under a step, and a looser rule would have uploaded that as a JPEG.
+ * Depth is bounded so a cyclic or pathological body cannot spin here.
  */
+
+/** Below this, a string is a token or a signature rather than an image. */
+const MIN_IMAGE_BASE64 = 1024;
+
 function firstImageData(payload: unknown): string | null {
   if (!payload || typeof payload !== 'object') return null;
   const root = payload as Record<string, unknown>;
@@ -309,17 +335,57 @@ function firstImageData(payload: unknown): string | null {
   const direct = (root.output_image as Record<string, unknown> | undefined)?.data;
   if (typeof direct === 'string' && direct.length > 0) return direct;
 
-  const steps = Array.isArray(root.steps) ? root.steps : [];
-  for (const step of steps) {
-    if (!step || typeof step !== 'object') continue;
-    const content = (step as Record<string, unknown>).content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as Record<string, unknown>;
-      const data = b.data ?? (b.image as Record<string, unknown> | undefined)?.data;
-      if (typeof data === 'string' && data.length > 0) return data;
+  return searchForImageData(root, 0);
+}
+
+function searchForImageData(value: unknown, depth: number): string | null {
+  if (depth > 8) return null;
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = searchForImageData(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  if (!value || typeof value !== 'object') return null;
+  const entries = Object.entries(value as Record<string, unknown>);
+
+  // The payload keys first, at this level, so the shallowest match wins rather
+  // than whichever branch happens to be walked first.
+  for (const [key, v] of entries) {
+    if (typeof v === 'string' && v.length >= MIN_IMAGE_BASE64 && /data|b64|bytes/i.test(key)) {
+      return v;
     }
   }
+  for (const [, v] of entries) {
+    const found = searchForImageData(v, depth + 1);
+    if (found) return found;
+  }
   return null;
+}
+
+/**
+ * A response's structure with its content removed.
+ *
+ * Every string becomes its length, so base64 image data is reported as
+ * `<string 1483920>` rather than logged. Arrays are sampled and depth is
+ * bounded, because this exists to be read in a log line rather than to be
+ * complete. Used only on the failure path.
+ */
+function describeShape(value: unknown, depth = 0): unknown {
+  if (depth > 6) return '...';
+  if (typeof value === 'string') return `<string ${value.length}>`;
+  if (Array.isArray(value)) {
+    return value.slice(0, 2).map((v) => describeShape(v, depth + 1));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, 20)
+        .map(([k, v]) => [k, describeShape(v, depth + 1)]),
+    );
+  }
+  return value;
 }
