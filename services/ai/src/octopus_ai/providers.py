@@ -1,12 +1,18 @@
-"""Typed adapters over OpenAI and Cohere.
+"""Typed adapters over the generation providers, plus embeddings and rerank.
 
 integrations.md requires every provider to sit behind an adapter so a swap lands
-in one file. ADR-0007 makes that concrete: embeddings and generation are OpenAI,
-rerank is Cohere because OpenAI has no reranking endpoint.
+in one file. ADR-0007 made that concrete for embeddings (OpenAI) and rerank
+(Cohere, because OpenAI has no reranking endpoint); ADR-0032 turns generation
+into the thing that actually swaps, per request, per workspace.
 
-Deliberately plain `httpx` rather than the vendor SDKs. Two calls, two well
-documented HTTP endpoints, and no extra dependency tree to keep current in a
-service whose whole job is to stay swappable.
+Deliberately plain `httpx` rather than the vendor SDKs. Four wire shapes, four
+documented HTTP endpoints, and no vendor dependency tree to keep current in a
+service whose whole job is to stay swappable. Each dialect is pinned by an
+`httpx.MockTransport` test rather than by a library's own release notes.
+
+**Retrieval is untouched by all of this.** Embedding and rerank stay in-process
+(ADR-0008, ADR-0009) whatever a workspace connects, so no corpus text leaves the
+process because somebody chose a different reasoning model.
 """
 
 from __future__ import annotations
@@ -21,12 +27,52 @@ from typing import Any
 import httpx
 
 from .config import Settings
+from .fake_vendor import fake_completion
+from .schemas import GenerationTarget
 
 logger = logging.getLogger("octopus.ai.providers")
 
 OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings"
-OPENAI_RESPONSES_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+OPENAI_CHAT_URL = f"{OPENAI_BASE_URL}/chat/completions"
 COHERE_RERANK_URL = "https://api.cohere.com/v2/rerank"
+
+# Verified against the vendor reference on 2026-09-04 (rule 21), not recalled.
+#
+# Anthropic: `anthropic-version` is a required header and `max_tokens` a required
+# body field. `x-api-key` is documented as the legacy fallback for
+# `Authorization: Bearer` and is still supported; it is used here because a
+# customer pastes an API key and nothing on this path mints a short-lived token.
+ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
+
+# Google: the Interactions API is generally available and the documented default
+# interface as of June 2026; `models/{model}:generateContent` is legacy but still
+# supported. The reference documents the endpoint under `/v1beta` and says a
+# stable `/v1` also exists, so this is one constant to move when it does.
+GOOGLE_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+
+# Which provider the server's own key belongs to. The house default is an OpenAI
+# key (ADR-0007 as amended by ADR-0032), and this is the string that reaches the
+# ledger and the message chip when no route was set.
+HOUSE_PROVIDER = "openai"
+
+# Adaptive thinking is on by default on the strong Claude models and its tokens
+# count against `max_tokens`, so a caller's 4000-token budget for a six-stage plan
+# would be spent thinking and the JSON would arrive truncated. That failure is not
+# hypothetical here: `generation_max_tokens_long` is 4000 precisely because 900
+# truncated every plan card into prose, silently, for weeks (config.py says so at
+# length). Headroom is added rather than the budget replaced, so the caller keeps
+# owning how much OUTPUT it asked for.
+_ANTHROPIC_THINKING_HEADROOM = 4000
+
+# Anthropic and Google have a JSON schema mode; neither has OpenAI's cheap
+# `json_object`. Schema mode is named-not-built (it needs a per-caller schema and
+# each vendor restricts what the schema may contain), so JSON is asked for in the
+# instruction channel and the answer is unwrapped by `_extract_json_object`. Every
+# caller validates with pydantic afterwards and treats failure as a real outcome,
+# which is the check that actually holds either way.
+_JSON_ONLY_SUFFIX = "\n\nReply with one JSON object and nothing else."
 
 # Transient statuses worth retrying: rate limit and the 5xx family.
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
@@ -47,6 +93,54 @@ _RATE_LIMIT_BACKOFF_S = 20.0
 
 class ProviderError(RuntimeError):
     """A provider call failed in a way the caller must handle, not ignore."""
+
+
+def _extract_json_object(text: str) -> str:
+    """Return the one JSON object inside a model's reply, or raise.
+
+    Needed because only the OpenAI dialect has a cheap `json_object` mode. On the
+    other two, "reply with one JSON object" is an instruction, and a model obeying
+    an instruction sometimes wraps the object in a code fence or prefaces it with a
+    sentence. Both are the model complying imperfectly rather than failing, and
+    throwing the answer away over a fence would turn a usable plan into a refusal.
+
+    Deliberately dumb: first `{` to last `}`. A smarter parser would be guessing at
+    which of several objects was meant, and there is only ever supposed to be one.
+    Raises `ValueError` when there is no object at all, which every caller already
+    handles: `parse_plan`, the executor and the campaign drafter all treat a
+    malformed answer as a real outcome rather than an impossibility.
+
+    A no-op on well-formed output, including everything OpenAI returns in JSON
+    mode, so it runs on every JSON path rather than only on the ones that need it.
+    """
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        # ```json\n{...}\n``` and ```\n{...}\n``` alike: drop the opening fence
+        # line and anything after the closing one.
+        stripped = stripped.split("\n", 1)[-1] if "\n" in stripped else ""
+        end = stripped.rfind("```")
+        if end != -1:
+            stripped = stripped[:end]
+
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("no JSON object in the model's reply")
+    return stripped[start : end + 1]
+
+
+def attribution(target: GenerationTarget | None, providers: Providers) -> tuple[str, str]:
+    """Who answered: the target's provider and model, or the house default's.
+
+    One function rather than the same two-line conditional in the planner and the
+    ungrounded tier, because this pair is what gets stamped onto a message and
+    written into the gap ledger. Two copies of it would be two places for
+    "no route means the house model" to drift, and the surface it drifts on is an
+    audit trail.
+    """
+    if target is not None:
+        return target.provider, target.model
+    return HOUSE_PROVIDER, providers.house_model
 
 
 class _RateLimiter:
@@ -272,6 +366,16 @@ class Providers:
 
         return out
 
+    @property
+    def house_model(self) -> str:
+        """The model this process uses when a call carries no target.
+
+        Exposed because attribution needs it and not every caller holds
+        `Settings`: the ungrounded tier is handed providers and a goal, and it
+        still has to be able to say which model answered.
+        """
+        return self._s.generation_model
+
     async def complete_json(
         self,
         *,
@@ -279,19 +383,38 @@ class Providers:
         user: str,
         model: str | None = None,
         max_tokens: int | None = None,
+        target: GenerationTarget | None = None,
     ) -> str:
         """One generation call constrained to return a JSON object.
 
-        `json_object` mode rather than a JSON schema: it is the broadly supported
-        form, and the caller validates against Pydantic anyway, so a schema here
-        would duplicate the contract without removing the need to check it. The
-        model can still return well-formed JSON of the wrong shape, which is why
-        the caller must treat validation failure as a real outcome rather than an
-        impossibility.
+        `json_object` mode rather than a JSON schema on the OpenAI path: it is the
+        broadly supported form, and the caller validates against Pydantic anyway,
+        so a schema here would duplicate the contract without removing the need to
+        check it. The model can still return well-formed JSON of the wrong shape,
+        which is why the caller must treat validation failure as a real outcome
+        rather than an impossibility.
+
+        `target` is one workspace's connector for this one request (ADR-0032).
+        With no target this is byte-for-byte the call it has always been, on the
+        server's own key, which is what "Auto" means on the settings surface.
+        `model` still selects the house TIER and is ignored when a target is
+        given, because a target already names the model it wants.
         """
+        if target is not None:
+            return _extract_json_object(
+                await self._complete_via_target(
+                    system=system,
+                    user=user,
+                    target=target,
+                    max_tokens=max_tokens or self._s.generation_max_tokens,
+                    temperature=0,
+                    json_mode=True,
+                )
+            )
+
         payload = await _post_with_retry(
             self._client,
-            OPENAI_RESPONSES_URL,
+            OPENAI_CHAT_URL,
             headers={"Authorization": f"Bearer {self._s.openai_api_key}"},
             json={
                 # Model tiering (tech-stack.md): the caller picks the tier. Query
@@ -329,16 +452,38 @@ class Providers:
             raise ProviderError("openai returned an empty completion")
         return content
 
-    async def complete(self, *, system: str, user: str) -> str:
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int | None = None,
+        target: GenerationTarget | None = None,
+    ) -> str:
         """One generation call. Returns the message text.
 
         The system prompt and the retrieved sources travel in separate messages
         so the instruction channel stays distinct from untrusted reference data
-        (AGENTS.md rule 8).
+        (AGENTS.md rule 8). That separation survives every dialect: Anthropic and
+        Google both carry the system prompt in their own top-level field rather
+        than concatenated into the user turn.
+
+        Same target rule as `complete_json`, and the same default: no target is
+        the house key on today's exact request.
         """
+        if target is not None:
+            return await self._complete_via_target(
+                system=system,
+                user=user,
+                target=target,
+                max_tokens=max_tokens or self._s.generation_max_tokens,
+                temperature=0.3,
+                json_mode=False,
+            )
+
         payload = await _post_with_retry(
             self._client,
-            OPENAI_RESPONSES_URL,
+            OPENAI_CHAT_URL,
             headers={"Authorization": f"Bearer {self._s.openai_api_key}"},
             json={
                 "model": self._s.generation_model,
@@ -350,7 +495,7 @@ class Providers:
                 # `max_completion_tokens`, not `max_tokens`: the gpt-5 family
                 # rejects the older parameter outright ("Unsupported parameter").
                 # Verified against the API, not assumed.
-                "max_completion_tokens": self._s.generation_max_tokens,
+                "max_completion_tokens": max_tokens or self._s.generation_max_tokens,
             },
             what="openai chat completion",
         )
@@ -362,6 +507,235 @@ class Providers:
         if not content or not content.strip():
             raise ProviderError("openai returned an empty completion")
         return content
+
+    # ------------------------------------------------------------- dialects ----
+    #
+    # One method per wire shape, dispatched on `target.vendor`. Nothing above this
+    # line changes when a vendor is added, and nothing below it knows what a plan
+    # or a deliverable is.
+    #
+    # SECURITY: `target.api_key` is unwrapped exactly where the header is built and
+    # nowhere else. It never reaches a log line, a `what=` string (which
+    # `_post_with_retry` prints on failure) or an exception message.
+
+    async def _complete_via_target(
+        self,
+        *,
+        system: str,
+        user: str,
+        target: GenerationTarget,
+        max_tokens: int,
+        temperature: float,
+        json_mode: bool,
+    ) -> str:
+        logger.info(
+            "generation on a workspace target",
+            extra={
+                "vendor": target.vendor,
+                "provider": target.provider,
+                "model": target.model,
+                "json_mode": json_mode,
+            },
+        )
+        if target.vendor == "openai_compatible":
+            return await self._openai_compatible(
+                system=system,
+                user=user,
+                target=target,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                json_mode=json_mode,
+            )
+        if target.vendor == "anthropic":
+            return await self._anthropic_messages(
+                system=system,
+                user=user,
+                target=target,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+            )
+        if target.vendor == "google":
+            return await self._google_interactions(
+                system=system,
+                user=user,
+                target=target,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                json_mode=json_mode,
+            )
+        if target.vendor == "fake":
+            return fake_completion(target.model, user, json_mode=json_mode)
+        # Unreachable through the API, where `vendor` is a Literal. Reachable from
+        # the eval harness, which builds its own target from command-line flags.
+        raise ProviderError(f"unknown generation vendor {target.vendor!r}")
+
+    async def _openai_compatible(
+        self,
+        *,
+        system: str,
+        user: str,
+        target: GenerationTarget,
+        max_tokens: int,
+        temperature: float,
+        json_mode: bool,
+    ) -> str:
+        """Chat completions, on OpenAI itself or on anything that speaks its shape.
+
+        The same body the house path sends, with the caller's key and model. The
+        `base_url` seam exists on the wire so a self-hosted or gateway endpoint is
+        a data change rather than a code change; there is no UI for it yet.
+        """
+        base = (target.base_url or OPENAI_BASE_URL).rstrip("/")
+        body: dict[str, Any] = {
+            "model": target.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": temperature,
+            "max_completion_tokens": max_tokens,
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+
+        payload = await _post_with_retry(
+            self._client,
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {target.api_key.get_secret_value()}"},
+            json=body,
+            what=f"{target.provider} chat completion",
+        )
+
+        choices = payload.get("choices") or []
+        if not choices:
+            raise ProviderError(f"{target.provider} returned no choices")
+        content = (choices[0].get("message") or {}).get("content")
+        if not content or not content.strip():
+            raise ProviderError(f"{target.provider} returned an empty completion")
+        return content
+
+    async def _anthropic_messages(
+        self,
+        *,
+        system: str,
+        user: str,
+        target: GenerationTarget,
+        max_tokens: int,
+        json_mode: bool,
+    ) -> str:
+        """The Messages API.
+
+        Three differences from the OpenAI shape, each verified against the vendor
+        reference on 2026-09-04 rather than assumed (rule 21):
+
+        **No `temperature`, ever.** Models after Claude Opus 4.6 reject any value
+        but 1.0 with a 400, and that includes both strong models a workspace is
+        likely to connect. Sending the house path's 0 or 0.3 would fail every call
+        on exactly the models this dialect exists to reach, so the parameter is not
+        sent at all and the vendor's own default stands. This is why JSON mode here
+        cannot be "the same call at temperature 0".
+
+        **`max_tokens` is required, and adaptive thinking spends it**, which is what
+        the headroom is for. Running out is reported rather than returned: a
+        truncated plan is invalid JSON, and `ProviderError` is what makes the
+        planner's corrective retry and its prose fallback run, instead of a
+        half-written card reaching somebody.
+
+        **The system prompt is a top-level field**, which suits rule 8 better than a
+        system message does: the instruction channel is structurally separate from
+        the turn carrying untrusted sources rather than merely first in a list.
+        """
+        body: dict[str, Any] = {
+            "model": target.model,
+            "system": f"{system}{_JSON_ONLY_SUFFIX}" if json_mode else system,
+            "messages": [{"role": "user", "content": user}],
+            "max_tokens": max_tokens + _ANTHROPIC_THINKING_HEADROOM,
+        }
+
+        payload = await _post_with_retry(
+            self._client,
+            ANTHROPIC_MESSAGES_URL,
+            headers={
+                "x-api-key": target.api_key.get_secret_value(),
+                "anthropic-version": ANTHROPIC_VERSION,
+            },
+            json=body,
+            what=f"{target.provider} messages",
+        )
+
+        stop = payload.get("stop_reason")
+        if stop == "max_tokens":
+            raise ProviderError(f"{target.provider} truncated the reply at max_tokens")
+        if stop == "refusal":
+            raise ProviderError(f"{target.provider} declined to answer")
+
+        # Several blocks are normal (thinking, then text). Only the text ones are
+        # the answer, and joining them is what makes a multi-block reply whole
+        # rather than arbitrarily the first paragraph of it.
+        text = "".join(
+            block.get("text") or ""
+            for block in payload.get("content") or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if not text.strip():
+            raise ProviderError(f"{target.provider} returned an empty completion")
+        return text
+
+    async def _google_interactions(
+        self,
+        *,
+        system: str,
+        user: str,
+        target: GenerationTarget,
+        max_tokens: int,
+        temperature: float,
+        json_mode: bool,
+    ) -> str:
+        """The Interactions API, which is Gemini's current interface.
+
+        Generally available and recommended for new projects since June 2026, with
+        `models/{model}:generateContent` kept as supported legacy, so this is the
+        one to build on. The OpenAI-compatibility layer is deliberately not used:
+        it is beta and **silently ignores parameters it does not support**, which
+        would make a token cap or a JSON request look applied when it was not, and
+        a silently ignored cap is exactly the class of defect this file's
+        `temperature` comment was written about.
+        """
+        body: dict[str, Any] = {
+            "model": target.model,
+            "input": user,
+            "system_instruction": f"{system}{_JSON_ONLY_SUFFIX}" if json_mode else system,
+            "generation_config": {
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            },
+        }
+
+        payload = await _post_with_retry(
+            self._client,
+            GOOGLE_INTERACTIONS_URL,
+            headers={"x-goog-api-key": target.api_key.get_secret_value()},
+            json=body,
+            what=f"{target.provider} interaction",
+        )
+
+        text = "".join(
+            block.get("text") or ""
+            for step in payload.get("steps") or []
+            if isinstance(step, dict)
+            for block in step.get("content") or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if not text.strip():
+            # The documented convenience field, read only when walking the steps
+            # found nothing. The steps are the reference's own response shape;
+            # `output_text` is a helper whose presence in the raw JSON is not
+            # promised, so it is the fallback rather than the first read.
+            helper = payload.get("output_text")
+            text = helper if isinstance(helper, str) else ""
+        if not text.strip():
+            raise ProviderError(f"{target.provider} returned an empty completion")
+        return text
 
     async def rerank(self, query: str, documents: list[str], top_n: int) -> list[RerankHit]:
         """Cross-encoder rescoring. Returns (index into `documents`, score), best first.

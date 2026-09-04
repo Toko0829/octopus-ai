@@ -232,6 +232,10 @@ async def execute_task(
             system=build_execute_prompt(kind, count),
             user=user,
             max_tokens=settings.generation_max_tokens_long,
+            # Resolved by Node from the step's own stage, so the voice that
+            # signs the work is the voice whose model made it (ADR-0032).
+            # None is the house default.
+            target=request.generation,
         )
         draft = WriteArtifactProposal.model_validate_json(raw)
     except Exception as exc:

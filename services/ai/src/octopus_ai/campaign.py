@@ -169,6 +169,10 @@ async def draft_campaign(
             system=_CAMPAIGN_RULES,
             user=user,
             max_tokens=settings.generation_max_tokens_long,
+            # The Ads route (ADR-0032). It decides which model DRAFTS the card;
+            # the owner still types the cap and checkSpendCap still checks it
+            # twice, so a stronger model here buys no authority whatever.
+            target=request.generation,
         )
     except Exception as exc:
         logger.warning(

@@ -20,7 +20,9 @@ class StubProviders:
         self.error = error
         self.calls = 0
 
-    async def complete_json(self, *, system: str, user: str, model: str | None = None) -> str:
+    async def complete_json(
+        self, *, system: str, user: str, model: str | None = None, **_kwargs
+    ) -> str:
         self.calls += 1
         if self.error:
             raise self.error

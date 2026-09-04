@@ -70,7 +70,9 @@ class StubProviders:
         self.user_prompts: list[str] = []
         self.system_prompts: list[str] = []
 
-    async def complete_json(self, *, system: str, user: str, model=None, max_tokens=None) -> str:
+    async def complete_json(
+        self, *, system: str, user: str, model=None, max_tokens=None, **_kwargs
+    ) -> str:
         self.system_prompts.append(system)
         self.user_prompts.append(user)
         return json.dumps(
@@ -165,7 +167,9 @@ async def test_retrieval_is_scoped_to_the_room_and_project():
 class RepeatingProviders(StubProviders):
     """A maker that cites one source twice and one it was never given."""
 
-    async def complete_json(self, *, system: str, user: str, model=None, max_tokens=None) -> str:
+    async def complete_json(
+        self, *, system: str, user: str, model=None, max_tokens=None, **_kwargs
+    ) -> str:
         self.system_prompts.append(system)
         self.user_prompts.append(user)
         return json.dumps(

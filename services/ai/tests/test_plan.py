@@ -127,3 +127,82 @@ def test_service_holds_no_database_client_for_user_data():
     for module in (main_module, planner_module):
         for attr in vars(module).values():
             assert "supabase" not in type(attr).__module__.lower()
+
+
+class TestGenerationTarget:
+    """The connector fields on the wire, and what a 422 is allowed to say back.
+
+    The refusal path is enough for both: which model would have answered is
+    settled before retrieval runs, and a request that never validates never
+    reaches a provider at all.
+    """
+
+    def test_a_target_is_accepted_on_both_fields(self):
+        _install(StubRetriever())
+        payload = _payload()
+        payload["generation"] = {
+            "vendor": "anthropic",
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "api_key": "sk-customer",
+        }
+        payload["generation_fallback"] = {
+            "vendor": "google",
+            "provider": "google",
+            "model": "gemini-3.8-flash",
+            "api_key": "sk-customer-2",
+        }
+
+        assert client.post("/plan", json=payload).status_code == 200
+
+    def test_a_request_without_one_still_validates(self):
+        """A workspace that connects nothing is the majority case."""
+        _install(StubRetriever())
+        assert client.post("/plan", json=_payload()).status_code == 200
+
+    def test_a_target_missing_a_field_never_echoes_the_key_back(self):
+        """This is the leak, and it is a real one rather than a precaution.
+
+        On a MISSING field pydantic v2 reports the error against the parent and
+        puts the whole parent OBJECT in `input`, so FastAPI's default handler
+        returns the customer's API key in the 422 body, from a path nobody thinks
+        of as a data path. Verified directly against pydantic 2.13, not assumed.
+
+        A wrong `vendor` does not leak, because a literal error's `input` is the
+        one bad value. Both are covered here so the next person does not conclude
+        from the harmless case that the handler is unnecessary.
+        """
+        payload = _payload()
+        payload["generation"] = {
+            "vendor": "anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-customer-must-not-come-back",
+        }
+
+        res = client.post("/plan", json=payload)
+        assert res.status_code == 422
+        assert "sk-customer-must-not-come-back" not in res.text
+        # Still usable: the field and the reason are the whole of what a caller
+        # needs to fix its request.
+        assert "model" in res.text
+
+    def test_an_unknown_vendor_is_rejected_and_says_which_are_known(self):
+        payload = _payload()
+        payload["generation"] = {
+            "vendor": "not-a-vendor",
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "api_key": "sk-customer-must-not-come-back",
+        }
+
+        res = client.post("/plan", json=payload)
+        assert res.status_code == 422
+        assert "sk-customer-must-not-come-back" not in res.text
+        assert "vendor" in res.text
+
+    def test_the_house_default_is_reported_without_a_key(self):
+        """Node's settings surface has to be able to say what "Auto" means."""
+        body = client.get("/health").json()
+        assert "generation_model" in body
+        assert "generation_provider" in body
+        assert "api_key" not in body

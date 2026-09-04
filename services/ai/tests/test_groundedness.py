@@ -256,17 +256,19 @@ class TestEndpointWiring:
     class _Providers:
         """Records whether generation was reached. It must not be, when blocked."""
 
+        house_model = "gpt-5.4"
+
         def __init__(self, verdict: str):
             self.verdict = verdict
             self.generated = False
 
-        async def complete_json(self, *, system, user, model=None, max_tokens=None):
+        async def complete_json(self, *, system, user, model=None, max_tokens=None, **_kwargs):
             if "whether a set of reference sources" in system:
                 return self.verdict
             self.generated = True
             return "{}"
 
-        async def complete(self, *, system, user):
+        async def complete(self, *, system, user, **_kwargs):
             self.generated = True
             return "text"
 

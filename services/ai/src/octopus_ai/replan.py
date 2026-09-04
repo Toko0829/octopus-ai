@@ -367,6 +367,9 @@ async def replan(
             system=REPLAN_SYSTEM_PROMPT,
             user=user,
             max_tokens=settings.generation_max_tokens_long,
+            # The route of the persona that signs the card (ADR-0032). Applying
+            # the diff is still the owner approving it.
+            target=request.generation,
         )
         parsed = ProposeReplanProposal.model_validate_json(
             _with_project(raw, request.project_id),

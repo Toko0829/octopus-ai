@@ -740,7 +740,50 @@ async def _run_gate() -> int:
         await providers.aclose()
 
 
-async def _run_plan_eval() -> int:
+def _plan_eval_target(provider: str | None, model: str | None, key_env: str | None):
+    """Build the `GenerationTarget` for a `--plan` run, or `None` for the house key.
+
+    All three flags or none. A provider without a model would silently pick one,
+    and a model without a key would silently run on the house key while the banner
+    said otherwise, which is the exact failure this whole eval exists to catch one
+    level up.
+
+    The key is read from the NAMED environment variable rather than accepted on
+    the command line, so it never reaches a shell history, a process listing or a
+    CI log.
+    """
+    import os
+
+    from .schemas import GenerationTarget
+
+    given = [f for f in (provider, model, key_env) if f]
+    if not given:
+        return None
+    if len(given) != 3:
+        raise SystemExit("--provider, --model and --key-env are used together or not at all")
+
+    key = os.environ.get(key_env or "")
+    if not key:
+        raise SystemExit(f"{key_env} is empty or unset")
+
+    # The registry that decides a provider's dialect lives in packages/contracts
+    # and is Node's. This is the eval's own small copy, deliberately: adding a
+    # provider is a contracts change plus one line here, and the alternative is
+    # this harness reading TypeScript.
+    vendors = {
+        "openai": "openai_compatible",
+        "anthropic": "anthropic",
+        "google": "google",
+        "fake": "fake",
+    }
+    vendor = vendors.get(provider or "")
+    if vendor is None:
+        raise SystemExit(f"unknown provider {provider!r}; one of {', '.join(sorted(vendors))}")
+
+    return GenerationTarget(vendor=vendor, provider=provider, model=model, api_key=key)
+
+
+async def _run_plan_eval(target=None) -> int:
     """Score the STRUCTURE of the plans the planner produces (`plan_eval.py`).
 
     Credentialed and LLM-dependent like `--gate`, and kept out of CI for the same
@@ -751,6 +794,14 @@ async def _run_plan_eval() -> int:
     Runs the golden POSITIVES only. Negatives and scope negatives are refusals by
     design, and a harness that counted them would reward a planner for answering
     everything.
+
+    **With `--provider` this is the admission gate for a registry entry**
+    (ADR-0032). A model that cannot return a parseable plan is a model whose users
+    would silently get cited prose instead of a card, which is precisely the defect
+    `generation_max_tokens_long` was raised to fix and which nothing else detects.
+    The bar is `card_rate` 1.0 and `clean_rate` at or above 0.8 on the positives.
+    Retrieval is unchanged by the flag: the same corpus, the same reranker and the
+    same thresholds run whoever is asked to plan from them.
     """
     from .config import get_settings
     from .db import Database
@@ -780,7 +831,12 @@ async def _run_plan_eval() -> int:
         decomposer = run_decompose
 
     try:
-        print(f"generation model:   {settings.generation_model}")
+        if target is None:
+            print("generation:         house default (the server key)")
+            print(f"provider / model:   openai / {settings.generation_model}")
+        else:
+            print(f"generation:         workspace target ({target.vendor})")
+            print(f"provider / model:   {target.provider} / {target.model}")
         print(f"long token budget:  {settings.generation_max_tokens_long}")
         print()
 
@@ -795,7 +851,9 @@ async def _run_plan_eval() -> int:
             if not retrieval.grounded:
                 response = refuse(request, retrieval)
             else:
-                response = await plan_grounded(request, retrieval, providers, settings)
+                response = await plan_grounded(
+                    request, retrieval, providers, settings, target
+                )
 
             findings = score_plan(response)
             report.results.append((case.id, findings))
@@ -833,6 +891,22 @@ def main() -> None:
         "this is a credentialed pass rather than a CI gate.",
     )
     parser.add_argument(
+        "--provider",
+        help="run --plan against a connected provider instead of the house key: "
+        "one of openai, anthropic, google, fake. Used with --model and --key-env.",
+    )
+    parser.add_argument(
+        "--model",
+        help="the model id to run --plan on. Verify it against the provider before "
+        "trusting a result: an unknown id is a provider error, not a low score.",
+    )
+    parser.add_argument(
+        "--key-env",
+        metavar="NAME",
+        help="the environment variable holding the key for --provider. Named rather "
+        "than passed, so the key stays out of shell history and process listings.",
+    )
+    parser.add_argument(
         "--shard",
         default="1/1",
         help="run only part of the golden set, as i/n. Requires --out, because a "
@@ -849,10 +923,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if (args.provider or args.model or args.key_env) and not args.plan:
+        # Only --plan takes a target. The retrieval gate and --gate measure
+        # retrieval and the groundedness gate, neither of which a connector
+        # touches, and accepting the flag there would imply otherwise.
+        parser.error("--provider, --model and --key-env apply to --plan only")
+
     if args.plan:
         if args.gate or args.merge or args.out or args.shard != "1/1":
             parser.error("--plan measures a different thing and does not shard or merge")
-        raise SystemExit(asyncio.run(_run_plan_eval()))
+        target = _plan_eval_target(args.provider, args.model, args.key_env)
+        raise SystemExit(asyncio.run(_run_plan_eval(target)))
 
     if args.gate:
         if args.merge or args.out or args.shard != "1/1":

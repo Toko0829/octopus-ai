@@ -6,6 +6,60 @@
 >
 > Update this doc on any change to the planning loop, tool registry, guardrails, escalation triggers, or state model.
 
+## Current shape
+
+> What exists today in `services/ai`, read out of the code. **Update this section in the same
+> change as the code**, and keep its "Not built" list honest: it is what a later session trusts
+> instead of reading the whole doc. The narrative of how each piece arrived is in the status
+> blockquote below and in [status-log.md](../00-overview/status-log.md).
+
+**Endpoints** (`main.py`). Every one of them returns proposals and performs nothing ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)).
+
+| Endpoint | Does | Generation |
+| --- | --- | --- |
+| `GET /health` | Liveness, whether configuration resolved, and the house default's `generation_provider` / `generation_model` | none |
+| `POST /intake` | One round of clarifying questions, before anything is retrieved | house, cheap tier |
+| `POST /plan` | Decompose, retrieve, gate, then plan or refuse or answer ungrounded | **target** (`generation`, and `generation_fallback` for the ungrounded tier) |
+| `POST /execute` | Draft one approved step as a cited artifact, or refuse | **target** (`generation`) |
+| `POST /campaign` | Draft one authorisation-blocked step as a campaign, or decline | **target** (`generation`) |
+| `POST /replan` | Propose a diff against a running project, or decline | **target** (`generation`) |
+| `POST /sources` | Ingest one document the workspace supplied about itself | none |
+| `POST /ingest` | Ingest a crawled document | none |
+
+**Cores**, which is what `PlanResponse.core` reports: `grounded-plan-v1`, `grounded-v1` (cited prose when the card could not be built), `refusing-v0`, `refusing-ungrounded-v1`, `refusing-unverified-v1`, `ungrounded-general-v1`, `executing-v1`, `refusing-unexecutable-v1`, `campaign-v1`, `declining-campaign-v1`, `replan-diff-v1`, `refusing-unreplannable-v1`.
+
+**Generation dialects** (`providers.py`), one per wire shape, no vendor SDK. Each is pinned by an `httpx.MockTransport` test rather than by a library's release notes.
+
+| Dialect | Endpoint | Auth header | JSON mode | Sampling |
+| --- | --- | --- | --- | --- |
+| `openai_compatible` | `{base_url}/chat/completions`, default `https://api.openai.com/v1` | `Authorization: Bearer` | `response_format: json_object` | `temperature` 0 for JSON, 0.3 for prose |
+| `anthropic` | `POST https://api.anthropic.com/v1/messages` | `x-api-key` plus `anthropic-version: 2023-06-01` | instruction, then `_extract_json_object` | **none sent**: models after Opus 4.6 reject every value but 1.0 |
+| `google` | `POST .../v1beta/interactions` (the Interactions API) | `x-goog-api-key` | instruction, then `_extract_json_object` | `generation_config.temperature`, same numbers |
+| `fake` | none: no network at all | none | `FAKE_JSON` | none |
+
+Two dialect details are load-bearing rather than incidental. Anthropic's `max_tokens` is **required and spent by adaptive thinking**, so the caller's budget gets 4000 tokens of headroom and a `stop_reason` of `max_tokens` becomes a `ProviderError`, which is what makes the planner's corrective retry and its prose fallback run instead of a half-written card reaching somebody. And Google's OpenAI-compatibility layer is **deliberately unused**: it is beta and silently ignores parameters it does not support, so a token cap or a JSON request would look applied when it was not.
+
+**Which call runs on what.** A `GenerationTarget` (`vendor`, `provider`, `model`, `api_key`, optional `base_url`) arrives **per request** and is never stored; with none, the call is byte-for-byte the one it has always been on the server's own key, which is what **Auto** means on the settings surface ([ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)).
+
+| Call | Runs on | Why |
+| --- | --- | --- |
+| plan, plan retry, plan prose fallback | the request's target | the retry is the same model shown its own error, not a second opinion |
+| execute, campaign draft, replan diff | the request's target | Node resolves the role from the step's own stage or the signing persona |
+| the ungrounded fallback | `generation_fallback`, else `generation` | a workspace that named a model should not get the house key because the corpus came up short |
+| query decomposition, the groundedness gate, intake | **the house model, always** | pinned at `temperature: 0` and their thresholds were measured there; the gate is scored two-sided by `--gate` on it. `test_target_threading.py` asserts these three receive `None` |
+| embeddings, rerank | in-process, no provider | ADR-0008 and ADR-0009 are untouched by connectors, so no corpus text leaves the process because somebody chose a different reasoning model |
+
+**Who answered is reported, not assumed.** `PlanResponse.provider` and `PlanResponse.model` carry the target's pair, or `("openai", generation_model)` for the house default. `plan_grounded` sets them on every response it builds and `answer_ungrounded` on its own; a refusal that generated nothing leaves both null. Node stamps that onto the message it writes, and never accepts one from a client (ADR-0032 decision 4).
+
+**Key handling.** `api_key` is a `SecretStr`, unwrapped exactly where the outbound header is built and nowhere else. It reaches no log line, no `what=` string and no exception message. The one non-obvious leak is pydantic v2, which puts the failing parent **object** in a 422 body's `input` on a missing field, so `main.py`'s `RequestValidationError` handler strips `input` and `ctx` on every endpoint. That leak is verified rather than assumed, and `test_plan.py` covers both the case that leaks and the one that does not.
+
+**The `--plan` eval is the admission gate for a registry entry.** `python -m octopus_ai.evaluation --plan --provider <id> --model <id> --key-env NAME` scores plan structure over the golden positives on that model; the bar is `card_rate` 1.0 and `clean_rate` at or above 0.8. The key is read from the named variable rather than passed on the command line, so it stays out of shell history and process listings. Credentialed and not in CI, like `--gate`.
+
+**Tests:** 592 across 40 files under `services/ai/tests/`, no `conftest.py`, stubs duck-typed. Wire shapes use `httpx.MockTransport`; endpoint tests assign onto `main_module.state`.
+
+**Not built here.** Schema-mode JSON for Anthropic (`output_config`) or Google, whose trigger is a `card_rate` below 1.0 on either. Streaming. The Responses API. Vendor web search on the fallback call. Image generation. Any Node wiring, any database change and any settings surface: nothing yet **sends** a target, so today every call still runs on the house key. Pooled billing and metering. `MODEL_KEY_SECRET` rotation. The `base_url` seam exists on the wire and has no UI.
+
+
 > **Implementation status (Phase 1):** the **seam is live end to end, with a deliberately trivial core.** `services/ai` (FastAPI) exposes `GET /health` and `POST /plan`, returning typed **proposals**; `apps/api` exposes `POST /api/rooms/:roomId/agent-runs` which returns `202 + runId` and executes those proposals, posting to chat as `author_kind='agent'`. The agent is therefore a real chat member: its messages persist under RLS and reach clients over Realtime like anyone else's.
 >
 > **RAG is live and the core now answers from it.** `/plan` retrieves before it reasons and picks a core from the result:

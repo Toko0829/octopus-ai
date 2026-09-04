@@ -71,7 +71,7 @@ class _Providers:
         self._payload = payload
         self.seen_system: str | None = None
 
-    async def complete_json(self, system, user, max_tokens=None):
+    async def complete_json(self, system, user, max_tokens=None, **_kwargs):
         self.seen_system = system
         if isinstance(self._payload, Exception):
             raise self._payload

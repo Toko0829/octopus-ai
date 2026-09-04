@@ -14,7 +14,9 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .campaign import draft_campaign
@@ -34,7 +36,7 @@ from .planner import (
     plan_grounded,
     refuse,
 )
-from .providers import Providers
+from .providers import HOUSE_PROVIDER, Providers
 from .replan import replan
 from .retrieval import RetrievalResult, Retriever
 from .runtime import configure_torch_threads
@@ -239,22 +241,60 @@ app = FastAPI(
 )
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 without echoing what was sent.
+
+    FastAPI's default handler returns pydantic's raw error list, and pydantic v2
+    puts the failing parent OBJECT in `input` (and sometimes in `ctx`). A
+    malformed `generation` therefore comes back with the customer's API key in
+    the response body, from a validation path nobody thinks of as a data path.
+
+    Stripped for every endpoint rather than only where a key can appear. A filter
+    that has to be kept in step with which fields are secret is a filter that will
+    one day be a version behind, and the field names and messages are the whole of
+    what a caller needs to fix its request.
+    """
+    safe = [
+        {k: v for k, v in error.items() if k not in ("input", "ctx")}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": safe})
+
+
 class Health(BaseModel):
     status: str
     service: str
     version: str
     configured: bool
+    generation_provider: str | None = None
+    generation_model: str | None = None
 
 
 @app.get("/health", response_model=Health, tags=["ops"])
 def health() -> Health:
-    """Liveness probe. Reports whether configuration resolved, without leaking it."""
+    """Liveness probe. Reports whether configuration resolved, without leaking it.
+
+    The house default is named here because Node's settings surface has to say
+    what "Auto" means, and the alternative is a second copy of the model id in
+    Node's environment that can silently disagree with this one. It is a model id
+    and a provider name, which are neither secret nor per-workspace: the key they
+    belong to is not reported and never will be.
+    """
     try:
-        get_settings()
-        configured = True
+        settings = get_settings()
     except ConfigError:
-        configured = False
-    return Health(status="ok", service="octopus-ai", version=app.version, configured=configured)
+        return Health(
+            status="ok", service="octopus-ai", version=app.version, configured=False
+        )
+    return Health(
+        status="ok",
+        service="octopus-ai",
+        version=app.version,
+        configured=True,
+        generation_provider=HOUSE_PROVIDER,
+        generation_model=settings.generation_model,
+    )
 
 
 @app.post("/intake", response_model=IntakeResponse, tags=["reasoning"])
@@ -395,7 +435,15 @@ async def plan(request: PlanRequest) -> PlanResponse:
             # run, and letting a provider outage change the product's posture
             # would make the strict mode fail open on the days nobody is watching.
             if reason == "unsupported" and state.settings.ungrounded_fallback:
-                answer = await answer_ungrounded(request.goal, state.providers)
+                # The Fallback route when the workspace set one, and otherwise
+                # the route that planned: a workspace that named a model for
+                # this room should not silently get the house key because the
+                # corpus happened to come up short (ADR-0032 decision 5).
+                answer = await answer_ungrounded(
+                    request.goal,
+                    state.providers,
+                    request.generation_fallback or request.generation,
+                )
                 if answer is not None:
                     # Recorded in the same ledger as a refusal, because it is the
                     # same signal: a question the corpus could not support. The
@@ -419,7 +467,9 @@ async def plan(request: PlanRequest) -> PlanResponse:
             return refuse(request, retrieval, reason=reason, detail=verdict.reason)
 
     try:
-        return await plan_grounded(request, retrieval, state.providers, state.settings)
+        return await plan_grounded(
+            request, retrieval, state.providers, state.settings, request.generation
+        )
     except Exception:
         logger.exception(
             "generation failed after successful retrieval",

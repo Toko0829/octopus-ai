@@ -12,7 +12,7 @@ spend caps live.
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 
 class TraceContext(BaseModel):
@@ -32,6 +32,40 @@ class TraceContext(BaseModel):
             "that room and to nobody else. Optional so an older caller still validates, "
             "and absent means the shared corpus alone."
         ),
+    )
+
+
+class GenerationTarget(BaseModel):
+    """Which model answers this one request, and the key to reach it with.
+
+    The whole of what a workspace connector is on this side of the seam (ADR-0032).
+    Node resolves the workspace's route for the role, decrypts the customer's key
+    and puts both on the request; this service stores neither and holds no
+    per-workspace state, which is what keeps ADR-0006's "Python proposes" true
+    for a connector as well as for the house key.
+
+    `api_key` is a `SecretStr` so it cannot reach a log line, a repr or a trace by
+    accident. That is necessary and not sufficient: pydantic v2 echoes the failing
+    parent object in a 422 body, so `main.py` strips `input` and `ctx` from
+    validation errors as well.
+
+    `vendor` names the WIRE SHAPE and `provider` names the registry entry. They are
+    two facts rather than one because several providers can speak one dialect: an
+    OpenAI-compatible gateway is `openai_compatible` with its own `base_url`, and
+    the ledger still needs to say which provider was billed.
+    """
+
+    vendor: Literal["openai_compatible", "anthropic", "google", "fake"]
+    provider: str = Field(
+        min_length=1,
+        max_length=40,
+        description="Registry id, echoed back in the response and recorded in the ledger.",
+    )
+    model: str = Field(min_length=1, max_length=120)
+    api_key: SecretStr
+    base_url: str | None = Field(
+        default=None,
+        description="`openai_compatible` only. Absent means the vendor's own endpoint.",
     )
 
 
@@ -529,6 +563,15 @@ class ReplanRequest(BaseModel):
     context: list[IntakeSlot] = Field(default_factory=list)
     trace: TraceContext
 
+    generation: GenerationTarget | None = Field(
+        default=None,
+        description=(
+            "Which model composes the diff. Node resolves it from the persona that "
+            "signs the card. Absent means the house default, which is what an unset "
+            "route means on the settings surface."
+        ),
+    )
+
 
 class ExecuteRequest(BaseModel):
     """Execute one AI-owned task from an approved plan.
@@ -565,6 +608,15 @@ class ExecuteRequest(BaseModel):
     )
     trace: TraceContext
 
+    generation: GenerationTarget | None = Field(
+        default=None,
+        description=(
+            "Which model drafts this step. Node resolves it from the step's own "
+            "stage, so the voice that signs the work is the voice whose route ran. "
+            "Absent means the house default."
+        ),
+    )
+
 
 class PlanRequest(BaseModel):
     room_id: str
@@ -589,6 +641,24 @@ class PlanRequest(BaseModel):
 
     trace: TraceContext
 
+    generation: GenerationTarget | None = Field(
+        default=None,
+        description=(
+            "Which model plans. Node resolves it from the Strategist route. Absent "
+            "means the house default."
+        ),
+    )
+    generation_fallback: GenerationTarget | None = Field(
+        default=None,
+        description=(
+            "Which model answers when the corpus does not cover the goal (ADR-0021's "
+            "labelled tier). A separate field because the two are separately routed "
+            "on the settings surface: planning and 'answer anyway, labelled' are "
+            "different jobs and reward different models. Absent falls back to "
+            "`generation`, and then to the house default."
+        ),
+    )
+
 
 class PlanResponse(BaseModel):
     proposals: list[Proposal]
@@ -611,6 +681,24 @@ class PlanResponse(BaseModel):
             "Which reasoning core produced this, e.g. 'deterministic-v0'. Recorded so a "
             "regression can be tied to a core or prompt version."
         )
+    )
+
+    provider: str | None = Field(
+        default=None,
+        description=(
+            "Which provider actually answered: the target's registry id, or 'openai' "
+            "for the house default. Optional so an older Node still parses this "
+            "document, and null on a refusal that generated nothing at all."
+        ),
+    )
+    model: str | None = Field(
+        default=None,
+        description=(
+            "Which model actually answered. Node stamps it onto the message it writes "
+            "(ADR-0032 decision 4), so it is reported here rather than assumed from "
+            "what was requested: a service that ignored the target would otherwise "
+            "misroute silently to the house key."
+        ),
     )
 
 

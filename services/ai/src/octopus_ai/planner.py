@@ -39,12 +39,13 @@ from pydantic import ValidationError
 
 from .config import Settings
 from .plan_graph import normalise_plan_ids, sanitise_dependencies
-from .providers import ProviderError, Providers
+from .providers import ProviderError, Providers, attribution
 from .retrieval import RetrievalResult
 from .risk import clamp_risk_tier, high_risk_match, normalise_criteria
 from .schemas import (
     FUNNEL_STAGES,
     Citation,
+    GenerationTarget,
     PlanRequest,
     PlanResponse,
     PlanStage,
@@ -435,6 +436,7 @@ async def plan_grounded(
     retrieval: RetrievalResult,
     providers: Providers,
     settings: Settings,
+    target: GenerationTarget | None = None,
 ) -> PlanResponse:
     """Produce a structured, cited full-funnel plan from retrieved sources.
 
@@ -443,7 +445,18 @@ async def plan_grounded(
     were good, so a cited paragraph is still worth posting. What it must never do
     is fall back to an ungrounded plan, which is why the fallback re-generates
     from the same sources rather than salvaging the malformed JSON.
+
+    `target` is the workspace's Strategist route (ADR-0032), or `None` for the
+    house default. It changes which endpoint composes the plan and nothing else:
+    the sources, the gate that admitted them, the parsing, the citation range
+    check and the risk clamp are all the same whoever answered.
+
+    Every response this builds reports who answered, including the prose
+    fallback, because Node stamps that onto the message it writes. The retry
+    reports the same pair as the first attempt: a corrective retry is the same
+    model being shown its own error, not a second opinion.
     """
+    provider_id, model_id = attribution(target, providers)
     sources = build_sources_block(retrieval)
     about = build_context_block(request.context)
     user = f"{sources}\n\n{about}\n\nThe person's goal:\n{_echo(request.goal)}".replace(
@@ -463,6 +476,7 @@ async def plan_grounded(
             system=PLAN_SYSTEM_PROMPT,
             user=user,
             max_tokens=settings.generation_max_tokens_long,
+            target=target,
         )
         try:
             plan = parse_plan(raw, len(retrieval.chunks), agent_run_id=run_id)
@@ -481,6 +495,7 @@ async def plan_grounded(
                 system=PLAN_SYSTEM_PROMPT,
                 user=f"{user}\n\n{_correction(first)}",
                 max_tokens=settings.generation_max_tokens_long,
+                target=target,
             )
             plan = parse_plan(raw, len(retrieval.chunks), agent_run_id=run_id)
     except (ProviderError, ValidationError, ValueError) as exc:
@@ -488,13 +503,15 @@ async def plan_grounded(
             "structured plan unusable, falling back to prose",
             extra={"agent_run_id": run_id, "reason": str(exc)[:200], "retried": retried},
         )
-        text = await providers.complete(system=SYSTEM_PROMPT, user=user)
+        text = await providers.complete(system=SYSTEM_PROMPT, user=user, target=target)
         return PlanResponse(
             proposals=[PostMessageProposal(body=f"{_CARD_FALLBACK}\n\n{text.strip()}")],
             grounded=True,
             citations=citations,
             reasoning_summary=f"grounded-v1 (plan fallback): {base_summary}",
             core=GROUNDED_CORE,
+            provider=provider_id,
+            model=model_id,
         )
 
     covered = [s.stage for s in plan.stages if s.steps]
@@ -517,4 +534,6 @@ async def plan_grounded(
             + (" (after 1 retry)" if retried else "")
         ),
         core=GROUNDED_PLAN_CORE,
+        provider=provider_id,
+        model=model_id,
     )

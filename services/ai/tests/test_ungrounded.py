@@ -24,12 +24,15 @@ from octopus_ai.ungrounded import (
 class StubProviders:
     """Returns a fixed body, or raises. Records what it was asked."""
 
+    # What a call with no target runs on, which is what `attribution` reports.
+    house_model = "gpt-5.4"
+
     def __init__(self, body: str = "Do the thing, then measure it.", fail: bool = False):
         self.body = body
         self.fail = fail
         self.calls: list[dict] = []
 
-    async def complete(self, *, system: str, user: str) -> str:
+    async def complete(self, *, system: str, user: str, **_kwargs) -> str:
         if self.fail:
             raise RuntimeError("provider is down")
         self.calls.append({"system": system, "user": user})

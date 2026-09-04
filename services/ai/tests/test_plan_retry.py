@@ -83,20 +83,23 @@ def _plan_json(owner: str = "AI") -> str:
 class ScriptedProviders:
     """Returns the scripted JSON answers in order; records every call."""
 
+    # What a call with no target runs on, which is what `attribution` reports.
+    house_model = "gpt-5.4"
+
     def __init__(self, json_answers: list[str | Exception], prose: str = "A cited paragraph."):
         self._json = list(json_answers)
         self._prose = prose
         self.json_calls: list[str] = []
         self.prose_calls = 0
 
-    async def complete_json(self, *, system, user, model=None, max_tokens=None) -> str:
+    async def complete_json(self, *, system, user, model=None, max_tokens=None, **_kwargs) -> str:
         self.json_calls.append(user)
         answer = self._json.pop(0)
         if isinstance(answer, Exception):
             raise answer
         return answer
 
-    async def complete(self, *, system, user) -> str:
+    async def complete(self, *, system, user, **_kwargs) -> str:
         self.prose_calls += 1
         return self._prose
 

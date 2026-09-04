@@ -79,8 +79,8 @@ from __future__ import annotations
 import logging
 import re
 
-from .providers import Providers
-from .schemas import PlanResponse, PostMessageProposal
+from .providers import Providers, attribution
+from .schemas import GenerationTarget, PlanResponse, PostMessageProposal
 
 logger = logging.getLogger("octopus.ai.ungrounded")
 
@@ -205,13 +205,29 @@ def frame(body: str) -> str:
     return f"{_PREFACE}\n\n{body.strip()}\n\n{_POSTFACE}"
 
 
-async def answer_ungrounded(goal: str, providers: Providers) -> PlanResponse | None:
+async def answer_ungrounded(
+    goal: str,
+    providers: Providers,
+    target: GenerationTarget | None = None,
+) -> PlanResponse | None:
     """Answer from general knowledge, labelled. `None` means the caller refuses.
 
     Returning `None` rather than raising keeps the decision with the caller, which
     already has a correct, well-tested refusal for every reason this can decline.
     Adding a second refusal path here would be a second place for the copy to
     drift, and that copy has been wrong once before.
+
+    `target` is the workspace's Fallback route (ADR-0032 decision 5), or `None`
+    for the house default. **Every constraint above is unchanged by it**, and the
+    order below is the reason it can be allowed at all: the regulated-topic check
+    runs BEFORE any provider is called, so a customer's own key never buys an
+    answer to a tax question. The label is still written in code, which matters
+    more with several vendors rather than less: a disclaimer four models each
+    phrase slightly differently is four different disclaimers.
+
+    The response says which model answered, because this is the one tier whose
+    answer rests on the model rather than on the corpus. The gap ledger records
+    that pair, so the queue can be read per provider.
     """
     if rule := is_regulated(goal):
         # Not a failure. This is the tier declining to operate where rule 10 and
@@ -223,6 +239,7 @@ async def answer_ungrounded(goal: str, providers: Providers) -> PlanResponse | N
         body = await providers.complete(
             system=UNGROUNDED_SYSTEM_PROMPT,
             user=f"The person's question:\n{' '.join(goal.split())}",
+            target=target,
         )
     except Exception as exc:
         # Same posture as the gate: a provider failure degrades to the refusal
@@ -239,6 +256,7 @@ async def answer_ungrounded(goal: str, providers: Providers) -> PlanResponse | N
         logger.warning("ungrounded answer came back empty; refusing instead")
         return None
 
+    provider_id, model_id = attribution(target, providers)
     return PlanResponse(
         # A post_message and never a plan. This is the enforcement, not a
         # convention: a plan proposal is what Node materialises into a task DAG,
@@ -254,4 +272,6 @@ async def answer_ungrounded(goal: str, providers: Providers) -> PlanResponse | N
             "unable to propose a plan."
         ),
         core=UNGROUNDED_CORE,
+        provider=provider_id,
+        model=model_id,
     )
