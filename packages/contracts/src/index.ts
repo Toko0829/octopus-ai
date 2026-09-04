@@ -359,6 +359,18 @@ export const MODEL_PROVIDERS: Readonly<Record<ModelProviderId, ModelProviderProf
           tier: 'strong',
           images: true,
         }),
+        // `strong` like every other image model, and the word is not about price.
+        // The tier says what a model is FOR, and the cheap tier means
+        // classification-shaped work that stays on the house model whatever a
+        // workspace connects. This one is a third of Flash Image per picture and
+        // that fact belongs in the label a person reads, not in a field whose
+        // meaning would then be two things at once.
+        Object.freeze({
+          id: 'gemini-3.1-flash-lite-image',
+          label: 'Gemini 3.1 Flash Lite Image',
+          tier: 'strong',
+          images: true,
+        }),
         Object.freeze({
           id: 'gemini-3-pro-image',
           label: 'Gemini 3 Pro Image',

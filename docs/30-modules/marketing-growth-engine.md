@@ -28,14 +28,15 @@ authorisation to pause ([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pa
 **Creative is a byte-producer now, and it is the first one this system has had**
 ([ADR-0033](../40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)).
 
-| Piece                           | What it is                                                                                                                                           |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| the brief                       | An ordinary text artifact with citations, classified by `deliverable.py` from the step's own words. **Still the deliverable**, whatever happens next |
-| `generate_image`                | The sixth proposal kind. Prompt, count of one to three, one of four aspect ratios. No bytes, no key                                                  |
-| `apps/api/src/lib/image-gen.ts` | The Gemini Interactions call, one request per image, on the workspace's own Google key, capped at 8 MB per image                                     |
-| the files                       | `kind = 'asset'` artifacts with `content_type`, in the private bucket under `<project_id>/<artifact_id>/`                                            |
-| the card                        | Says how many images and where they are. Never a link: a signed URL is a ten-minute bearer credential and the payload is stored and re-broadcast     |
-| `IMAGE_GEN_ENABLED`             | The deployment kill switch, on by default, in the `PUBLISH_ENABLED` family                                                                           |
+| Piece                           | What it is                                                                                                                                                                                                            |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the brief                       | An ordinary text artifact with citations, classified by `deliverable.py` from the step's own words. **Still the deliverable**, whatever happens next                                                                  |
+| `generate_image`                | The sixth proposal kind. Prompt, count of one to three, one of four aspect ratios. No bytes, no key                                                                                                                   |
+| `apps/api/src/lib/image-gen.ts` | The Gemini Interactions call, one request per image, on the workspace's own Google key, capped at 8 MB per image                                                                                                      |
+| the files                       | `kind = 'asset'` artifacts with `content_type`, in the private bucket under `<project_id>/<artifact_id>/`                                                                                                             |
+| the card                        | Says how many images and where they are. Never a link: a signed URL is a ten-minute bearer credential and the payload is stored and re-broadcast                                                                      |
+| `IMAGE_GEN_ENABLED`             | The deployment kill switch, on by default, in the `PUBLISH_ENABLED` family                                                                                                                                            |
+| the models                      | `gemini-3.1-flash-image`, `gemini-3.1-flash-lite-image` (a third of the price per picture) and `gemini-3-pro-image`. **None of them is on Google's free tier**, verified against the pricing page rather than assumed |
 
 **The prompt is derived from the brief rather than asked of the model.** Concept and Art
 direction, in code, capped at 1000 characters, so what a person approved and what the generator
@@ -48,6 +49,8 @@ leaves Node**: the deployment flag, a Creative route on this workspace, and `ima
 routed model's registry entry. Withheld rather than ignored afterwards, because the brief's own
 opening sentence is written from that capability: told images are coming and then drawing none,
 the deliverable would carry a false statement about the product.
+
+**Images are a paid capability and the product does not pretend otherwise.** Every Gemini image model reads "Not available" on Google's free tier, which is not a rate limit somebody grows into: a free-tier key gets `429 ... limit: 0` on the first call. A workspace that routes Creative without billing enabled on its Google project gets its brief and one sentence saying the provider is rate limiting the key, which is true and is the sentence the failure path was built to produce.
 
 **Not built.**
 
