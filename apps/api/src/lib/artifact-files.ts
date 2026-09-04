@@ -22,12 +22,12 @@
  *
  * **Uploads are Node-initiated only, and that is a decision rather than a
  * scheduling accident.** The Python service has no storage keys by design
- * (ADR-0006) and never handles bytes. `WriteArtifactProposal` and
- * `ArtifactEmbedPayload` are unchanged, and there is no file-producing proposal
- * kind: a wire shape designed before its first producer is a guess, and unknown
- * kinds already fail loudly. `generate_creative` stays a structured brief
- * arriving as an ordinary text artifact until a byte-producer exists, which
- * lands with the creative-provider ADR.
+ * (ADR-0006) and never handles bytes. That stayed true when the byte-producer
+ * arrived: `generate_image` is a proposal `services/ai` writes and `apps/api`
+ * executes with the workspace's own key, so the bytes are minted on this side and
+ * the seam is exactly where it was (ADR-0033). The wire shape was designed with
+ * its producer rather than ahead of it, which is why that proposal carries a
+ * prompt, a count and an aspect, and carries no bytes.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -136,6 +136,12 @@ export async function writeFileArtifact(
       // file artifact render as an empty paragraph in the panel.
       body: null,
       storage_path: storagePath,
+      // The same value the object was uploaded with, written by the one call
+      // site that knows both, so the row and the object cannot disagree. A
+      // reader without it would infer the type from the filename, which this
+      // file sanitises out of untrusted input, so the panel would be deciding
+      // whether to render an image from a string a model chose.
+      content_type: input.contentType,
       citations: input.citations ?? [],
       task_run_id: input.taskRunId ?? null,
       created_by: input.createdBy ?? 'agent',

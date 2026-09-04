@@ -31,7 +31,15 @@ interface Write {
 let written: Write[];
 let liveProject: { id: string; goal: string; status: string } | null;
 let diffCalls: Record<string, unknown>[];
+let diffOpts: Record<string, unknown>[];
 let intakeCalls: number;
+/** What the fake `/plan` answers with. Reassigned per test. */
+let planReply: Record<string, unknown>;
+/** Every `/plan` request body the runner built, so the target can be seen. */
+let planInputs: Record<string, unknown>[];
+/** Rows the fake client hands back for the two model tables. */
+let routeRow: Record<string, unknown> | null;
+let connectionRow: Record<string, unknown> | null;
 
 vi.mock('./ai', () => ({
   AiServiceError: class AiServiceError extends Error {
@@ -49,15 +57,19 @@ vi.mock('./ai', () => ({
       proximity: 1,
     };
   },
-  requestPlan: async () => ({
-    proposals: [{ kind: 'post_message', body: 'Here is what I would do.' }],
-    citations: [],
-    reasoning_summary: 's',
-  }),
+  requestPlan: async (_url: string, input: Record<string, unknown>) => {
+    planInputs.push(input);
+    return planReply;
+  },
 }));
 
 vi.mock('./replan-diff', () => ({
-  produceDiff: async (_admin: unknown, _opts: unknown, input: Record<string, unknown>) => {
+  produceDiff: async (
+    _admin: unknown,
+    opts: Record<string, unknown>,
+    input: Record<string, unknown>,
+  ) => {
+    diffOpts.push(opts);
     diffCalls.push(input);
   },
 }));
@@ -86,10 +98,12 @@ function client() {
     in: () => b,
     order: () => b,
     limit: () => b,
-    maybeSingle: async () => ({
-      data: table === 'rooms' ? { owner_id: OWNER } : null,
-      error: null,
-    }),
+    maybeSingle: async () => {
+      if (table === 'rooms') return { data: { owner_id: OWNER }, error: null };
+      if (table === 'model_routes') return { data: routeRow, error: null };
+      if (table === 'model_connections') return { data: connectionRow, error: null };
+      return { data: null, error: null };
+    },
     single: async () => ({ data: { id: 'row-1' }, error: null }),
     insert: (values: Record<string, unknown>) => {
       written.push({ table, op: 'insert', values });
@@ -110,13 +124,14 @@ vi.mock('./supabase', () => ({
 
 const { createAgentRunner } = await import('./agent-runner');
 
-const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never;
+const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
-function runner() {
+function runner(modelKeySecret: string | null = null) {
   return createAgentRunner({
     supabase: { url: 'http://localhost', publishableKey: 'k', secretKey: 's' } as never,
     aiServiceUrl: 'http://ai',
-    log,
+    modelKeySecret,
+    log: log as never,
   });
 }
 
@@ -126,8 +141,22 @@ const ack = () => messages().find((m) => String(m.values.idempotency_key).endsWi
 beforeEach(() => {
   written = [];
   diffCalls = [];
+  diffOpts = [];
   intakeCalls = 0;
+  planInputs = [];
+  routeRow = null;
+  connectionRow = null;
+  planReply = {
+    proposals: [{ kind: 'post_message', body: 'Here is what I would do.' }],
+    citations: [],
+    reasoning_summary: 's',
+    provider: 'openai',
+    model: 'gpt-5.4',
+  };
   liveProject = { id: PROJECT, goal: 'Grow the newsletter', status: 'active' };
+  log.info.mockClear();
+  log.warn.mockClear();
+  log.error.mockClear();
 });
 
 describe('a mention from the owner, on a project that is running', () => {
@@ -243,5 +272,123 @@ describe('what a mention says', () => {
     await runner().startRun(ROOM, '@Analyst do the thing', 'run-2', OWNER);
 
     for (const m of messages()) expect(String(m.values.body ?? '')).not.toContain('—');
+  });
+});
+
+/**
+ * Which model wrote what (ADR-0032 decision 4).
+ *
+ * The rule the table cannot enforce is enforced here: **only text a model wrote
+ * gets a model.** `messages_model_agent_only` refuses a model on a person's or a
+ * system's row, which is the forgery half; it cannot tell our own prose from a
+ * model's, and every notice this file posts is an `agent` row it could
+ * legitimately stamp. So the assertions below are mostly about the notices.
+ */
+describe('attribution on what a run posts', () => {
+  const stamped = () =>
+    messages().filter((m) => m.values.model !== null && m.values.model !== undefined);
+
+  it('stamps a proposal the core wrote with the model that answered', async () => {
+    planReply.model = 'claude-sonnet-5';
+    planReply.provider = 'anthropic';
+    await runner().startRun(ROOM, 'grow my newsletter to 1000 subscribers', 'run-1', OWNER);
+
+    const proposal = messages().find((m) => String(m.values.idempotency_key).endsWith(':0'));
+    expect(proposal?.values.model).toBe('claude-sonnet-5');
+  });
+
+  it('leaves the started notice unstamped, because those words are ours', async () => {
+    await runner().startRun(ROOM, 'grow my newsletter to 1000 subscribers', 'run-1', OWNER);
+
+    const started = messages().find((m) => String(m.values.idempotency_key).endsWith(':started'));
+    expect(started?.values.body).toBeTruthy();
+    expect(started?.values.model).toBeNull();
+  });
+
+  it('leaves a failure notice unstamped, in the platform voice', async () => {
+    planReply = Promise.reject(new Error('boom')) as never;
+    await runner().startRun(ROOM, 'grow my newsletter to 1000 subscribers', 'run-1', OWNER);
+
+    const failed = messages().find((m) => String(m.values.idempotency_key).endsWith(':failed'));
+    expect(failed?.values.author_kind).toBe('system');
+    expect(failed?.values.model).toBeNull();
+  });
+
+  it('stamps nothing at all when a mention is acknowledged', async () => {
+    // The ack is one templated sentence and the card is the diff producer's to
+    // post. Neither is this run's to attribute.
+    await runner().startRun(ROOM, '@Ads move the budget to Meta', 'run-1', OWNER);
+    expect(stamped()).toHaveLength(0);
+  });
+
+  it('records the house model when the room has routed nothing', async () => {
+    // `gpt-5.4` is reported by the service, not read from our own configuration.
+    // It is still a fact about what wrote the message, so it is still recorded.
+    await runner().startRun(ROOM, 'grow my newsletter to 1000 subscribers', 'run-1', OWNER);
+    const proposal = messages().find((m) => String(m.values.idempotency_key).endsWith(':0'));
+    expect(proposal?.values.model).toBe('gpt-5.4');
+  });
+});
+
+describe('the target a run resolves', () => {
+  const HEX = 'a'.repeat(64);
+  const KEY = 'sk-ant-live-not-a-real-key-4f2a';
+
+  async function connectAnthropic(role: string) {
+    const { modelConnectionAad, parseMasterKey, seal } = await import('./envelope');
+    const sealed = seal(KEY, parseMasterKey(HEX), modelConnectionAad(ROOM, 'anthropic', 1));
+    routeRow = { role, provider: 'anthropic', model: 'claude-opus-5' };
+    connectionRow = {
+      key_ciphertext: sealed.ciphertext,
+      key_iv: sealed.iv,
+      key_tag: sealed.tag,
+      key_version: 1,
+    };
+  }
+
+  it('sends no generation when nothing is routed', async () => {
+    await runner().startRun(ROOM, 'grow my newsletter to 1000 subscribers', 'run-1', OWNER);
+    expect(planInputs[0]?.generation).toBeNull();
+    expect(planInputs[0]?.generationFallback).toBeNull();
+  });
+
+  it('sends the strategist route and the fallback route together', async () => {
+    // One request, two roles, because `/plan` has two exits: a grounded turn is
+    // the Strategist's and a refused one is the Fallback's, and which runs is
+    // decided inside the service by the gate.
+    await connectAnthropic('strategist');
+    await runner(HEX).startRun(ROOM, 'grow my newsletter to 1000 subscribers', 'run-1', OWNER);
+
+    expect(planInputs[0]?.generation).toMatchObject({ model: 'claude-opus-5', apiKey: KEY });
+    expect(planInputs[0]?.generationFallback).toMatchObject({ model: 'claude-opus-5' });
+  });
+
+  it('never writes the key to a log line', async () => {
+    await connectAnthropic('strategist');
+    await runner(HEX).startRun(ROOM, 'grow my newsletter to 1000 subscribers', 'run-1', OWNER);
+
+    const logged = JSON.stringify([
+      ...log.info.mock.calls,
+      ...log.warn.mock.calls,
+      ...log.error.mock.calls,
+    ]);
+    expect(logged).toContain('claude-opus-5');
+    expect(logged).not.toContain(KEY);
+  });
+
+  it('fails the run with the variable named when a route has no master key', async () => {
+    routeRow = { role: 'strategist', provider: 'anthropic', model: 'claude-opus-5' };
+    await runner(null).startRun(ROOM, 'grow my newsletter to 1000 subscribers', 'run-1', OWNER);
+
+    const failed = messages().find((m) => String(m.values.idempotency_key).endsWith(':failed'));
+    expect(String(failed?.values.body)).toContain('MODEL_KEY_SECRET');
+    // Loudly, and having written nothing: a run that quietly used the house key
+    // would bill us for a provider the owner chose and stamp a model they did not.
+    expect(planInputs).toHaveLength(0);
+  });
+
+  it('hands the master key on to the diff producer a mention reaches', async () => {
+    await runner(HEX).startRun(ROOM, '@Ads move the budget to Meta', 'run-1', OWNER);
+    expect(diffOpts[0]).toMatchObject({ modelKeySecret: HEX });
   });
 });

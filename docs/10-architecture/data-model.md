@@ -1011,6 +1011,64 @@ Verified by `supabase/tests/model_connections.sql`, **22 assertions against the 
 
 **The intended lint.** `model_connections` reports `rls_enabled_no_policy` at INFO, joining `channel_connections`, `events`, `ledger_entries`, `retrieval_gaps`, `ops_actions`, `plan_diffs`, `node_verifications` and `eval_golden_set`. That is the design rather than a finding: the table is server-only, and the day it grows a select policy is the day a member can read a ciphertext. `model_routes` does not appear, because it has one.
 
+### Which model wrote it (`20260913122000_message_model.sql`)
+
+`messages.model` and `task_runs.provider` / `task_runs.model`: the attribution half of [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md), and the one part of it a reader actually sees. Node stamps the pair from what the reasoning service reports **answered**, never from what it asked for, because a service that ignored the target would otherwise be recorded as having honoured it.
+
+**`text` with a length bound and no closed check, which is the opposite of `persona` one migration back and deliberate.** `messages_persona_known` closes its set on the argument that a client trusts the four names it renders. Model ids belong to vendors, who retire and rename them without asking, so a closed set here would mean that the day one ships a model this repository has not listed, a run that succeeded and produced real work **fails at the write** and the person loses the output to a label. `labelForModel` renders an unrecognised id as itself, because an id we do not know is still the true answer to what wrote a thing.
+
+**Two constraints, refusing two different mistakes.** `messages_model_agent_only` refuses a model on a system notice or a person's message, which is the forgery half; `messages_model_length` is the bound that keeps an unbounded string out of a jsonb payload and a chat bubble. What the table **cannot** enforce is the other half of the rule, that only text a model actually wrote carries one: a run notice is an `agent` row composed in TypeScript, and `apps/api` writes null on it. A check that appeared to cover that would read as a guarantee and would not be one.
+
+**The client cannot name one.** `messages_insert_own` gains `and model is null`, the treatment `author_kind` has had since `20260904127000` and `persona` since `20260912120000`, and the argument is sharper here: a message filed under a model that never saw it is a fabricated attribution sitting in a real audit trail, where a guess and a record are indistinguishable. `alter policy ... with check` replaces the predicate rather than appending to it, so the whole thing is retyped, and `message_model.sql`, `message_persona.sql` and `thread_scope.sql` were all re-run against the restatement.
+
+**No backfill**, and this one would even have been accurate: every existing agent row really was written on the house default. It would still be a value written into an audit trail by inference rather than by observation, which is the kind of accuracy that stops being accurate quietly. Null means nobody recorded which, and that is what is true of them.
+
+`task_runs` takes the pair **per attempt**, which is what makes it useful: a step that failed on one provider and succeeded after the owner switched routes has two rows saying two different things and both are true. `provider` sits beside `model` rather than being derived from it, since an id maps to a provider only through the registry shipped today and one since dropped from it would resolve to nothing. The heal sweep reads `task_runs.model` back through `artifacts.task_run_id` when it re-delivers work an earlier process produced, rather than asking the routes what would answer today.
+
+Verified by `supabase/tests/message_model.sql`, **12 assertions against the live database**, dry-run and controlled the same way as the pair above: the column exists; an agent row records a model and one without a model is still valid; a system notice, a person's message and a 121-character id are each `23514`; a room member and a thread-scoped node can both still post, which is the regression a bad policy restatement would silently cause; a client stamping its own model is `42501`; the realtime broadcast carries the column; and `task_runs` has both new columns.
+
+### Which model answered the gap, and whether it helped (`20260913123000_retrieval_gaps_provider.sql`, `20260913124000_feedback_message.sql`)
+
+**Two columns and one sibling, which together make the ungrounded tier measurable for the first time.** `20260905130000` argued that an answered gap is still a gap and let `ungrounded-general-v1` into `retrieval_gaps`. That argument holds and this is the fact it was missing: once a workspace routes Fallback to its own connector, two rows with the identical `core`, the identical gate `reason` and the identical `top_sources` can be **two different products**, and a queue read without knowing which is an average of things that did not happen.
+
+`retrieval_gaps.provider` / `.model` are `text` with a length bound and no closed check, the posture `messages.model` takes one migration back and for the same reason: model ids are a vendor's vocabulary. **Null is the normal case and stays legal**, because every refusal row carries none. `refusing-v0` never reached generation, and both gate cores are the gate declining or being unavailable, so filling these in from the configured house model would put an attribution on a sentence no model wrote. The sharpest case is the regulated refusal: `ungrounded.is_regulated` runs **before any provider is called**, so a tax question declines the tier without a customer's key being spent, and the row that results names nobody. Verified live rather than reasoned about, on a goal that cleared the domain check with 8 chunks and still recorded `provider = null`.
+
+`feedback_events.message_id` is the second subject that table has ever had. Every path into it since `20260812130000` went through a card, because every AI output a person could judge was one; the labelled ungrounded tier is not, and it is precisely the output whose quality rests on the model rather than on the corpus. `embed_id` and `message_id` are nullable siblings and a row carries whichever it was about. **There is deliberately no cross-column check requiring exactly one**, and the reason is a race rather than a preference: both are `on delete set null`, so a room cascade deleting its messages and its embeds would turn an ordinary cleanup into a constraint violation depending on which cascade ran first. The write path sets exactly one; the table declines to make a deletion order into a failure.
+
+**`on delete set null` rather than `cascade`, so a label outlives its subject.** `subject` denormalises what was actually judged at decision time, which is the same argument the card path already makes, and a cascade would delete evidence whenever somebody tidied a room.
+
+`verdict` gains `helpful` / `not_helpful` beside `approved` / `changes_requested` in the same column rather than in a new one, because they are the same kind of fact: a human's judgement of one AI output. The asymmetry in the wording is the point. A card asks for an authorisation, so consequences follow both its verdicts; a prose answer asks for nothing, and nothing downstream materialises from these two. Multiple labels per message are allowed and the latest wins, because the table has no client `UPDATE` and a changed mind therefore has to be a second row — which is itself evidence, and exactly what an append-only label table is for.
+
+**The known grant gap stays known.** `20260812130000` grants `all` to `service_role`, which includes `UPDATE` and `DELETE` on a table its own comment calls append-only, unlike `campaign_outcomes`, `events` and `retrieval_gaps`, which revoke them. Not narrowed here: this migration adds a subject, and closing that grant is a separate change with its own blast radius.
+
+The check is dropped by its auto-generated name `feedback_events_verdict_check`, **confirmed against the live catalogue first** rather than assumed, as `20260905130000` did for `retrieval_gaps_core_check`.
+
+**The per-provider rate is a join, not a payload**, and that is why nothing new is denormalised: the verdict names the message, the message names the model. Run live and returning rows:
+
+```sql
+select coalesce(m.model, 'unknown') as model,
+       count(*) filter (where f.verdict = 'helpful')     as helpful,
+       count(*) filter (where f.verdict = 'not_helpful') as not_helpful
+from public.feedback_events f
+join public.messages m on m.id = f.message_id
+where f.verdict in ('helpful', 'not_helpful')
+group by 1;
+```
+
+Verified by `supabase/tests/retrieval_gaps_provider.sql` (**5 assertions**) and `supabase/tests/message_feedback.sql` (**9**), both dry-run inside a transaction with the DDL, both controlled without it — 3 of 5 and 6 of 9 fail when the migration is absent, which is what proves the suites test the change rather than the schema they happen to run against. Applied afterwards, both recorded versions corrected to their filenames, the drift audit re-run at 98 files against 98 recorded, and the advisors showing **no new lint** beyond `feedback_events_message_idx` reporting `unused_index`, which is what a new index looks like on the day it lands. The new foreign key is **not** reported unindexed, so the partial index covers it.
+
+### What kind of file an artifact is (`20260914120000_artifact_content_type.sql`)
+
+`artifacts.content_type`, and the reader is a browser deciding whether it is being handed a picture. A creative step on a workspace with an image connector now writes `asset` rows beside its brief ([ADR-0033](../40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)), and the project panel has to choose between rendering an `<img>` and offering a download **before** it fetches anything. The only other source for that choice is `storage_path`'s filename, which `safeFilename` sanitises out of an artifact title a model wrote, so routing rendering on it would let a model decide how bytes are interpreted.
+
+**Nullable, no backfill, no default.** Every row written before this is a proof file whose type nobody recorded, and inferring one from a path afterwards is a guess written into a table as a fact, which is the shape of accuracy that stops being accurate quietly. A default of `application/octet-stream` would be worse than null: it would assert a fact about content on every text artifact in the system, where `body` is the content and there is no file at all.
+
+**Two constraints, refusing two different mistakes.** `artifacts_content_type_length` is the bound that keeps an unbounded string out of a jsonb payload and an HTML attribute. `artifacts_content_type_needs_a_file` refuses a type on a row with no `storage_path`, because that is a claim about bytes that do not exist, and the panel would then hold a row saying `image/png` with nothing to render. No closed vocabulary, for the reason `messages.model` has none one migration back: media types are a registry we do not own, and a vendor returning a format we did not list would fail the write on a step that succeeded and produced real work.
+
+**It is not a safety control**, and saying so here is the point of the column comment. What makes a browser treat these bytes as an image is the type Storage was given at upload; what stops a hostile one being served from our own origin is that the bucket is private and every read is a short-lived signed URL on Storage's own host.
+
+Verified by `supabase/tests/artifacts.sql`, grown from 15 assertions to **18**: the column exists, a file artifact with `image/png` is accepted, and a content type on a body-only row is `23514`. Dry-run inside a transaction with the DDL (18 of 18) and controlled without it (15 of 18, the three new ones failing `42703` on the missing column), which is what proves the suite tests the change rather than the schema it happens to run against. Applied, the recorded version corrected to the filename, and the advisors showing no new lint.
+
 ## ERD overview (domains)
 
 ```
@@ -1026,6 +1084,7 @@ Marketing     campaigns ─*─ ad_entities (tree)   campaigns ─*─ campaign_
               rooms ─*─ channel_connections (OAuth, room-scoped, no client reader)
 Models        rooms ─*─ model_connections (sealed customer key, no client reader)
               rooms ─*─ model_routes (which model per voice; members read, server writes)
+              messages.model · task_runs.provider/model (which model actually answered)
 Knowledge     documents ─*─ doc_chunks (halfvec + tsvector)   knowledge_sources   suppliers   cost_benchmarks
 Audit         events (append-only, event-sourced)   notifications   delivery_log   ops_actions
 ```
@@ -1038,16 +1097,16 @@ Audit         events (append-only, event-sourced)   notifications   delivery_log
 
 ## Chat schema
 
-| Table                                 | Key columns                                                                                                                                                                                            |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `rooms`                               | `id`, `project_id`, `kind` (guild/dm), `created_at`                                                                                                                                                    |
-| `room_members`                        | **live** — `room_id`, `user_id`, `role`, `scope` (`room`/`thread`, checked), `thread_id?` (`20260901122000`, bound to `scope` by check), `joined_at`, `expires_at` (time-boxed node access)            |
-| `channels`                            | `id`, `room_id`, `name`, `kind` (text/topic), `position`; `unique (id, room_id)` as a foreign-key target (`20260901120000`)                                                                            |
-| `threads`                             | **live** (`20260901120000`) — `id`, `room_id` (denormalised), `channel_id`, `task_id?` UNIQUE, `title`, `created_at`; `unique (id, room_id)`, composite FK to `channels (id, room_id)`. No writer      |
+| Table                                 | Key columns                                                                                                                                                                                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `rooms`                               | `id`, `project_id`, `kind` (guild/dm), `created_at`                                                                                                                                                                                                                |
+| `room_members`                        | **live** — `room_id`, `user_id`, `role`, `scope` (`room`/`thread`, checked), `thread_id?` (`20260901122000`, bound to `scope` by check), `joined_at`, `expires_at` (time-boxed node access)                                                                        |
+| `channels`                            | `id`, `room_id`, `name`, `kind` (text/topic), `position`; `unique (id, room_id)` as a foreign-key target (`20260901120000`)                                                                                                                                        |
+| `threads`                             | **live** (`20260901120000`) — `id`, `room_id` (denormalised), `channel_id`, `task_id?` UNIQUE, `title`, `created_at`; `unique (id, room_id)`, composite FK to `channels (id, room_id)`. No writer                                                                  |
 | `messages`                            | `id`, `room_id`, `channel_id`, `thread_id?` (**live**, `20260901121000`), `author_id`, `author_kind` (user/agent/node/system), `persona?` (**live**, `20260912120000`, text + two checks), `body`, `idempotency_key` UNIQUE, `seq` (ordering cursor), `created_at` |
-| `reactions`, `pins`, `saved_messages` | —                                                                                                                                                                                                      |
-| `action_embeds`                       | **live** (`20260812120000`) — `id`, `message_id` UNIQUE, `room_id`, `component` (plan/approval/pay/sign/assign), `payload` JSONB, `required_role`, `state`, `acted_by`, `acted_at`, `expires_at`       |
-| `presence`                            | ephemeral (Realtime Presence), not authoritative in Postgres                                                                                                                                           |
+| `reactions`, `pins`, `saved_messages` | —                                                                                                                                                                                                                                                                  |
+| `action_embeds`                       | **live** (`20260812120000`) — `id`, `message_id` UNIQUE, `room_id`, `component` (plan/approval/pay/sign/assign), `payload` JSONB, `required_role`, `state`, `acted_by`, `acted_at`, `expires_at`                                                                   |
+| `presence`                            | ephemeral (Realtime Presence), not authoritative in Postgres                                                                                                                                                                                                       |
 
 - **Write path:** Fastify inserts the message (with `idempotency_key`, `seq`); a trigger broadcasts it. The AI is `author_kind='agent'`.
 - **`persona` names which of four agent voices wrote an agent message** (`strategist`, `content`, `ads`, `analyst`), chosen in `apps/api` from the step's `tasks.stage`. `text` with two named checks rather than an enum, because the set is expected to move and an enum value cannot be dropped ([ADR-0031](../40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md), the ADR-0022 argument). `messages_persona_known` closes the set; `messages_persona_agent_only` refuses one on any row that is not the agent's. **Never client-writable:** `messages_insert_own` carries `persona is null`, exactly as it constrains `author_kind`, so a forged persona is refused by RLS and not merely dropped by the route. NULL on every row written before the column, and nothing was backfilled: guessing which specialist "would have" written an old message puts a guess into an audit trail.
@@ -1219,14 +1278,14 @@ campaign`). Setting it authorises the automatic pause
 
 ## RAG schema
 
-| Table                          | Key columns                                                                                                                                              |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `knowledge_sources`            | `id`, `url`, `authority`, `crawl_cadence`, `last_crawled`, `content_hash`                                                                                |
-| `documents`                    | `id`, `source_id`, `jurisdiction`, `business_type`, `doc_type`, `effective_date`, `valid_from`, `valid_to`, `content_hash`, `version`, `lang`            |
-| `doc_chunks`                   | `id`, `document_id`, `parent_id`, `chunk_text`, `context_prefix`, `embedding halfvec(1024)`, `fts tsvector` (generated), `metadata` JSONB, `embed_model` |
-| `suppliers`, `cost_benchmarks` | **typed rows**, not prose chunks (structured retrieval)                                                                                                  |
-| `eval_golden_set`              | `id`, `query`, `expected`, `jurisdiction`                                                                                                                |
-| `retrieval_gaps`               | `id`, `core`, `surface`, `goal` (scrubbed), `reason`, `candidates_considered`, `chunks_retrieved`, `top_sources` JSONB, `room_id`, `created_at`          |
+| Table                          | Key columns                                                                                                                                                          |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `knowledge_sources`            | `id`, `url`, `authority`, `crawl_cadence`, `last_crawled`, `content_hash`                                                                                            |
+| `documents`                    | `id`, `source_id`, `jurisdiction`, `business_type`, `doc_type`, `effective_date`, `valid_from`, `valid_to`, `content_hash`, `version`, `lang`                        |
+| `doc_chunks`                   | `id`, `document_id`, `parent_id`, `chunk_text`, `context_prefix`, `embedding halfvec(1024)`, `fts tsvector` (generated), `metadata` JSONB, `embed_model`             |
+| `suppliers`, `cost_benchmarks` | **typed rows**, not prose chunks (structured retrieval)                                                                                                              |
+| `eval_golden_set`              | `id`, `query`, `expected`, `jurisdiction`                                                                                                                            |
+| `retrieval_gaps`               | `id`, `core`, `surface`, `goal` (scrubbed), `reason`, `candidates_considered`, `chunks_retrieved`, `top_sources` JSONB, `room_id`, `provider`, `model`, `created_at` |
 
 **Indexes:** HNSW on `doc_chunks.embedding` (`halfvec_cosine_ops`, `m=16`, `ef_construction=200`), GIN on `fts`, partial btree on filter columns (`market`, `business_type`, `doc_type`) and on `(valid_from, valid_to)`.
 
@@ -1253,7 +1312,7 @@ Details worth knowing before touching this schema:
 
 - **`rooms.owner_id` exists because `required_role` needed something to check.** `action_embeds` carries `required_role = 'owner'`, and nothing could evaluate it: `room_members.role` is the platform role enum (`user` / `human_node` / `admin`), not a statement of ownership, and every member carries `user`. Without the column the check would have been nominal, written down and enforced by nothing. Added in `20260812130000`, backfilled from the earliest member (which is the creator, since `POST /api/rooms` inserts the caller immediately after creating the room) and set explicitly on creation thereafter, because "earliest member" is a heuristic while the creator is a fact known at the time. Nullable on purpose: a null owner means nobody can approve, which is the safe default rather than the permissive one.
 
-- **`feedback_events` is append-only by grant** (`20260812130000`). Flywheel v0: every approve / request-changes is a labelled example of a human accepting or rejecting AI output, and the correction rate derived from it is the metric that says whether the AI is learning the vertical ([learning-flywheel.md](learning-flywheel.md)). No client role gets `UPDATE` or `DELETE`, because a training signal that can be rewritten after the fact is not evidence. `subject` denormalises the judged payload deliberately: the embed's state changes after the verdict, and a label must describe what was actually judged rather than what the row looks like later.
+- **`feedback_events` is append-only by grant** (`20260812130000`). Flywheel v0: every approve / request-changes is a labelled example of a human accepting or rejecting AI output, and the correction rate derived from it is the metric that says whether the AI is learning the vertical ([learning-flywheel.md](learning-flywheel.md)). No client role gets `UPDATE` or `DELETE`, because a training signal that can be rewritten after the fact is not evidence. `subject` denormalises the judged payload deliberately: the embed's state changes after the verdict, and a label must describe what was actually judged rather than what the row looks like later. **Since `20260913124000` it has a second subject**: `message_id` beside `embed_id`, and `helpful` / `not_helpful` beside the two card verdicts, so the one output whose quality rests on the model rather than on the corpus can finally be judged. Joined to `messages.model`, that is what makes a per-provider rate a query.
 
 - **`action_embeds` is client-readable and server-written.** Membership is inherited from the message's room via `private.is_room_member`, so an embed can never be visible to someone who cannot see the message it belongs to. There is deliberately **no client INSERT or UPDATE policy**: a client that could insert here could fabricate an approval card, and one that could update freely could approve on another member's behalf. Acting on an embed goes through an API route that re-checks `required_role`, because a rule enforced only in the UI is not enforced. `unique (message_id)` keeps it one card per message, since two cards on one utterance have no defined render order.
 

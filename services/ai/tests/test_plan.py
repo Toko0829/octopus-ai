@@ -8,13 +8,26 @@ TestClient is deliberately not used as a context manager, so the lifespan (which
 builds real clients and requires configuration) never runs.
 """
 
+import asyncio
+from types import SimpleNamespace
+
+import pytest
 from fastapi.testclient import TestClient
 
 import octopus_ai.main as main_module
+from octopus_ai.gaps import GapLedger
+from octopus_ai.groundedness import Groundedness
 from octopus_ai.main import app
-from octopus_ai.retrieval import RetrievalResult
+from octopus_ai.retrieval import RetrievalResult, RetrievedChunk
+from octopus_ai.schemas import PlanResponse, PostMessageProposal
 
 client = TestClient(app)
+
+
+async def _drain() -> None:
+    """Let the ledger's scheduled write run. `record` returns before it has."""
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
 GOAL = "launch and grow my focus app Rune, get me to my first 1,000 paying users"
 
@@ -206,3 +219,145 @@ class TestGenerationTarget:
         assert "generation_model" in body
         assert "generation_provider" in body
         assert "api_key" not in body
+
+
+class TestTheAnsweredGapNamesItsConnector:
+    """What the ledger records when the ungrounded tier answers, and when it does not.
+
+    The ledger row is the one place a person reads to decide what to ingest next,
+    and once a workspace routes Fallback to its own connector, two rows with the
+    same core, the same gate reason and the same near misses can be two entirely
+    different products. This drives the real `/plan` path rather than
+    `GapLedger.record` directly, because the fact worth pinning is not that the
+    ledger stores a string it was handed: it is that **the string comes from the
+    response the tier actually produced** rather than from the target we asked
+    for or from the configured house model.
+    """
+
+    @staticmethod
+    def _chunk() -> RetrievedChunk:
+        return RetrievedChunk(
+            chunk_id="c1",
+            document_id="doc-1",
+            text="Landing pages convert when the promise matches the ad.",
+            title="Landing pages",
+            market="US",
+            doc_type="playbook",
+            effective_date=None,
+            source_url=None,
+            source_label="Octopus internal playbook",
+            authority="internal",
+            rrf_score=0.03,
+            rerank_score=0.02,
+        )
+
+    class _Retriever:
+        """Retrieval that returns something, so the gate rather than the threshold decides."""
+
+        def __init__(self, chunk):
+            self._chunk = chunk
+
+        async def retrieve(self, *_a, **_k):
+            return RetrievalResult(
+                chunks=[self._chunk], candidates_considered=25, dropped_below_threshold=3
+            )
+
+    class _Db:
+        def __init__(self):
+            self.rows: list[dict] = []
+
+        async def insert_retrieval_gap(self, row: dict) -> None:
+            self.rows.append(row)
+
+    def _install_gate(self, monkeypatch, outcome: str, answer):
+        """The gate refuses; `answer` is what the tier then returns (or None)."""
+        db = self._Db()
+        main_module.state.retriever = self._Retriever(self._chunk())
+        main_module.state.providers = object()
+        main_module.state.settings = SimpleNamespace(
+            query_decomposition=False,
+            generation_model_cheap="gpt-5.4-nano",
+            groundedness_check=True,
+            active_groundedness_model="gpt-5.4-nano",
+            ungrounded_fallback=True,
+        )
+        main_module.state.gaps = GapLedger(db)
+
+        async def _assess(*_a, **_k):
+            return Groundedness(
+                outcome=outcome, reason="the sources never discuss webinars or live sessions"
+            )
+
+        async def _answer(*_a, **_k):
+            return answer
+
+        monkeypatch.setattr(main_module, "assess", _assess)
+        monkeypatch.setattr(main_module, "answer_ungrounded", _answer)
+        return db
+
+    def teardown_method(self):
+        # The ledger is process state on `main_module`; leaving one installed
+        # would make every later refusal test write rows into a dead stub.
+        main_module.state.gaps = None
+
+    @pytest.mark.asyncio
+    async def test_an_answered_gap_records_the_model_that_answered(self, monkeypatch):
+        answered = PlanResponse(
+            proposals=[PostMessageProposal(body="General practice, labelled.")],
+            grounded=False,
+            citations=[],
+            reasoning_summary="ungrounded",
+            core="ungrounded-general-v1",
+            provider="anthropic",
+            model="claude-opus-5",
+        )
+        db = self._install_gate(monkeypatch, "unsupported", answered)
+
+        res = client.post("/plan", json=_payload(goal="how do i build a webinar funnel"))
+        assert res.status_code == 200
+        await _drain()
+
+        [row] = db.rows
+        assert row["core"] == "ungrounded-general-v1"
+        assert row["provider"] == "anthropic"
+        assert row["model"] == "claude-opus-5"
+
+    @pytest.mark.asyncio
+    async def test_a_gate_refusal_records_no_model_because_none_was_called(self, monkeypatch):
+        """`unverified` never attempts the tier at all, so nothing answered.
+
+        This is the row that would be wrong if the attribution were read off the
+        configuration instead of off the answer: the house model is right there in
+        settings, and stamping it here would claim a model wrote a refusal it
+        never saw.
+        """
+        db = self._install_gate(monkeypatch, "unverified", None)
+
+        res = client.post("/plan", json=_payload(goal="how do i build a webinar funnel"))
+        assert res.status_code == 200
+        await _drain()
+
+        [row] = db.rows
+        assert row["core"] == "refusing-unverified-v1"
+        assert row["provider"] is None
+        assert row["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_declined_tier_records_no_model_either(self, monkeypatch):
+        """`answer_ungrounded` returning None is how a regulated topic declines.
+
+        `is_regulated` runs before any provider is called, so a customer's own key
+        is never spent on a tax question and the row that results must name
+        nobody. Asserted here rather than only in `test_ungrounded.py` because the
+        two halves live in different modules and the row is written by this one.
+        """
+        db = self._install_gate(monkeypatch, "unsupported", None)
+
+        res = client.post("/plan", json=_payload(goal="do i need to register for vat"))
+        assert res.status_code == 200
+        await _drain()
+
+        [row] = db.rows
+        assert row["core"] == "refusing-ungrounded-v1"
+        assert row["provider"] is None
+        assert row["model"] is None

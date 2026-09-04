@@ -371,6 +371,29 @@ pass. The cap bounds steps **finished**, and is small because each one is a
 delivery into a room and the live database holds a backlog from before the
 executor walked on at all.
 
+### Drawing images is a capability, not a sweep, and it is still on by default
+
+`IMAGE_GEN_ENABLED` (default **on**) controls whether a creative step draws the
+images its brief describes, on the workspace's own key
+([ADR-0033](../40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)).
+It has no `MAX_PER_TICK` sibling, because it is not a sweep: nothing selects rows
+for it, and the ceiling on how much it can do is a plan an owner approved times a
+count of at most three per step.
+
+Same polarity as the sweeps above and for the family's rule, which is that a
+capability is off by default only when there is a stranger to protect. Crawling
+reaches regulators' servers; this reaches the vendor whose key a workspace owner
+pasted in themselves, spending **their** quota inside a step the same person
+approved. It is triply inert before it costs anybody anything: the workspace has
+to have connected a provider, routed Creative at a model that makes images, and
+approved a plan containing a visual step.
+
+**What turning it off costs:** creative steps still produce their brief, which
+was always the record, and nothing is drawn. The flag is read **before** the
+request to `services/ai` rather than after the answer, so the brief does not open
+by promising pictures this deployment is not going to make, which is the false
+surface the whole family's polarity argument exists to avoid.
+
 ### Measuring shares publishing's polarity, not crawling's
 
 `METRICS_ENABLED` (default **on**) and `METRICS_MAX_PER_TICK` (default 3) control

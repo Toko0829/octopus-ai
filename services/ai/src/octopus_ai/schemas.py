@@ -69,6 +69,33 @@ class GenerationTarget(BaseModel):
     )
 
 
+class CreativeCapability(BaseModel):
+    """What Node can draw with, told to this service so it knows whether to ask.
+
+    `GenerationTarget` with the credential deliberately removed, and the removal
+    is the whole point. This service never generates an image, so it never needs
+    a key to do it with: it decides whether a creative step should ask for one,
+    and Node makes the call with the key it already holds (ADR-0033). A key here
+    would be a live credential travelling to a process that has no use for it,
+    which is the definition of an unnecessary blast radius.
+
+    `provider` and `model` are carried anyway, unused by the decision, because the
+    reasoning summary says what was asked of whom and a summary that cannot name
+    the model is a summary somebody has to join a table to read.
+    """
+
+    provider: str = Field(min_length=1, max_length=40)
+    model: str = Field(min_length=1, max_length=120)
+    images: bool = Field(
+        description=(
+            "Whether the routed model actually produces image bytes. False is a "
+            "real answer rather than an absent one: a workspace can route Creative "
+            "to something that cannot draw, and this service must then leave the "
+            "brief alone rather than proposing an image nobody can make."
+        )
+    )
+
+
 class Citation(BaseModel):
     """A retrieved source backing a claim. Every one carries its effective date.
 
@@ -215,6 +242,57 @@ class WriteArtifactProposal(BaseModel):
     title: str = Field(min_length=1, max_length=140)
     body: str = Field(min_length=1, max_length=8000)
     citations: list[str] = Field(default_factory=list)
+
+
+# ------------------------------------------------------------------ images ----
+#
+# The first proposal whose execution produces BYTES rather than rows, and the
+# reason the bytes are not here. `services/ai` holds no storage key and no
+# Supabase write path (ADR-0006), so a proposal that returned base64 would give
+# this process the one thing the seam was drawn to keep out of it, and would push
+# a few megabytes through an HTTP hop that exists to carry sentences.
+#
+# So this says WHAT to draw and Node draws it, with the workspace's own Google
+# key, into the private artifacts bucket that has had a policy since
+# `20260829124000`. Same shape as every other proposal here: a description of an
+# act, executed on the other side of the boundary by the code that is allowed to
+# act (ADR-0033).
+
+
+class GenerateImageProposal(BaseModel):
+    """Propose that Node generate images for a step that asked for visuals.
+
+    Emitted BESIDE the brief, never instead of it. The brief is the record of what
+    was asked for and why, it is what a person hands to a designer when the
+    generated image is not right, and it is the only half of a creative step that
+    carries citations. An image with no brief is an asset nobody can check.
+
+    `prompt` is built in CODE from the brief's own sections rather than asked of
+    the model as a second field, because a prompt the model wrote for itself is a
+    second, unreviewable place for the deliverable to be decided; the brief is on
+    the card and the prompt is derived from it, so what was approved and what was
+    drawn cannot drift apart.
+
+    `count` is capped at three because each one is a separate billed call on the
+    customer's own key inside a step they approved once. Three covers "three
+    distinct hooks", which is the step this was built for.
+    """
+
+    kind: Literal["generate_image"] = "generate_image"
+    prompt: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="What to draw, in one paragraph. Built from the brief by the executor.",
+    )
+    count: int = Field(default=1, ge=1, le=3)
+    aspect: Literal["1:1", "4:5", "9:16", "16:9"] = Field(
+        default="1:1",
+        description=(
+            "The four ratios the paid channels this system plans for actually use. "
+            "A subset of what the vendor accepts, because an aspect nobody asked "
+            "for is a value to validate on both sides of the seam for nothing."
+        ),
+    )
 
 
 # ------------------------------------------------------------------ replan ----
@@ -376,6 +454,7 @@ Proposal = (
     | WriteArtifactProposal
     | ProposeReplanProposal
     | ProposeCampaignProposal
+    | GenerateImageProposal
 )
 
 
@@ -614,6 +693,16 @@ class ExecuteRequest(BaseModel):
             "Which model drafts this step. Node resolves it from the step's own "
             "stage, so the voice that signs the work is the voice whose route ran. "
             "Absent means the house default."
+        ),
+    )
+
+    creative: CreativeCapability | None = Field(
+        default=None,
+        description=(
+            "What Node can draw with, if anything. Absent is the ordinary answer "
+            "and means the workspace has routed no Creative model, so a visual "
+            "step gets its brief and nothing else, exactly as it did before "
+            "images existed."
         ),
     )
 

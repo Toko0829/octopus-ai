@@ -13,6 +13,8 @@ import type {
   MarkNotificationReadResponse,
   MarketingChannel,
   Message,
+  MessageFeedbackBody,
+  MessageFeedbackResponse,
   ModelConnection,
   ModelSettingsResponse,
   NodeCredential,
@@ -448,6 +450,24 @@ export function disconnectModel(roomId: string, connectionId: string) {
 export function patchModelRoutes(roomId: string, body: PatchModelRoutesBody) {
   return bff<ModelSettingsResponse>(`/rooms/${roomId}/models/routes`, {
     method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Rate a model-written reply helpful or not.
+ *
+ * The server re-checks ownership and refuses anything with a card attached, a
+ * message no model wrote, and one the caller cannot see. The UI shows the
+ * control only where it applies, but that is presentation: this call can be made
+ * by anyone and is expected to be refused when it should be.
+ *
+ * Typed and unused for now. The control lands with the Models block in the next
+ * slice; this lands with the route so the seam is one change rather than two.
+ */
+export function labelMessage(roomId: string, messageId: string, body: MessageFeedbackBody) {
+  return bff<MessageFeedbackResponse>(`/rooms/${roomId}/messages/${messageId}/feedback`, {
+    method: 'POST',
     body: JSON.stringify(body),
   });
 }

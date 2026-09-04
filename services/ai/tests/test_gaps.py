@@ -198,6 +198,53 @@ async def test_the_execute_surface_is_recorded_distinctly():
     assert db.rows[0]["surface"] == "execute"
 
 
+@pytest.mark.asyncio
+async def test_an_answered_gap_names_the_connector_that_answered_it():
+    """The queue is read per provider, so the row has to carry one.
+
+    Two rows with the same core, the same gate reason and the same near misses can
+    be two different products once a workspace routes Fallback to its own
+    connector. Without this pair, reading the queue averages them.
+    """
+    db = FakeDb()
+    GapLedger(db).record(
+        core="ungrounded-general-v1",
+        surface="plan",
+        goal="how do i build a webinar funnel for my course",
+        retrieval=result(chunks=[chunk("c1", "Landing pages")]),
+        reason="the sources never discuss webinars or live sessions",
+        provider="anthropic",
+        model="claude-opus-5",
+    )
+    await drain()
+
+    assert db.rows[0]["provider"] == "anthropic"
+    assert db.rows[0]["model"] == "claude-opus-5"
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_names_no_model_because_no_model_was_called():
+    """The default matters more than the value here.
+
+    Every refusal core reaches the ledger without an answer: `refusing-v0` never
+    got to generation, and both gate cores are the gate declining or being
+    unavailable. Filling these in from the configured house model would put an
+    attribution on a sentence no model wrote, which is the mistake
+    `messages_model_agent_only` exists to make impossible one table over.
+    """
+    db = FakeDb()
+    for core, retrieved in (
+        ("refusing-v0", result()),
+        ("refusing-ungrounded-v1", result(chunks=[chunk("c1", "Landing pages")])),
+        ("refusing-unverified-v1", result(chunks=[chunk("c1", "Landing pages")])),
+    ):
+        GapLedger(db).record(core=core, surface="plan", goal="anything", retrieval=retrieved)
+    await drain()
+
+    assert len(db.rows) == 3
+    assert all(row["provider"] is None and row["model"] is None for row in db.rows)
+
+
 # --- and it must not be able to hurt the request -----------------------------
 
 

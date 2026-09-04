@@ -29,7 +29,7 @@ import logging
 from .config import Settings
 from .groundedness import assess
 from .planner import build_context_block, build_sources_block
-from .providers import Providers
+from .providers import Providers, attribution
 from .retrieval import RetrievalResult, Retriever
 from .schemas import (
     Citation,
@@ -226,6 +226,12 @@ async def draft_campaign(
         )
     proposal.citations = kept
 
+    # Which model actually answered, so Node can stamp the message and the
+    # `task_runs` row it writes (ADR-0032 decision 4). Only on the generated
+    # answer: a refusal above called no provider at all, and naming one there
+    # would put a model's name on words it never saw.
+    provider_id, model_id = attribution(request.generation, providers)
+
     return PlanResponse(
         proposals=[proposal],
         grounded=True,
@@ -235,4 +241,6 @@ async def draft_campaign(
             f"{len(citations)} sources. The owner sets the budget."
         ),
         core=CAMPAIGN_CORE,
+        provider=provider_id,
+        model=model_id,
     )

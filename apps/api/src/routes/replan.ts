@@ -50,6 +50,8 @@ export interface ReplanRoutesOptions {
   supabase: SupabaseConfig;
   aiServiceUrl: string;
   aiTimeoutMs?: number;
+  /** See `AgentRunnerOptions.modelKeySecret`. */
+  modelKeySecret?: string | null;
 }
 
 export async function replanRoutes(app: FastifyInstance, opts: ReplanRoutesOptions): Promise<void> {
@@ -100,7 +102,12 @@ export async function replanRoutes(app: FastifyInstance, opts: ReplanRoutesOptio
         // Not awaited: the request returns 202 and the card arrives in the room.
         void produceDiff(
           createServiceClient(opts.supabase),
-          { aiServiceUrl: opts.aiServiceUrl, aiTimeoutMs: opts.aiTimeoutMs, log: request.log },
+          {
+            aiServiceUrl: opts.aiServiceUrl,
+            aiTimeoutMs: opts.aiTimeoutMs,
+            modelKeySecret: opts.modelKeySecret ?? null,
+            log: request.log,
+          },
           { projectId, roomId, goal: project.goal, reason, runId },
         );
 

@@ -34,6 +34,8 @@ export interface AgentRunRoutesOptions {
   /** See `AgentRunnerOptions.intakeMaxRounds`. */
   intakeMaxRounds?: number;
   intakeTimeoutMs?: number;
+  /** See `AgentRunnerOptions.modelKeySecret`. */
+  modelKeySecret?: string | null;
 }
 
 export async function agentRunRoutes(
@@ -47,6 +49,7 @@ export async function agentRunRoutes(
     aiTimeoutMs: opts.aiTimeoutMs,
     intakeMaxRounds: opts.intakeMaxRounds,
     intakeTimeoutMs: opts.intakeTimeoutMs,
+    modelKeySecret: opts.modelKeySecret ?? null,
     log: app.log,
   });
 

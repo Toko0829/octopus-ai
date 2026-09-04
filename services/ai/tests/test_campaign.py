@@ -67,6 +67,10 @@ class _Retriever:
 class _Providers:
     """Answers with whatever JSON the test wants the model to have produced."""
 
+    # The house model id, because a duck-typed stub still has to answer "which
+    # model wrote this" when no target was supplied (ADR-0032).
+    house_model = "gpt-5.4"
+
     def __init__(self, payload) -> None:
         self._payload = payload
         self.seen_system: str | None = None

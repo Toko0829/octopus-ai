@@ -274,6 +274,100 @@ async def test_the_ungrounded_answer_reports_who_gave_it():
     assert (house.provider, house.model) == ("openai", "gpt-5.4")
 
 
+async def test_the_executor_reports_the_model_that_drafted():
+    """Found by driving the stack, not by any test here.
+
+    `messages.model` and `task_runs.model` on the executor arm are both stamped
+    from this pair. Slice 1 set it only in the planner, so a routed `/execute`
+    came back grounded and unattributed, and Node correctly refused it as a
+    contract break: the step retried, failed the same way, and escalated.
+    """
+    providers = RecordingProviders(json_answer=_ARTIFACT)
+    response = await execute_task(
+        _execute_request(generation=TARGET),
+        StubRetriever(_retrieval()),
+        providers,
+        _settings(),
+    )
+
+    assert (response.provider, response.model) == ("anthropic", "claude-sonnet-5")
+
+
+async def test_the_executor_reports_the_house_model_with_no_target():
+    providers = RecordingProviders(json_answer=_ARTIFACT)
+    response = await execute_task(
+        _execute_request(), StubRetriever(_retrieval()), providers, _settings()
+    )
+
+    assert (response.provider, response.model) == ("openai", "gpt-5.4")
+
+
+async def test_a_refusal_names_no_model_even_on_a_target():
+    """Because none ran.
+
+    The pair says WHAT ANSWERED, so a refusal that called no provider must report
+    nothing rather than the model it would have used. Node reads it the same way:
+    it demands attribution of a grounded answer only, so this null is accepted and
+    a correct refusal is not turned into a failed run.
+    """
+    providers = RecordingProviders(json_answer=_ARTIFACT)
+    response = await execute_task(
+        _execute_request(generation=TARGET),
+        StubRetriever(
+            RetrievalResult(chunks=[], candidates_considered=9, dropped_below_threshold=9)
+        ),
+        providers,
+        _settings(),
+    )
+
+    assert response.grounded is False
+    assert (response.provider, response.model) == (None, None)
+
+
+async def test_the_campaign_drafter_reports_the_model_that_drafted():
+    providers = RecordingProviders(
+        json_answer={
+            "name": "Meta prospecting",
+            "channel": "meta",
+            "summary": "Cold audiences, creator angle.",
+            "citations": [1],
+        }
+    )
+    response = await draft_campaign(
+        _execute_request(generation=TARGET),
+        StubRetriever(_retrieval()),
+        providers,
+        _settings(),
+    )
+
+    assert response.grounded is True
+    assert (response.provider, response.model) == ("anthropic", "claude-sonnet-5")
+
+
+async def test_replan_reports_the_model_that_answered():
+    providers = RecordingProviders(json_answer=_DIFF)
+    request = ReplanRequest(
+        project_id="project-1",
+        goal="a goal",
+        reason="the market moved",
+        tasks=[
+            ReplanTask(
+                task_id="11111111-1111-4111-8111-111111111111",
+                title="An existing step",
+                stage="strategy",
+                state="approved",
+                owner="YOU",
+            )
+        ],
+        trace=TraceContext(agent_run_id="run-1"),
+        generation=TARGET,
+    )
+    response = await replan(request, StubRetriever(_retrieval()), providers, _settings())
+
+    assert response.grounded is True
+    assert (response.provider, response.model) == ("anthropic", "claude-sonnet-5")
+
+
 async def test_intake_never_takes_a_target():
     """It runs on the cheap house tier, and `IntakeRequest` carries no target.
 

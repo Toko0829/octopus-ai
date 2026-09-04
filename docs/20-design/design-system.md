@@ -120,6 +120,8 @@ Skins (Light Editorial / Dark Command Deck / Warm Chat) are **swaps at the seman
 - Never role/status by **color alone** — always badge + icon.
 - WCAG AA contrast minimum (AAA for body where feasible) in **both** skins.
 - Keyboard-first; global **⌘K** action layer; visible focus rings; `prefers-reduced-motion` honored.
+- **`--text-faint` is the floor, and it is measured rather than assumed.** It is the token for a line that is context rather than content: a timestamp, a thread marker, the model chip on a message head, the "Runs on" line under an agent voice. Composited on the surface each of those actually sits on it measures 4.82 light and 6.08 dark on the stream, 4.99 and 5.70 in the rail. Nothing quieter than it is available, so a new quiet line reaches for this token and then gets measured **through the browser on the real page**: a regex over an `oklab()` declaration cannot compose a colour over the surface behind it and will report a number that is not what anybody sees.
+- **A control somebody may not use is absent, not disabled.** Every owner-only action in the room rail is simply not rendered for a member, who instead reads the same fact as a sentence. A greyed-out control is a piece of furniture whose only message is "no", and it invites a click that can never work.
 
 ## Anti-patterns (the AI-slop avoid-list) — see [ADR-0005](../40-adr/0005-house-style-not-purple-gradient.md)
 

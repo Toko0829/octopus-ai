@@ -257,6 +257,7 @@ const ArtifactRow = z.object({
   title: z.string().nullable(),
   body: z.string().nullable(),
   storage_path: z.string().nullable(),
+  content_type: z.string().nullable(),
   citations: z.unknown(),
   created_by: z.enum(['user', 'agent', 'node', 'system']),
   created_at: z.string(),
@@ -865,7 +866,8 @@ export async function projectRoutes(
           db
             .from('artifacts')
             .select(
-              'id, task_id, kind, title, body, storage_path, citations, created_by, created_at',
+              'id, task_id, kind, title, body, storage_path, content_type, citations, ' +
+                'created_by, created_at',
             )
             .eq('project_id', projectId)
             .order('created_at', { ascending: true }),
@@ -911,6 +913,9 @@ export async function projectRoutes(
           title: a.title,
           body: a.body,
           storagePath: a.storage_path,
+          // Read rather than inferred, so the panel decides between rendering an
+          // image and offering a download before it fetches anything.
+          contentType: a.content_type,
           citations: citationTitles(a.citations),
           createdBy: a.created_by,
           createdAt: a.created_at,

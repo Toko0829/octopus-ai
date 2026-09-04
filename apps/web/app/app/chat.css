@@ -1563,6 +1563,18 @@
   margin-bottom: 0;
 }
 
+/* The images that came with a deliverable, as a sentence. The card never renders
+   one: the bucket is private, so a picture here means a signed URL, and a signed
+   URL is a ten-minute bearer credential in a stream that re-renders on every
+   broadcast. The panel mints one per click instead. Quiet, because it is a
+   pointer rather than the work. */
+.artifact-files {
+  margin: 0;
+  padding: 0 var(--sp-5) var(--sp-4);
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 .artifact-sources {
   padding: var(--sp-3) var(--sp-5) var(--sp-4);
   border-top: 1px solid var(--border);
@@ -2111,6 +2123,15 @@
 .work-artifact-file .work-empty {
   margin-bottom: 4px;
 }
+/* A generated image, once somebody asked to see it. Bounded rather than
+   full-bleed: the panel is a column beside a conversation, and a 4:5 creative at
+   full width would push the rest of the step off the screen. */
+.work-artifact-image {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+}
 a.work-action {
   text-decoration: none;
   display: inline-block;
@@ -2392,4 +2413,107 @@ a.work-action {
 .ctx-conn-choice:disabled {
   color: var(--text-faint);
   cursor: default;
+}
+
+/* ============================ Models =============================
+
+   The workspace's own reasoning providers (ADR-0032), in the rail beside the
+   accounts it can publish through. Both are room-scoped facts set once and read
+   often, so they are two sections of one column rather than two homes.
+
+   Almost every class here is borrowed from that neighbour on purpose: the
+   connection rows, the text-button actions, the quiet detail lines and the error
+   sentence are the same objects doing the same job, and a second visual language
+   for "a thing this workspace has connected" would be a difference that means
+   nothing. What is new below is only what is genuinely new: a form that stays
+   open while a key is checked, and six route rows. */
+.ctx-models {
+  margin-top: var(--sp-6);
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-2);
+}
+
+.ctx-model-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  width: 100%;
+}
+
+.ctx-model-form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: 2px;
+}
+
+.ctx-model-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.ctx-model {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* The role name and, when there is one, the word that says what just happened
+   to it. Baseline-aligned so "saving" sits on the name rather than beside it. */
+.ctx-model-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+/* What a role runs on, for somebody who cannot change it: a member, or an owner
+   with nothing connected that could serve this role. A sentence, not a disabled
+   control, because a control nobody can use is furniture that says "no" (rule
+   15's cousin: absent beats disabled). */
+.ctx-model-route {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* Which model wrote a message, beside the voice that signed it. Mirrors
+   `.msg-thread`: the same quiet weight, because both are context about a line
+   rather than part of it. */
+.msg-model {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
+
+/* Which model a voice runs on, under its activity line. `.member-activity` is a
+   single-line ellipsis and this one is not: a model id we do not recognise is
+   rendered verbatim and can be long, and truncating it would hide the one fact
+   the line exists to carry. */
+.member-model {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+/* Helpful or not, under an answer that carries no card. */
+.msg-feedback {
+  margin-top: var(--sp-2);
+}
+
+.msg-feedback-done {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.msg-feedback-error {
+  margin: 6px 0 0;
+  font-size: var(--text-xs);
+  color: var(--human);
 }

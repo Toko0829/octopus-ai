@@ -66,6 +66,10 @@ class StubRetriever:
 class StubProviders:
     """Records the prompt it was handed, and returns a valid artifact."""
 
+    # The house model id, because a duck-typed stub still has to answer
+    # "which model wrote this" when no target was supplied (ADR-0032).
+    house_model = "gpt-5.4"
+
     def __init__(self) -> None:
         self.user_prompts: list[str] = []
         self.system_prompts: list[str] = []

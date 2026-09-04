@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { TickReport, TickResult } from '@octopus/core';
 import { CampaignEmbedPayload, type PlanCitation } from '@octopus/contracts';
 import { requestCampaignDraft, type Proposal, type Citation } from './ai';
+import { resolveGeneration } from './model-routing';
 import { roomForProject } from './room-for-project';
 
 /**
@@ -96,6 +97,8 @@ export function campaignEmbedPayload(
 export interface CampaignCardDeps {
   aiServiceUrl: string;
   aiTimeoutMs?: number;
+  /** See `AgentRunnerOptions.modelKeySecret`. Null when the deployment has none. */
+  modelKeySecret?: string | null;
   log: {
     info: (o: unknown, m: string) => void;
     warn: (o: unknown, m: string) => void;
@@ -192,6 +195,25 @@ async function postOneCard(
       .maybeSingle();
     if (existing) return;
 
+    // Ads, by name, for the reason the persona below is chosen by name: a
+    // campaign card is drafted for any step the router parked as needing spend
+    // authorisation, whatever stage the planner filed it under, so the route
+    // should follow what the message is about rather than where it sits in the
+    // plan.
+    const generation = await resolveGeneration(
+      admin,
+      roomId,
+      'ads',
+      deps.modelKeySecret ?? null,
+      deps.log,
+    );
+    if (generation) {
+      deps.log.info(
+        { taskId: task.id, role: 'ads', provider: generation.provider, model: generation.model },
+        'generation resolved',
+      );
+    }
+
     const draft = await requestCampaignDraft(
       deps.aiServiceUrl,
       {
@@ -202,6 +224,7 @@ async function postOneCard(
         agentRunId: crypto.randomUUID(),
         projectId,
         roomId,
+        generation,
       },
       deps.aiTimeoutMs,
     );
@@ -242,6 +265,11 @@ async function postOneCard(
         // authorisation, whatever stage the planner filed it under, and the
         // voice should follow what the message is about.
         persona: 'ads',
+        // The name and the summary are the core's words; the closing sentence is
+        // ours, and a body that is mostly a model's is a model's message. The
+        // embed below carries no model of its own: what the owner authorises is a
+        // spend, not a sentence, and the attribution belongs on the words.
+        model: draft.model ?? null,
         body:
           `${payload.data.name}\n\n${payload.data.summary}\n\n` +
           'Nothing runs until you approve this and set a budget. ' +

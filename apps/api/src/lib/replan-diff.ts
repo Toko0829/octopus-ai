@@ -1,7 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FastifyBaseLogger } from 'fastify';
-import { ReplanEmbedPayload, type AgentPersona, type IntakeSlot } from '@octopus/contracts';
+import {
+  ReplanEmbedPayload,
+  type AgentPersona,
+  type IntakeSlot,
+  type ModelRole,
+} from '@octopus/contracts';
 import { requestReplan, type ReplanTaskInput } from './ai';
+import { resolveGeneration } from './model-routing';
 
 /**
  * Producing a plan-change card for a running project.
@@ -21,6 +27,8 @@ import { requestReplan, type ReplanTaskInput } from './ai';
 export interface ReplanDiffOptions {
   aiServiceUrl: string;
   aiTimeoutMs?: number;
+  /** See `AgentRunnerOptions.modelKeySecret`. Null when the deployment has none. */
+  modelKeySecret?: string | null;
   log: FastifyBaseLogger;
 }
 
@@ -61,6 +69,13 @@ export async function produceDiff(
   // names a specialist, and a card that arrived under a different name than the
   // one addressed would read as the request having been reassigned.
   const persona: AgentPersona = input.persona ?? 'strategist';
+  // **The voice and the route are the same choice.** `@Ads move the budget to
+  // Meta` comes back signed by Ads, and it is answered on the model this
+  // workspace routed to Ads, because a card that read as one specialist while
+  // being written by another specialist's model would make the signature
+  // decorative. The four personas are the first four `ModelRole` values by
+  // construction, so the persona is the role.
+  const role: ModelRole = persona;
 
   try {
     // The DAG travels to the core rather than being read by it: the task graph
@@ -81,7 +96,15 @@ export async function produceDiff(
       owner_type: 'ai' | 'human' | 'user';
     }>;
     if (tasks.length === 0) {
-      await postNotice(admin, roomId, runId, 'That project has no steps to change.', persona, log);
+      await postNotice(
+        admin,
+        roomId,
+        runId,
+        'That project has no steps to change.',
+        persona,
+        null,
+        log,
+      );
       return;
     }
 
@@ -122,15 +145,32 @@ export async function produceDiff(
     const context = input.context ?? (await readPlanContext(admin, projectId, log));
     const titles = new Map(tasks.map((t) => [t.id, t.title]));
 
+    const generation = await resolveGeneration(
+      admin,
+      roomId,
+      role,
+      opts.modelKeySecret ?? null,
+      log,
+    );
+    if (generation) {
+      log.info(
+        { projectId, runId, role, provider: generation.provider, model: generation.model },
+        'generation resolved',
+      );
+    }
+
     const response = await requestReplan(
       opts.aiServiceUrl,
-      { projectId, roomId, goal, reason, tasks: wireTasks, context, agentRunId: runId },
+      { projectId, roomId, goal, reason, tasks: wireTasks, context, agentRunId: runId, generation },
       opts.aiTimeoutMs,
     );
+    const model = response.model ?? null;
 
     for (const proposal of response.proposals) {
       if (proposal.kind === 'post_message') {
-        await postNotice(admin, roomId, runId, proposal.body, persona, log);
+        // The core's own words, so this one is attributed. The two notices below
+        // are ours and are not.
+        await postNotice(admin, roomId, runId, proposal.body, persona, model, log);
         continue;
       }
       if (proposal.kind !== 'propose_replan') {
@@ -199,6 +239,7 @@ export async function produceDiff(
           runId,
           'I put together a change and could not store it. The plan is unchanged.',
           persona,
+          null,
           log,
         );
         continue;
@@ -211,6 +252,9 @@ export async function produceDiff(
           author_id: null,
           author_kind: 'agent',
           persona,
+          // The summary is the core's sentence about its own diff, so the row
+          // records which model wrote it.
+          model,
           body: proposal.summary,
           idempotency_key: `replan:${runId}`,
         })
@@ -246,6 +290,7 @@ export async function produceDiff(
       'I could not work out a change to the plan just now. Nothing has been altered, ' +
         'so the project is still running as it was.',
       persona,
+      null,
       log,
     );
   }
@@ -279,13 +324,19 @@ export async function readPlanContext(
 }
 
 /** Say something in the room. A replan that produced nothing must still say so:
- * silence is indistinguishable from the request never having arrived. */
+ * silence is indistinguishable from the request never having arrived.
+ *
+ * `model` is required rather than defaulted, because this one function posts both
+ * the core's own `post_message` and our two failure sentences, and the caller is
+ * the only place that knows which it is holding. Passing null is a decision; a
+ * default would let forgetting look like one. */
 async function postNotice(
   admin: SupabaseClient,
   roomId: string,
   runId: string,
   body: string,
   persona: AgentPersona,
+  model: string | null,
   log: FastifyBaseLogger,
 ): Promise<void> {
   const { error } = await admin.from('messages').insert({
@@ -293,6 +344,7 @@ async function postNotice(
     author_id: null,
     author_kind: 'agent',
     persona,
+    model,
     body,
     idempotency_key: `replan-notice:${runId}`,
   });

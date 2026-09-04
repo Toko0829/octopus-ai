@@ -20,7 +20,7 @@
 | `projects`   | One approved plan: `status`, `budget_ceiling`, its room               | `20260813120000`. The ceiling has two committer classes ([ADR-0020](../40-adr/0020-the-ceiling-has-two-committer-classes.md))                                                            |
 | `tasks`      | One row per plan step: `state`, `owner_type`, `risk_tier`, its result | `20260813120000`. A human waitpoint **is** this row, at zero compute ([ADR-0010](../40-adr/0010-postgres-durable-runner.md))                                                             |
 | `task_deps`  | Which step consumes which step's output                               | `20260813120000`. `hard / soft / resource`; acyclicity enforced by the `task_deps_guard_acyclic` trigger, not by the runner. `private.task_deps_satisfied` is what a scheduler pass asks |
-| `task_runs`  | One attempt at one task, under a lease                                | `20260813120000`. `running / succeeded / failed`; the lease is how a crashed worker is noticed                                                                                           |
+| `task_runs`  | One attempt at one task, under a lease; **which model answered it**   | `20260813120000`. `running / succeeded / failed`; the lease is how a crashed worker is noticed. `provider` and `model` from `20260913122000`                                             |
 | `events`     | The event-sourced audit trail                                         | `20260813120000`. Append-only, and the source notifications derive from ([ADR-0028](../40-adr/0028-a-notification-is-derived-from-the-event.md))                                         |
 | `plan_diffs` | An owner's requested change to a running plan, as a diff              | `20260828140000`, applied by `apply_plan_diff`                                                                                                                                           |
 
@@ -95,6 +95,50 @@ still deciding who takes the step, so no voice owns it yet. The wire carries the
 persona, because the client maps it through the same registry it renders names from and a second
 copy on the wire would be the stale one.
 
+**Which model produced a step's output** (`task_runs.provider` / `task_runs.model`,
+`20260913122000`, [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)).
+Per attempt, which is the point: a step that failed on one provider and succeeded on a retry
+after the owner switched routes has two rows saying two different things, and both are true.
+On a successful attempt the pair is what the service says answered; on a failed one it is the
+target the attempt was sent to, because there is no answer to read and where it went is the fact
+that attempt has.
+
+`provider` sits beside `model` rather than being derived from it, because the derivation runs the
+wrong way: an id maps to a provider only through the registry shipped today, and one since
+dropped from it would resolve to nothing. It is also what a per-provider approval rate groups by.
+
+**Two readers, and the second is why the column exists at all.** The executor stamps its own
+delivery from the response it just received; the heal sweep re-delivers an artifact some earlier
+process wrote, so it reads `task_runs.model` back through `artifacts.task_run_id` rather than
+asking the routes what would answer today, which would stamp a message with a model that never
+saw it.
+
+**The audit trail carries the same pair beside the voice.** `task.executed` and `task.reviewed`
+payloads gained `provider` and `model` next to `persona`, for `persona`'s recorded reason: a
+trail that re-derives who spoke from today's row rewrites who said what. Every other verb here
+leaves both null, because no model was involved in a scheduler transition.
+
+**An `asset` artifact finally has a producer** (`20260914120000`,
+[ADR-0033](../40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)). The
+`asset` kind has existed since `20260813160000` and nothing could write one: `writeFileArtifact`
+had exactly one caller, a human node's proof. A creative step on a workspace that routed its
+Creative role at an image model now produces its brief **and** up to three PNGs, written through
+the same writer into the same private bucket under the same `<project_id>/<artifact_id>/` path.
+
+`artifacts.content_type` came with them: nullable, no backfill, no default, and constrained to
+rows that actually have a file. The project panel reads it to decide between rendering an image
+and offering a download **before** it fetches anything, and the alternative source for that
+decision is a filename this system sanitises out of a title a model wrote.
+
+**The images are written after the review and never instead of the brief.** After, because the
+checker judges the brief and a brief that failed its own check is not worth somebody's image
+quota. Never instead, because the brief carries the citations and is the record of what was asked
+for. Every failure, a refused key, a rate limit, a content refusal, an unreachable vendor, a
+storage failure, ends the same way: the step reaches `done`, the brief is delivered, and one
+sentence in the same message says what happened. **A retry does not draw twice**: the executor is
+not durable, so the heal sweep may finish a step whose images already exist, and the existing
+`asset` rows on the task are the idempotency key.
+
 **pgTAP** (`supabase/tests/`, counts from each suite's own `plan(N)`).
 
 | Suite                    | Assertions |
@@ -104,8 +148,9 @@ copy on the wire would be the stale one.
 | `apply_plan_diff.sql`    | 27         |
 | `project_membership.sql` | 13         |
 | `question_answers.sql`   | 12         |
-| `artifacts.sql`          | 15         |
+| `artifacts.sql`          | 18         |
 | `storage_artifacts.sql`  | 11         |
+| `message_model.sql`      | 12         |
 
 **Not built.**
 
@@ -117,7 +162,13 @@ copy on the wire would be the stale one.
   approved card ([ADR-0030](../40-adr/0030-an-escalation-is-an-event-and-a-playbook-is-the-card.md));
   a compiled archetype × jurisdiction-pack DAG waits on a playbook compiler.
 - **No `pg-boss`.** Utility jobs are specified on it and nothing runs there yet.
-- **The critic is deterministic**, so there is no AI critic pass over an artifact.
+- **The critic is deterministic**, so there is no AI critic pass over an artifact, and it does
+  not judge a generated image at all: nobody has measured a quality bar for one, and a rule that
+  cannot be checked is the kind of disposition this project has twice paid for pretending to
+  enforce.
+- **`creative_assets` is deferred.** An artifact row already carries the project, the task, the
+  run, the author and the storage path, which is everything true about a generated image today.
+  Trigger: the first need for per-asset performance rows.
 - **Nothing exercises `paused`.** The kill switch is the same paused state with a different
   authorisation question, and that question has no surface.
 

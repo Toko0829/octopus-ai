@@ -30,6 +30,16 @@ const THREAD_CHANNEL = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 /** Rows each table answers with, filtered by whatever the query applied. */
 let tables: Record<string, Record<string, unknown>[]>;
 let inserted: Record<string, unknown>[];
+/**
+ * The same writes, carrying the table they went to.
+ *
+ * `inserted` is deliberately left as a bare list of values, because the
+ * assertions written against it are about what the message insert does and does
+ * not carry, and a shape change there would obscure them. This service now
+ * writes to a second table from the same file, so the label assertions need to
+ * be able to say which one, the way `embeds.test.ts` does.
+ */
+let writes: { table: string; values: Record<string, unknown> }[];
 
 function client() {
   return {
@@ -54,6 +64,7 @@ function client() {
         single: async () => ({ data: matches()[0] ?? null, error: null }),
         insert: (values: Record<string, unknown>) => {
           inserted.push(values);
+          writes.push({ table, values });
           const row = {
             id: 'm1',
             seq: 1,
@@ -104,8 +115,15 @@ function post(payload: Record<string, unknown>) {
 
 beforeEach(() => {
   inserted = [];
+  writes = [];
   tables = {
-    rooms: [{ id: ROOM }, { id: OTHER_ROOM }],
+    // `owner_id` because `resolveRoom` reads it: the label route asks who owns
+    // the workspace, which is a different question from whether the caller can
+    // see it, and answers them with different status codes.
+    rooms: [
+      { id: ROOM, owner_id: USER },
+      { id: OTHER_ROOM, owner_id: USER },
+    ],
     channels: [
       { id: CHANNEL, room_id: ROOM },
       { id: THREAD_CHANNEL, room_id: ROOM },
@@ -307,5 +325,191 @@ describe('reading', () => {
     const body = res.json() as { messages: { threadId: string | null; authorKind: string }[] };
     expect(body.messages[0]?.threadId).toBe(THREAD);
     expect(body.messages[0]?.authorKind).toBe('node');
+  });
+});
+
+/**
+ * Rating a model-written reply.
+ *
+ * The flywheel has had one subject since `20260812130000` and it is a card. This
+ * is the second, and the assertions below are almost entirely about what it
+ * refuses, because "there is nothing here to rate" has three different causes
+ * and each one, allowed through, would quietly poison the number the table
+ * exists to produce.
+ */
+describe('rating an answer', () => {
+  const ANSWER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const MEMBER = '22222222-2222-4222-8222-222222222222';
+
+  /** An ungrounded reply: agent-authored, carrying a model, with no card. */
+  function answerRow(over: Record<string, unknown> = {}) {
+    return {
+      id: ANSWER,
+      room_id: ROOM,
+      channel_id: CHANNEL,
+      author_id: null,
+      author_kind: 'agent',
+      persona: 'strategist',
+      model: 'claude-opus-5',
+      body: 'I do not have sources for this one, so what follows is general practice.',
+      seq: 7,
+      created_at: '2026-09-04T00:00:00.000Z',
+      thread_id: null,
+      action_embeds: null,
+      ...over,
+    };
+  }
+
+  function label(userId: string, payload: Record<string, unknown> = { verdict: 'helpful' }) {
+    return {
+      method: 'POST' as const,
+      url: `/api/rooms/${ROOM}/messages/${ANSWER}/feedback`,
+      headers: as(userId),
+      payload,
+    };
+  }
+
+  it('records the owner verdict, with what was judged captured at the time', async () => {
+    tables.messages = [answerRow()];
+
+    const app = await build();
+    const res = await app.inject(label(USER, { verdict: 'not_helpful', note: '  too vague  ' }));
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ verdict: 'not_helpful' });
+
+    const [written] = writes.filter((w) => w.table === 'feedback_events');
+    expect(written?.values).toMatchObject({
+      room_id: ROOM,
+      message_id: ANSWER,
+      actor_id: USER,
+      verdict: 'not_helpful',
+      // Trimmed by the contract, not by the handler.
+      note: 'too vague',
+    });
+    // Denormalised the way the card path denormalises its payload: the message
+    // can be deleted and the route re-pointed, and a label whose subject has to
+    // be re-derived later has stopped being evidence.
+    expect(written?.values.subject).toEqual({
+      body: answerRow().body,
+      model: 'claude-opus-5',
+      persona: 'strategist',
+    });
+  });
+
+  it('refuses a member who is not the owner, and writes nothing', async () => {
+    tables.messages = [answerRow()];
+    tables.rooms = [{ id: ROOM, owner_id: USER }];
+
+    const app = await build();
+    const res = await app.inject(label(MEMBER));
+
+    expect(res.statusCode).toBe(403);
+    expect(writes.filter((w) => w.table === 'feedback_events')).toEqual([]);
+  });
+
+  it('refuses a message no model wrote', async () => {
+    // A run notice, a sweep notice or a waiting digest: Octopus's own copy,
+    // written by TypeScript. A thumbs-down here would be a label on a sentence
+    // no model composed, counted into a rate that is supposed to measure models.
+    tables.messages = [answerRow({ model: null, body: 'Working on a plan.' })];
+
+    const app = await build();
+    const res = await app.inject(label(USER));
+
+    expect(res.statusCode).toBe(409);
+    expect(writes.filter((w) => w.table === 'feedback_events')).toEqual([]);
+  });
+
+  it("refuses a person's own message even when the room is theirs", async () => {
+    tables.messages = [answerRow({ author_kind: 'user', author_id: USER, model: null })];
+
+    const app = await build();
+    const res = await app.inject(label(USER));
+
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('refuses a message carrying a card, because the card has its own verdict', async () => {
+    tables.messages = [
+      answerRow({
+        action_embeds: [
+          {
+            id: 'e1',
+            message_id: ANSWER,
+            component: 'plan',
+            payload: {
+              goal: 'Grow the newsletter',
+              title: 'Launch sequence',
+              summary: 'Six stages.',
+              stages: [],
+              citations: [],
+            },
+            required_role: 'owner',
+            state: 'pending',
+            created_at: '2026-09-04T00:00:00.000Z',
+          },
+        ],
+      }),
+    ];
+
+    const app = await build();
+    const res = await app.inject(label(USER));
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ message: 'Rate the card instead.' });
+    expect(writes.filter((w) => w.table === 'feedback_events')).toEqual([]);
+  });
+
+  it('refuses a card whose payload does not parse, which the rendered value cannot see', async () => {
+    // Found by this suite rather than reasoned about. `toEmbed` returns null for
+    // a row it cannot parse, deliberately, so a corrupt payload degrades to a
+    // plain message rather than breaking the stream. Reading that same null as
+    // "no card here" let a message whose card failed to parse take a second
+    // verdict, and the two would then be counted as two labels on one output.
+    // The route asks the join, not the payload.
+    tables.messages = [
+      answerRow({
+        action_embeds: [
+          {
+            id: 'e1',
+            message_id: ANSWER,
+            component: 'plan',
+            payload: { nothing: 'that PlanEmbedPayload recognises' },
+            required_role: 'owner',
+            state: 'pending',
+            created_at: '2026-09-04T00:00:00.000Z',
+          },
+        ],
+      }),
+    ];
+
+    const app = await build();
+    const res = await app.inject(label(USER));
+
+    expect(res.statusCode).toBe(409);
+    expect(writes.filter((w) => w.table === 'feedback_events')).toEqual([]);
+  });
+
+  it('reports a message it cannot see as 404 rather than 403', async () => {
+    // The read runs as the caller, so RLS is what decides, and through PostgREST
+    // an invisible row and an absent one are the same empty answer. Reporting
+    // 403 would confirm that a message the caller may not read exists.
+    tables.messages = [];
+
+    const app = await build();
+    const res = await app.inject(label(USER));
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('refuses a verdict outside the two', async () => {
+    tables.messages = [answerRow()];
+
+    const app = await build();
+    const res = await app.inject(label(USER, { verdict: 'approved' }));
+
+    expect(res.statusCode).toBe(400);
+    expect(writes.filter((w) => w.table === 'feedback_events')).toEqual([]);
   });
 });

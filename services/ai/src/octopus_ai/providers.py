@@ -64,7 +64,28 @@ HOUSE_PROVIDER = "openai"
 # truncated every plan card into prose, silently, for weeks (config.py says so at
 # length). Headroom is added rather than the budget replaced, so the caller keeps
 # owning how much OUTPUT it asked for.
-_ANTHROPIC_THINKING_HEADROOM = 4000
+# Extra `max_tokens` for the thinking phase, which Anthropic spends out of the
+# same budget as the answer. **Measured, not guessed, and 4000 was too small.**
+#
+# On a 16-chunk sources block, Claude Sonnet 5 was observed thinking 3217, 3246,
+# 3445, 3528 and then 7191 tokens for the same prompt. The plan itself needs
+# about 2000 to 2600. At 7191 the 8000-token cap left 809 for the answer, the
+# reply was cut off mid-JSON, and the caller saw a `ProviderError`, retried once,
+# and fell back to prose. The eval recorded that as the model failing to produce
+# a card, which is how a budget arithmetic error comes to look like a verdict on
+# a model.
+#
+# The variance is the point: thinking length is adaptive and cannot be predicted
+# from the prompt, so the headroom has to cover the tail rather than the median.
+# 12000 sits well above the worst observed run.
+#
+# **Raising it costs nothing when it is not used.** `max_tokens` is a ceiling,
+# not a reservation, and providers bill the tokens actually produced, so a fast
+# answer is billed and returned exactly as before. What it does spend is time,
+# which is why it landed together with the 240s `request_timeout_s`: a cap the
+# client hangs up before reaching is not a cap, it is three abandoned
+# completions.
+_ANTHROPIC_THINKING_HEADROOM = 12000
 
 # Anthropic and Google have a JSON schema mode; neither has OpenAI's cheap
 # `json_object`. Schema mode is named-not-built (it needs a per-caller schema and
@@ -213,6 +234,23 @@ async def _post_with_retry(
             response = await client.post(url, headers=headers, json=json)
         except httpx.RequestError as exc:
             last_detail = f"transport error: {exc}"
+            # **A read timeout is not retried, and the distinction is money.**
+            # Reaching here through `ReadTimeout` means the provider accepted the
+            # request and was generating when we hung up: the completion is
+            # produced and billed whatever we do next, and asking again buys a
+            # second full completion for the same reason the first one "failed".
+            # Measured: three abandoned Sonnet 5 plans per eval case, all paid
+            # for, the run reported as the model failing to produce a card.
+            #
+            # A connect failure is the opposite and still retries: nothing was
+            # generated, so another attempt costs nothing and is often the right
+            # answer to a dropped socket.
+            if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+                last_detail = (
+                    f"timed out after {client.timeout.read}s; not retried, because the "
+                    "provider was generating and a retry would bill a second completion"
+                )
+                break
             if attempt == _MAX_ATTEMPTS:
                 break
             await asyncio.sleep(delay)

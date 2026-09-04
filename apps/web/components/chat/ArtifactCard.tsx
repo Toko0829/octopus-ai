@@ -1,6 +1,7 @@
 'use client';
 
 import type { ArtifactActionEmbed } from '@octopus/contracts';
+import { imageCountLine, imageFilesOf } from '../../lib/artifact-files';
 
 /**
  * A deliverable the agent produced for one approved step.
@@ -30,6 +31,19 @@ type Props = { embed: ArtifactActionEmbed };
 export function ArtifactCard({ embed }: Props) {
   const { step, stage, title, body, citations } = embed.payload;
   const grounded = citations.length > 0;
+
+  /**
+   * The generated images, as a count rather than as pictures.
+   *
+   * **No inline `<img>`, and that is a security decision rather than a layout
+   * one.** The bucket is private, so rendering one means minting a signed URL,
+   * which is a ten-minute bearer credential anybody holding it can fetch without
+   * signing in. The stream re-renders on every broadcast, so an image here would
+   * mint a fresh credential per artifact per re-render for every person with the
+   * room open. The panel mints one on a click, which is one credential for the
+   * one person who asked for it.
+   */
+  const images = imageCountLine(imageFilesOf(embed.payload).length);
 
   /**
    * Deduplicated, because citations are per CHUNK and a document usually
@@ -62,6 +76,8 @@ export function ArtifactCard({ embed }: Props) {
           <p key={i}>{para}</p>
         ))}
       </div>
+
+      {images && <p className="artifact-files">{images}</p>}
 
       <footer className="artifact-sources">
         {grounded ? (

@@ -25,7 +25,12 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const PROJECT = 'p1';
+/**
+ * A real uuid, because the card's payload now carries the project id as well as
+ * the task and artifact ids, and it is validated before it is stored. The room
+ * is never in the payload, so it stays a readable short name.
+ */
+const PROJECT = '00000000-0000-4000-8000-0000000000d1';
 const ROOM = 'r1';
 
 /**
@@ -65,6 +70,7 @@ interface Tables {
   events: TableState;
   messages: TableState;
   action_embeds: TableState;
+  task_runs: TableState;
 }
 
 let tables: Tables;
@@ -235,6 +241,7 @@ beforeEach(() => {
     events: { rows: [] },
     messages: { rows: [] },
     action_embeds: { rows: [] },
+    task_runs: { rows: [] },
   };
   written = [];
   failTaskUpdateFor = null;
@@ -427,5 +434,48 @@ describe('the race and the bound', () => {
       expect.objectContaining({ taskId: uuid('bad') }),
       'could not heal a stranded step',
     );
+  });
+});
+
+/**
+ * Which model wrote a re-delivered artifact (ADR-0032).
+ *
+ * **Read back, never re-derived.** This sweep delivers work some other process
+ * produced, possibly days earlier and possibly before the owner changed their
+ * routes. Asking `model_routes` what would answer today would stamp the message
+ * with a model that never saw it, which is the one thing the column exists to
+ * make impossible. `task_runs` is where the attempt recorded what actually ran.
+ */
+describe('a healed delivery names the model that wrote it', () => {
+  it('reads the attribution off the run the artifact came from', async () => {
+    tables.tasks.rows.push(task('t1'));
+    tables.task_runs.rows.push({ id: 'run-1', model: 'claude-sonnet-5', provider: 'anthropic' });
+    tables.artifacts.rows.push(artifact('t1', { task_run_id: 'run-1' }));
+
+    await run();
+
+    expect(deliveredFor('t1')[0]).toMatchObject({ model: 'claude-sonnet-5' });
+  });
+
+  it('delivers unattributed rather than not at all when there is no run to read', async () => {
+    // Every artifact written before `20260913122000` is this case, and losing the
+    // delivery over a missing label would be trading real work for a chip.
+    tables.tasks.rows.push(task('t1'));
+    tables.artifacts.rows.push(artifact('t1', { task_run_id: null }));
+
+    await run();
+
+    expect(deliveredFor('t1')).toHaveLength(1);
+    expect(deliveredFor('t1')[0]?.model).toBeNull();
+  });
+
+  it('delivers unattributed when the run exists but recorded no model', async () => {
+    tables.tasks.rows.push(task('t1'));
+    tables.task_runs.rows.push({ id: 'run-1', model: null, provider: null });
+    tables.artifacts.rows.push(artifact('t1', { task_run_id: 'run-1' }));
+
+    await run();
+
+    expect(deliveredFor('t1')[0]?.model).toBeNull();
   });
 });

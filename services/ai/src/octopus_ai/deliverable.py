@@ -93,6 +93,49 @@ def classify(title: str, detail: str) -> DeliverableKind:
 # disposition and this project has measured twice what happens to those; "produce
 # five variants, each with a named angle" is checkable, and the checker's
 # `too_short` rule has something real to measure.
+# The brief opens with a claim about this system's own capability, and the claim
+# stopped being constant in slice 6. A workspace that has routed a Creative model
+# does generate images; one that has not does not; and the brief is the surface
+# where a person reads which of those they are holding.
+#
+# **Split rather than patched at the call site.** The alternative was a string
+# replace over the first sentence, which would silently produce the wrong brief
+# the first time somebody rewords it, and the wrong brief here is one that
+# promises images a workspace cannot make. Two openings and one body, so the
+# sections cannot drift apart between the variants.
+#
+# Neither opening asks the model to describe the pictures it is about to draw.
+# The generator's prompt is built in code from the Concept and Art direction
+# sections (ADR-0033), so the brief is written for a reader either way and the
+# prompt is derived from what was approved.
+_BRIEF_OPENINGS: dict[bool, str] = {
+    False: """This step asks for visual creative, and **this system cannot generate images
+yet**, so `body` is the brief a person or a generator would work from. Say so in
+one plain sentence at the top, without apologising.
+""",
+    True: """This step asks for visual creative. Images will be generated from this brief,
+so `body` is the brief itself: the Concept and Art direction sections below are
+what the generator is given, and everything in them has to be literal enough to
+draw. Do not describe the images as though they already exist, and do not say
+that you cannot make them.
+""",
+}
+
+_BRIEF_BODY = """
+Then, using exactly these sections:
+
+  ## Concept
+  One paragraph: the single idea the visual carries.
+  ## Shot list
+  Three concepts, each a sentence describing what is literally in frame.
+  ## Art direction
+  Palette, type, mood, and what to avoid.
+  ## Specs
+  Formats and ratios for the channels this plan names. If the sources do not
+  carry current platform specs, say so rather than quoting numbers from memory:
+  they go stale between crawls and rag.md forbids it."""
+
+
 _INSTRUCTIONS: dict[DeliverableKind, str] = {
     "copy": """This step asks for copy, so `body` is the copy itself, ready to paste.
 
@@ -138,22 +181,7 @@ Produce FOUR emails. Each one is:
 
 Each email does one job and ends with one ask. Do not write the same email four
 times with different subject lines.""",
-    "brief": """This step asks for visual creative, and **this system cannot generate images
-yet**, so `body` is the brief a person or a generator would work from. Say so in
-one plain sentence at the top, without apologising.
-
-Then, using exactly these sections:
-
-  ## Concept
-  One paragraph: the single idea the visual carries.
-  ## Shot list
-  Three concepts, each a sentence describing what is literally in frame.
-  ## Art direction
-  Palette, type, mood, and what to avoid.
-  ## Specs
-  Formats and ratios for the channels this plan names. If the sources do not
-  carry current platform specs, say so rather than quoting numbers from memory:
-  they go stale between crawls and rag.md forbids it.""",
+    "brief": _BRIEF_OPENINGS[False] + _BRIEF_BODY,
     "analysis": """This step asks for thinking rather than an asset, so `body` is the conclusion
 and the reasoning that supports it.
 
@@ -202,9 +230,19 @@ def requested_count(title: str, detail: str) -> int | None:
     return _COUNT_WORDS.get(n, int(n) if n.isdigit() else None)
 
 
-def instruction_for(kind: DeliverableKind, count: int | None = None) -> str:
-    """The per-kind half of the execute prompt, honouring a count the step named."""
-    instruction = _INSTRUCTIONS[kind]
+def instruction_for(
+    kind: DeliverableKind,
+    count: int | None = None,
+    images: bool = False,
+) -> str:
+    """The per-kind half of the execute prompt, honouring a count the step named.
+
+    `images` says whether this workspace can actually generate them, and it
+    changes exactly one thing: which sentence the brief opens with. Defaulted to
+    False so every existing caller keeps the brief that shipped, which is also the
+    honest one for a workspace that has connected nothing.
+    """
+    instruction = _BRIEF_OPENINGS[images] + _BRIEF_BODY if kind == "brief" else _INSTRUCTIONS[kind]
     default = _DEFAULT_COUNTS.get(kind)
     if count is None or default is None or count == default[1]:
         return instruction
@@ -212,3 +250,71 @@ def instruction_for(kind: DeliverableKind, count: int | None = None) -> str:
     phrase, _ = default
     unit = phrase.split(" ", 1)[1]
     return instruction.replace(phrase, f"{count} {unit}", 1)
+
+
+# ---------------------------------------------------------- the image prompt --
+#
+# What the generator is actually handed, read out of the brief the model just
+# wrote rather than asked of it as a second field.
+#
+# **The brief is what a person approves and what a person can check.** Letting the
+# model emit its own image prompt beside the brief would create a second
+# deliverable nobody reads and nothing renders, and the first time the two
+# disagreed the picture would have come from the one that was never on the card.
+# Deriving it here means what was approved and what was drawn are the same words
+# (ADR-0033).
+#
+# Concept and Art direction, and deliberately not Shot list or Specs. Concept is
+# the idea and Art direction is palette, type and mood, which is what an image
+# model works from. Shot list describes three different frames, and folding all of
+# them into one prompt asks for a single picture of three ideas; Specs are ratios
+# and file formats, which the request already carries as fields.
+
+_SECTION_RE = re.compile(r"^[ \t]*#{1,4}[ \t]*(?P<name>[^\n#]+?)[ \t]*$", re.M)
+
+# The generator's own limit, mirrored from `GenerateImageProposal.prompt`. Stated
+# here rather than imported, because this function is about the brief and the
+# schema is about the wire: they agree today, and a change to either should be a
+# decision rather than a surprise.
+IMAGE_PROMPT_MAX = 1000
+
+
+def _sections(body: str) -> dict[str, str]:
+    """The brief's headed sections, keyed by lowercased heading."""
+    out: dict[str, str] = {}
+    matches = list(_SECTION_RE.finditer(body))
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        out[m.group("name").strip().lower()] = body[m.end() : end].strip()
+    return out
+
+
+def image_prompt_from_brief(body: str, limit: int = IMAGE_PROMPT_MAX) -> str | None:
+    """One paragraph to draw from, or None when the brief has nothing to draw.
+
+    None rather than a best effort on an empty brief: an image generated from no
+    description is a stock picture with a bill attached, and the brief is
+    delivered either way.
+
+    Falls back to the whole body when the model did not use the headings it was
+    given, because a brief with the right words and the wrong formatting is still
+    a brief, and the alternative is silently drawing nothing on a step somebody
+    approved.
+
+    Truncated at a word boundary, since the vendor rejects an over-length prompt
+    outright and half a sentence draws better than a refused call.
+    """
+    found = _sections(body)
+    parts = [
+        f"{label}: {found[key]}"
+        for key, label in (("concept", "Concept"), ("art direction", "Art direction"))
+        if found.get(key)
+    ]
+    text = ("\n\n".join(parts) if parts else body).strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    return (cut[:space] if space > limit // 2 else cut).rstrip()

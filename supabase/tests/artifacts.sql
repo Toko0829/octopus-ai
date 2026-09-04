@@ -14,7 +14,7 @@
 
 begin;
 
-select extensions.plan(15);
+select extensions.plan(18);
 
 create temporary table aids (k text primary key, v uuid);
 insert into aids (k, v) values
@@ -170,6 +170,35 @@ select extensions.is(
 select extensions.ok(
   not has_table_privilege('authenticated', 'public.artifacts', 'INSERT'),
   'a client cannot write an artifact: it would be fabricating the evidence its task is judged on'
+);
+
+-- ------------------------------------------------- what kind of file it is
+--
+-- `20260914120000`. The panel decides whether to render an image or offer a
+-- download before it fetches anything, and it decides from this column rather
+-- than from a filename sanitised out of a model's own title.
+
+select extensions.has_column(
+  'public', 'artifacts', 'content_type',
+  'a file artifact records what kind of file it is'
+);
+
+select extensions.is(
+  pg_temp.aerr(format(
+    'insert into public.artifacts (task_id, project_id, kind, title, storage_path, content_type) '
+    'values (%L, %L, ''asset'', ''Hook 1'', ''p/a/image-1.png'', ''image/png'')',
+    (select id from tsk), (select id from proj))),
+  null::text,
+  'a generated image is a file artifact with a media type'
+);
+
+select extensions.is(
+  pg_temp.aerr(format(
+    'insert into public.artifacts (task_id, project_id, kind, body, content_type) '
+    'values (%L, %L, ''draft'', ''prose'', ''image/png'')',
+    (select id from tsk), (select id from proj))),
+  '23514',
+  'a content type on a row with no file is a claim about bytes that do not exist'
 );
 
 select * from extensions.finish();

@@ -87,6 +87,12 @@ export function fromBroadcastRecord(record: unknown): UiMessage | null {
     // null and renders under the legacy name, instead of indexing a registry
     // with a string nobody checked.
     persona: AgentPersona.safeParse(r.persona).data ?? null,
+    // A string or nothing. There is no vocabulary to parse against and there
+    // deliberately is not one: an id this build has never heard of is still the
+    // true answer to what wrote the message, so the only check is that it is
+    // text. A number or an object off the wire becomes null rather than
+    // rendering `[object Object]` beside a voice.
+    model: typeof r.model === 'string' ? r.model : null,
     body: typeof r.body === 'string' ? r.body : '',
     seq: r.seq === null || r.seq === undefined ? null : Number(r.seq),
     ts: typeof r.created_at === 'string' ? formatTime(r.created_at) : '',
@@ -102,6 +108,7 @@ export function toMessage(m: Message): UiMessage {
     authorId: m.authorId,
     authorKind: m.authorKind,
     persona: m.persona,
+    model: m.model,
     body: m.body ?? '',
     seq: m.seq,
     ts: formatTime(m.createdAt),

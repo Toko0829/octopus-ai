@@ -25,7 +25,7 @@ describe('failureNotice', () => {
     // respond". The service was healthy and still working, so the message was
     // false, and it sends whoever debugs it in exactly the wrong direction.
     const notice = failureNotice(
-      new AiServiceError('AI service timed out after 90000ms', 'timeout'),
+      new AiServiceError('AI service timed out after 300000ms', 'timeout'),
     );
 
     expect(notice).toContain('still working');

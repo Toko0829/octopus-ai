@@ -83,6 +83,8 @@ export interface TaskActionRoutesOptions {
   verify: AuthVerifier;
   supabase: SupabaseConfig;
   aiServiceUrl: string;
+  /** See `AgentRunnerOptions.modelKeySecret`. */
+  modelKeySecret?: string | null;
   aiTimeoutMs?: number;
 }
 
@@ -431,6 +433,7 @@ export async function taskActionRoutes(
         const ports = createSchedulerPorts(admin, {
           aiServiceUrl: opts.aiServiceUrl,
           aiTimeoutMs: opts.aiTimeoutMs,
+          modelKeySecret: opts.modelKeySecret ?? null,
           log: request.log,
         });
         const routable: RoutableTask = {

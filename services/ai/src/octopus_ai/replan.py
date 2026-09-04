@@ -34,7 +34,7 @@ from .config import Settings
 from .groundedness import assess
 from .plan_graph import find_cycle, normalise_op_ids
 from .planner import build_context_block, build_sources_block
-from .providers import ProviderError, Providers
+from .providers import ProviderError, Providers, attribution
 from .retrieval import RetrievalResult, Retriever
 from .risk import clamp_risk_tier, normalise_criteria
 from .schemas import (
@@ -410,6 +410,12 @@ async def replan(
         },
     )
 
+    # Which model actually answered, so Node can stamp the card it posts
+    # (ADR-0032 decision 4). Only on the generated answer: a refusal above called
+    # no provider at all, and naming one there would put a model's name on words
+    # it never saw.
+    provider_id, model_id = attribution(request.generation, providers)
+
     return PlanResponse(
         proposals=[
             ProposeReplanProposal(
@@ -425,6 +431,8 @@ async def replan(
             f"{len(problems)} dropped."
         ),
         core=REPLAN_CORE,
+        provider=provider_id,
+        model=model_id,
     )
 
 

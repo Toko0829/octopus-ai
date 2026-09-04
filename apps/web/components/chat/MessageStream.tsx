@@ -1,10 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
-import { AGENT_PERSONAS, mentionRegex } from '@octopus/contracts';
+import { AGENT_PERSONAS, labelForModel, mentionRegex } from '@octopus/contracts';
 import type { AgentPersona, UiMember, UiMessage } from '../../lib/types';
 import { RoleBadge } from './ui';
 import { OctopusMark } from './icons';
+import { MessageFeedback } from './MessageFeedback';
 import { PlanCard } from './PlanCard';
 import { ArtifactCard } from './ArtifactCard';
 import { ReplanCard } from './ReplanCard';
@@ -16,6 +17,8 @@ interface Props {
   channelName: string | null;
   messages: UiMessage[];
   membersById: Record<string, UiMember>;
+  /** Needed by the label control, which posts to a room-scoped route. */
+  roomId: string;
   /** Whether the viewer owns this workspace, which is what an embed's requiredRole means today. */
   canAct: boolean;
   onEmbedAction: (
@@ -156,6 +159,7 @@ export function MessageStream({
   channelName,
   messages,
   membersById,
+  roomId,
   canAct,
   onEmbedAction,
   onQuestionAction,
@@ -238,6 +242,17 @@ export function MessageStream({
                 <span className="msg-author">{author.name}</span>
                 <RoleBadge role={author.role} />
                 <span className="msg-time mono">{m.ts}</span>
+                {/* Which model wrote this, beside the voice that signed it.
+
+                    The two are different facts and both belong here: the persona
+                    is the job (ADR-0031) and the model is who did it. Only text a
+                    model actually wrote carries one, so every run notice, sweep
+                    notice and waiting digest in this stream has no chip, which is
+                    the column doing its job rather than a gap.
+
+                    An id this build does not recognise renders verbatim, because
+                    it is still the true answer to what wrote this. */}
+                {m.model && <span className="msg-model mono">{labelForModel(m.model)}</span>}
                 {/* Which conversation this line belongs to. A word, not a tint. */}
                 {m.threadId && <span className="msg-thread mono">in a task thread</span>}
                 {/* Status is never colour alone. */}
@@ -260,6 +275,15 @@ export function MessageStream({
               )}
               {m.embed?.component === 'question' && (
                 <QuestionCard embed={m.embed} canAct={canAct} onAct={onQuestionAction} />
+              )}
+              {/* Rate the answer, but only where there is nothing better to
+                  rate. A message with a card already has a verdict and the route
+                  refuses a second one; a message no model wrote has nobody to
+                  judge. The owner is the only person who may label, which the
+                  route re-checks, so this condition is presentation and not the
+                  control. */}
+              {m.authorKind === 'agent' && m.model && !m.embed && canAct && (
+                <MessageFeedback roomId={roomId} messageId={m.id} />
               )}
             </div>
           </div>

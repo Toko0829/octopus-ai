@@ -292,6 +292,7 @@ export function startTicker(opts: TickerOptions): () => void {
             await produceCampaignCards(opts.admin, report, {
               aiServiceUrl: opts.executor.aiServiceUrl,
               aiTimeoutMs: opts.executor.aiTimeoutMs,
+              modelKeySecret: opts.executor.modelKeySecret ?? null,
               log: opts.log,
             });
           }

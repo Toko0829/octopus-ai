@@ -1,7 +1,9 @@
 import type { CSSProperties } from 'react';
+import type { ModelSettingsResponse } from '@octopus/contracts';
 import type { Role, UiMember, UiPersona } from '../../lib/types';
 import { RoleBadge } from './ui';
 import { ConnectedAccounts } from './ConnectedAccounts';
+import { ModelSettings } from './ModelSettings';
 
 function avatarBg(role: Role): CSSProperties {
   const map: Record<Role, string> = {
@@ -42,6 +44,9 @@ export function ContextPanel({
   personas,
   roomId,
   canAct,
+  models,
+  modelsError,
+  onModelsChanged,
 }: {
   members: UiMember[];
   /**
@@ -51,6 +56,16 @@ export function ContextPanel({
   personas: UiPersona[];
   roomId: string;
   canAct: boolean;
+  /**
+   * The room's model settings, held by `ChatApp` rather than fetched here.
+   *
+   * One read serves two renderers: the Models block edits it, and the line under
+   * each voice reports it. Fetching it twice would let one half of this panel
+   * disagree with the other for as long as the second request took to land.
+   */
+  models: ModelSettingsResponse | null;
+  modelsError: string | null;
+  onModelsChanged: () => void;
 }) {
   return (
     <aside className="context">
@@ -104,9 +119,25 @@ export function ContextPanel({
               <RoleBadge role="agent" />
             </div>
             <div className="member-activity">{p.activity ?? p.summary}</div>
+            {/* Which model composes this voice's proposals.
+
+                A second line rather than more text on the activity line, which
+                is a single-line ellipsis and would swallow whichever of the two
+                facts came second. It is a statement about the route as it stands
+                now, not about the run beside it: a proposal already in flight
+                keeps the model it started on. */}
+            <div className="member-model mono">Runs on {p.runsOn}</div>
           </div>
         </div>
       ))}
+
+      <ModelSettings
+        roomId={roomId}
+        canAct={canAct}
+        settings={models}
+        error={modelsError}
+        onChanged={onModelsChanged}
+      />
 
       <ConnectedAccounts roomId={roomId} canAct={canAct} />
     </aside>

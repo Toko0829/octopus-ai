@@ -19,6 +19,7 @@ import {
   type IntakeQuestion,
 } from '@octopus/contracts';
 import { dismissableQuestion, mentionReason, profileSlots, replanReason } from '@octopus/core';
+import { ModelRoutingError, resolveGeneration } from './model-routing';
 import { produceDiff } from './replan-diff';
 import { liveProjectForRoom } from './room-for-project';
 import { profileFieldsFromSlots, readProfile, writeProfileFields } from './room-profile';
@@ -65,6 +66,15 @@ export interface AgentRunnerOptions {
    */
   intakeMaxRounds?: number;
   intakeTimeoutMs?: number;
+  /**
+   * The `MODEL_KEY_SECRET` master key, or null when the deployment has none.
+   *
+   * Null is the ordinary state and costs nothing: a room with no routes never
+   * needs it. A room WITH routes and no secret fails the run with the variable
+   * named, rather than quietly planning on the house key under a model the owner
+   * did not choose (`ModelRoutingError`).
+   */
+  modelKeySecret?: string | null;
   log: FastifyBaseLogger;
 }
 
@@ -86,6 +96,18 @@ export const DEFAULT_INTAKE_MAX_ROUNDS = 2;
  */
 export function failureNotice(err: unknown): string {
   const prefix = 'The agent could not complete this run.';
+
+  // Its own sentence, because it is the one failure here an operator can fix in a
+  // minute and the only one whose cause is a setting rather than a fault. Saying
+  // "something went wrong on my side" for a missing environment variable sends
+  // the next person to read logs for a problem that is written in a file.
+  if (err instanceof ModelRoutingError) {
+    return err.kind === 'not_configured'
+      ? `${prefix} This workspace routes its own model provider, and MODEL_KEY_SECRET is not ` +
+          'set on the server, so the stored key could not be opened. Nothing was written.'
+      : `${prefix} This workspace has a model key that could not be opened, so it needs to be ` +
+          'connected again in Models. Nothing was written.';
+  }
 
   if (!(err instanceof AiServiceError)) {
     return `${prefix} Something went wrong on my side.`;
@@ -272,14 +294,25 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
   /**
    * Post as the agent. This is the only path by which anything the reasoning core
    * says becomes visible, and it deliberately lives here rather than in Python.
+   *
+   * `model` is required rather than optional, and null is a real answer: every
+   * caller has to have decided whether a model wrote these words. A default would
+   * make forgetting it look like a deliberate null.
    */
-  async function postAsAgent(roomId: string, body: string, runId: string, index: number) {
+  async function postAsAgent(
+    roomId: string,
+    body: string,
+    runId: string,
+    index: number,
+    model: string | null,
+  ) {
     const admin = createServiceClient(opts.supabase);
     const { error } = await admin.from('messages').insert({
       room_id: roomId,
       author_id: null,
       author_kind: 'agent',
       persona: 'strategist',
+      model,
       body,
       // Deterministic per run and position, so a retried run cannot post twice.
       idempotency_key: `agent-run:${runId}:${index}`,
@@ -306,6 +339,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
     citations: PlanResponse['citations'],
     runId: string,
     index: number,
+    model: string | null,
     context: IntakeSlot[] = [],
     supersedes?: string,
   ) {
@@ -319,6 +353,11 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
         author_id: null,
         author_kind: 'agent',
         persona: 'strategist',
+        // The title and the summary are the model's own words, so the row records
+        // which model wrote them. The embed's payload is not stamped: it is a
+        // structure this file built from the proposal, and the message it hangs
+        // on is where the attribution belongs.
+        model,
         body: `${plan.title}\n\n${plan.summary}`,
         idempotency_key: idempotencyKey,
       })
@@ -367,6 +406,12 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
    *
    * The idempotency key is unchanged by the voice, so a run that posted a
    * notice before this change still collides with itself after it.
+   *
+   * **No `model`, on any of them, whatever the workspace routes.** Every word a
+   * notice can say is templated in `INTAKE_COPY` or `failureNotice` a few lines
+   * up; no model composed any of it, and stamping one would put a vendor's name
+   * on our own sentence in the same column an audit trail reads (ADR-0032
+   * decision 4).
    */
   async function postNotice(
     roomId: string,
@@ -382,6 +427,9 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
         author_id: null,
         author_kind: voice === 'system' ? 'system' : 'agent',
         persona: voice === 'system' ? null : voice,
+        // Written rather than left to the column default, so the claim is in the
+        // code somebody greps rather than in a schema they have to go and read.
+        model: null,
         body,
         idempotency_key: `agent-run:${runId}:${key}`,
       });
@@ -467,6 +515,12 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
    * No `expires_at`. A card used to claim the room's next message, which is why
    * it had to expire; it claims nothing now, so it stays answerable until it is
    * answered, finished, or made moot by a new goal.
+   *
+   * **No `model` either, and here for a second reason.** The body is
+   * `INTAKE_COPY.questions`, which is ours; and the questions inside the card
+   * came from intake, which is pinned to the house cheap model whatever a
+   * workspace connects (ADR-0032 decision 5), so a workspace's chosen model is
+   * not what would be named even if the words were a model's.
    */
   async function postQuestions(
     roomId: string,
@@ -483,6 +537,7 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
         author_id: null,
         author_kind: 'agent',
         persona: 'strategist',
+        model: null,
         body,
         // Its own key, not position 0. The card and the plan now land in the
         // same run, and the plan's first proposal is keyed `:0`; sharing that
@@ -600,14 +655,19 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
     // thing the person types is a goal, as every message is now. No card, because
     // a card that waited for a goal was the mechanism by which the room used to
     // be held, and there is nothing on it to answer.
+    //
+    // Both carry no model, which is the rule holding even where a model was
+    // involved: the classification is intake's, pinned to the house cheap model
+    // whatever the workspace connects, and the words are `INTAKE_COPY`'s. What
+    // the column records is who wrote the sentence, not who decided to send it.
     if (intake.outcome === 'not_a_request') {
-      await postAsAgent(roomId, INTAKE_COPY.opening, runId, 0);
+      await postAsAgent(roomId, INTAKE_COPY.opening, runId, 0, null);
       return null;
     }
     if (intake.outcome === 'out_of_domain') {
       // Named before asking. Asking first and declining later would be keeping
       // someone talking rather than redirecting them honestly.
-      await postAsAgent(roomId, INTAKE_COPY.redirect(echo(goal)), runId, 0);
+      await postAsAgent(roomId, INTAKE_COPY.redirect(echo(goal)), runId, 0, null);
       return null;
     }
 
@@ -654,16 +714,32 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
     runId: string,
     supersedes?: string,
   ): Promise<void> {
+    // What actually answered, not what was asked for. The service reports the
+    // model that ran, which on a room with no routes is the house default and on
+    // an ungrounded turn may be the Fallback route rather than the Strategist's,
+    // so reading it off the response is the only way the stamp stays true.
+    const model = plan.model ?? null;
+
     for (const [index, proposal] of plan.proposals.entries()) {
       // Every kind is handled explicitly. The core cannot widen its own powers
       // by inventing one: an unknown kind fails the schema parse above, before
       // reaching this switch.
       switch (proposal.kind) {
         case 'post_message':
-          await postAsAgent(roomId, proposal.body, runId, index);
+          await postAsAgent(roomId, proposal.body, runId, index, model);
           break;
         case 'propose_plan':
-          await postPlan(roomId, goal, proposal, plan.citations, runId, index, context, supersedes);
+          await postPlan(
+            roomId,
+            goal,
+            proposal,
+            plan.citations,
+            runId,
+            index,
+            model,
+            context,
+            supersedes,
+          );
           break;
       }
     }
@@ -682,9 +758,36 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
     context: IntakeSlot[],
     runId: string,
   ): Promise<PlanResponse> {
+    const admin = createServiceClient(opts.supabase);
+    // Two roles for one call, because `/plan` has two exits. A grounded turn is
+    // the Strategist's; a turn the gate refuses takes the labelled ungrounded
+    // path, which is its own role a workspace can point somewhere else. Resolved
+    // together so the request carries both and the service picks the one it
+    // actually took.
+    const [generation, generationFallback] = await Promise.all([
+      resolveGeneration(admin, roomId, 'strategist', opts.modelKeySecret ?? null, log),
+      resolveGeneration(admin, roomId, 'fallback', opts.modelKeySecret ?? null, log),
+    ]);
+
+    if (generation) {
+      // Provider and model, never the key. This line exists so an operator can
+      // see a run went where the owner asked without opening the database, and
+      // the object that holds the credential is deliberately not spread into it.
+      log.info(
+        {
+          agentRunId: runId,
+          roomId,
+          role: 'strategist',
+          provider: generation.provider,
+          model: generation.model,
+        },
+        'generation resolved',
+      );
+    }
+
     const plan = await requestPlan(
       opts.aiServiceUrl,
-      { roomId, goal, context, agentRunId: runId },
+      { roomId, goal, context, agentRunId: runId, generation, generationFallback },
       opts.aiTimeoutMs,
     );
 
@@ -696,6 +799,8 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
         grounded: plan.grounded,
         proposals: plan.proposals.length,
         reasoning: plan.reasoning_summary,
+        provider: plan.provider ?? null,
+        model: plan.model ?? null,
       },
       'agent run planned',
     );
@@ -811,11 +916,19 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
       return { handled: false, goal: stripMention(message, persona) };
     }
 
-    log.info({ agentRunId: runId, roomId, persona, projectId: project.id }, 'mention routed to a replan');
+    log.info(
+      { agentRunId: runId, roomId, persona, projectId: project.id },
+      'mention routed to a replan',
+    );
     await postNotice(roomId, MENTION_COPY.ack, runId, 'ack', persona);
     await produceDiff(
       admin,
-      { aiServiceUrl: opts.aiServiceUrl, aiTimeoutMs: opts.aiTimeoutMs, log },
+      {
+        aiServiceUrl: opts.aiServiceUrl,
+        aiTimeoutMs: opts.aiTimeoutMs,
+        modelKeySecret: opts.modelKeySecret ?? null,
+        log,
+      },
       {
         projectId: project.id,
         roomId,
@@ -927,7 +1040,12 @@ export function createAgentRunner(opts: AgentRunnerOptions): AgentRunner {
           await postNotice(roomId, INTAKE_COPY.updating, runId, 'started', 'strategist');
           await produceDiff(
             admin,
-            { aiServiceUrl: opts.aiServiceUrl, aiTimeoutMs: opts.aiTimeoutMs, log },
+            {
+              aiServiceUrl: opts.aiServiceUrl,
+              aiTimeoutMs: opts.aiTimeoutMs,
+              modelKeySecret: opts.modelKeySecret ?? null,
+              log,
+            },
             {
               projectId: project.id,
               roomId,

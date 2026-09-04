@@ -117,6 +117,8 @@ class GapLedger:
         room_id: str | None = None,
         project_id: str | None = None,
         agent_run_id: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> None:
         """Schedule one row. Returns immediately.
 
@@ -124,6 +126,17 @@ class GapLedger:
         one place that decides what reaches the table and no way to add a fourth
         caller that forgets. See `redact.scrub` for what it removes and, more
         importantly, what it deliberately leaves in.
+
+        `provider` and `model` name the connector that answered, and they default
+        to None because **the common row here is a refusal, and a refusal calls no
+        model at all**. `refusing-v0` never reached generation, and both gate
+        cores are the gate declining or being unavailable. Only
+        `ungrounded-general-v1` carries the pair, which is why it is passed at the
+        one call site that has an answer in hand rather than resolved from the
+        settings here: reading the house model off the configuration would stamp
+        an attribution onto sentences no model wrote, and would be wrong in the
+        other direction too, since the workspace's Fallback route may not be the
+        house model at all.
         """
         row = {
             "core": core,
@@ -138,6 +151,13 @@ class GapLedger:
             "room_id": room_id,
             "project_id": project_id,
             "agent_run_id": agent_run_id,
+            # Which connector produced the answer, when one did. A lead for what
+            # to ingest next, never a source and never trained on (ADR-0032
+            # decision 3): the value of knowing is that two rows with the same
+            # core, reason and near misses can be two different products, and a
+            # queue read without it is an average of things that did not happen.
+            "provider": provider,
+            "model": model,
         }
 
         write = self._write(row)

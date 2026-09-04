@@ -5,7 +5,7 @@
 > **Owner paths:** `apps/web/**` (chat UI), `packages/realtime/**` · **Depends on:** auth-identity (membership RLS), ai-orchestrator (posts messages/embeds), human-nodes-marketplace (node join/offboard), notifications (unread/mention pushes), design-system-frontend (UI shell), infra-devops (Realtime, Supavisor).
 >
 > The visual/interaction spec is in [discord-chat-spec.md](../20-design/discord-chat-spec.md); this module doc is the behavior/data view. Update both on any layout, role, embed, or transport change.
->
+
 ## Current shape
 
 > What exists today, read out of the migrations and `apps/web`. **Update this section in the
@@ -15,17 +15,17 @@
 
 **Tables**, with the migration that landed them.
 
-| Table           | Holds                                                                                        | Notes                                                                                               |
-| --------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `rooms`         | One workspace: `name`, `owner_id`, optional `project_id`                                     | `20260728120000`; `owner_id` from `20260812130000`                                                  |
-| `channels`      | Workstreams inside a room                                                                    | `20260728120000`                                                                                    |
-| `threads`       | One task's working conversation: `(id, room_id)` unique, `channel_id`, `task_id`             | `20260901120000`. Written by `accept_offer` under the secret key; SELECT policy only, no write grant |
-| `messages`      | `author_id`, `author_kind`, **`persona`**, `body`, `idempotency_key` UNIQUE, `seq`, `thread_id` | `20260728120000`; `thread_id` `20260901121000`; `persona` `20260912120000`                          |
-| `room_members`  | `role`, `scope` (`room`/`thread`, checked), `thread_id?`, `expires_at`                        | `20260728120000`; thread scope `20260901122000`                                                     |
-| `action_embeds` | The card on a message: `component`, `payload`, `required_role`, `state`; `unique (message_id)` | `20260812120000`                                                                                    |
-| `room_profiles` | What the workspace knows about its own business, owner-only                                  | `20260911120000`                                                                                    |
-| `model_connections` | The workspace's own provider key, sealed AES-256-GCM: `provider`, `key_ciphertext`/`key_iv`/`key_tag`, `key_version`, `key_hint`, `status` | `20260913120000`. **No client policy and no client grant**, like `channel_connections`; a client gets `42501` |
-| `model_routes` | Which model answers for each role: `(room_id, role)`, `provider`, `model`                    | `20260913121000`. Member-readable, server-written. No row for a role means the house default, which is what **Auto** means |
+| Table               | Holds                                                                                                                                      | Notes                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `rooms`             | One workspace: `name`, `owner_id`, optional `project_id`                                                                                   | `20260728120000`; `owner_id` from `20260812130000`                                                                         |
+| `channels`          | Workstreams inside a room                                                                                                                  | `20260728120000`                                                                                                           |
+| `threads`           | One task's working conversation: `(id, room_id)` unique, `channel_id`, `task_id`                                                           | `20260901120000`. Written by `accept_offer` under the secret key; SELECT policy only, no write grant                       |
+| `messages`          | `author_id`, `author_kind`, **`persona`**, **`model`**, `body`, `idempotency_key` UNIQUE, `seq`, `thread_id`                               | `20260728120000`; `thread_id` `20260901121000`; `persona` `20260912120000`; `model` `20260913122000`                       |
+| `room_members`      | `role`, `scope` (`room`/`thread`, checked), `thread_id?`, `expires_at`                                                                     | `20260728120000`; thread scope `20260901122000`                                                                            |
+| `action_embeds`     | The card on a message: `component`, `payload`, `required_role`, `state`; `unique (message_id)`                                             | `20260812120000`                                                                                                           |
+| `room_profiles`     | What the workspace knows about its own business, owner-only                                                                                | `20260911120000`                                                                                                           |
+| `model_connections` | The workspace's own provider key, sealed AES-256-GCM: `provider`, `key_ciphertext`/`key_iv`/`key_tag`, `key_version`, `key_hint`, `status` | `20260913120000`. **No client policy and no client grant**, like `channel_connections`; a client gets `42501`              |
+| `model_routes`      | Which model answers for each role: `(room_id, role)`, `provider`, `model`                                                                  | `20260913121000`. Member-readable, server-written. No row for a role means the house default, which is what **Auto** means |
 
 **Who can be an author.** `public.author_kind` is `user | agent | node | system` and has never
 been extended. `user` and `node` are client-writable through `messages_insert_own`, which derives
@@ -36,12 +36,12 @@ the same fact independently. `agent` and `system` arrive only through the secret
 never who may act** ([ADR-0031](../40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)): it
 is chosen in `apps/api` from the step's own `tasks.stage`, and the DAG keeps its single writer.
 
-| Persona      | In the stream   | Stages                              | Posts                                                                                                                      |
-| ------------ | --------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Persona      | In the stream   | Stages                              | Posts                                                                                                                       |
+| ------------ | --------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `strategist` | Strategist (ST) | `strategy`, and any unmatched stage | the intake lines, the run notices, the plan card, the question card, the replan card, the waiting digest, a recorded answer |
-| `content`    | Content (CO)    | `content`, `creative`, `conversion` | the delivered artifact for those stages                                                                                    |
-| `ads`        | Ads (AD)        | `channels`                          | the campaign card, and the publish sweep's three outcome notices                                                           |
-| `analyst`    | Analyst (AN)    | `measurement`                       | the metrics sweep's blocked notice, and the optimize sweep's pause and pause-blocked notices                               |
+| `content`    | Content (CO)    | `content`, `creative`, `conversion` | the delivered artifact for those stages                                                                                     |
+| `ads`        | Ads (AD)        | `channels`                          | the campaign card, and the publish sweep's three outcome notices                                                            |
+| `analyst`    | Analyst (AN)    | `measurement`                       | the metrics sweep's blocked notice, and the optimize sweep's pause and pause-blocked notices                                |
 
 **What stays `system`.** The rule is that **system says what a person or the platform did; a
 persona says what it did or found.** So an embed decision, an offer accepted, work started, proof
@@ -76,14 +76,39 @@ one handler: `model_connections` as the service role behind an ownership check, 
 no client grant, and `model_routes` **as the caller**, since it has a member policy and holds
 no secret.
 
-`Message.model` exists in `packages/contracts` and is **always null today**: the column lands
-with the Node wiring, so no message in this system was written by a model anybody chose. Only
-text a model wrote will ever carry one, and it is stamped by `apps/api` from the route it
-resolved, never accepted from a client, which is `persona`'s rule for `persona`'s reason.
+`Message.model` is live since `20260913122000` and carries the model that **answered**, as the
+reasoning service reported it, not the one the route asked for. Only text a model wrote ever gets
+one, so a run notice, a sweep notice, a waiting digest and a recorded answer all stay null even
+though they are `agent` rows: they are Octopus's own copy, composed in TypeScript. It is stamped
+by `apps/api` from the route it resolved and never accepted from a client, which is `persona`'s
+rule for `persona`'s reason, and `messages_insert_own` refuses a client that tries.
 
-Verified by `supabase/tests/model_connections.sql`, 22 assertions, and by
-`apps/api/src/routes/models.test.ts`, 18.
+**Rating an answer** (`POST /api/rooms/:roomId/messages/:messageId/feedback`, owner only).
+`feedback_events` has had one subject since `20260812130000` and it is a card. `20260913124000`
+gives it a second, `message_id`, with the verdicts `helpful` / `not_helpful` beside the two card
+words, because the labelled ungrounded tier answers in prose, carries no card by construction, and
+is the one output whose quality rests on the model rather than on the corpus. Joined to
+`messages.model`, that is what makes a per-provider rate a query rather than a guess
+([learning-flywheel.md](../10-architecture/learning-flywheel.md)).
 
+**Three things are refused with 409, and each protects the rate from a different kind of
+nonsense**: a message no model wrote (`model` is null, so a thumbs-down would label a sentence
+nobody composed), a person's or a node's message, and a message carrying a card, whose own verdict
+already covers it. That last check reads the **raw join** rather than the parsed embed, and the
+difference is not pedantic: `toEmbed` deliberately returns null for a payload it cannot parse so
+the stream degrades to a plain message instead of breaking, and reading that null as "no card
+here" let a message whose card failed to parse take a second verdict. Found by the route's own
+suite, and pinned by a test with a deliberately unparseable payload.
+
+The message is read **as the caller** with the same pinned `MESSAGE_COLUMNS`, so RLS decides what
+exists and a message the caller cannot see is 404 rather than 403. Ownership is a separate
+question answered by `resolveRoom`, and the insert is service-role because `feedback_events`
+grants no client INSERT: a label is the server's record of a decision it saw. Labels append, so a
+changed mind is a second row and the latest wins.
+
+Verified by `supabase/tests/model_connections.sql` (22 assertions),
+`supabase/tests/message_model.sql` (12), `supabase/tests/message_feedback.sql` (9),
+`apps/api/src/routes/models.test.ts` (18) and `apps/api/src/routes/messages.test.ts` (20).
 
 **Realtime.** `public.broadcast_message()` sends the whole inserted row to `chat:room:<id>`, and
 additionally to `chat:thread:<id>` when the message carries one (`20260906120000`). A new column
@@ -91,16 +116,35 @@ therefore reaches subscribers with no trigger change, which `message_persona.sql
 than assumes. Presence is Realtime Presence from the client and has no server-side table.
 
 **pgTAP suites and their counts**: `rls_membership.sql` (26), `thread_scope.sql` (55),
-`message_persona.sql` (10), `question_answers.sql` (12), `room_profiles.sql` (10).
+`message_persona.sql` (10), `message_model.sql` (12), `message_feedback.sql` (9),
+`question_answers.sql` (12), `room_profiles.sql` (10), `model_connections.sql` (22).
 
 **Mentions.** Naming one of the four voices is live: the composer offers them from `@`, the stream
 marks them, and an owner's mention on a live project becomes a replan card signed by that voice.
 See the table under Mentions below. `@user`, `@role` and `#channel` are not built.
 
-**Not built.** A thread switcher in the owner's UI. `@user`, `@role` and `#channel` mentions,
-reactions, pins and saved messages. The four unwritten embed components. Message editing or
-deletion of any kind. Typing indicators and the activity states the spec describes. A mention
-feeding [notifications](notifications.md). The top bar's presence avatars and live budget.
+**The rail carries a Models block** (`apps/web/components/chat/ModelSettings.tsx`), between the
+four voices and Connected accounts: which providers this workspace has connected, a key field
+behind a disclosure, and a select per role. Owner-only controls are **absent** for a member rather
+than disabled, and a member reads the six routes as text, because which model answers is a fact
+about the replies they are already reading. Each voice in the panel carries a "Runs on" line from
+the same read, held once in `ChatApp` so the two halves of one panel cannot disagree. Details in
+[design-system-frontend.md](design-system-frontend.md).
+
+**The message head carries the model** as a mono chip beside the Agent badge, from `Message.model`,
+through `labelForModel`, so an id this build does not list renders verbatim. Every message with no
+model, which is every notice and digest Octopus composed itself, is bare.
+
+**The thumbs are live** under an agent message that carries a model and **no card**, which on the
+stream today means the ungrounded fallback answer and nothing else. Owner-only, presentation
+matching what the route enforces, and local state only: a reload shows the buttons again and a
+second label appends, which is the table's own append-only stance rather than a gap in the UI.
+
+**Not built.** Reading a label back after a reload. A thread switcher in the owner's UI. `@user`,
+`@role` and `#channel` mentions, reactions, pins and saved messages. The four unwritten embed
+components. Message editing or deletion of any kind. Typing indicators and the activity states the
+spec describes. A mention feeding [notifications](notifications.md). The top bar's presence avatars
+and live budget.
 
 ## 5-region layout
 
@@ -189,11 +233,11 @@ Threads per subtask; Zulip-style **named topics** for resumable subtasks. A node
 
 Three outcomes, and only one ends the run.
 
-| Who, and what is running                 | What happens                                                                                          |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| The owner, with a project live           | An acknowledgement in that voice, then a replan card it signs. No intake call, and the open question cards are left alone |
-| The owner, with nothing live             | One Strategist line saying the specialist joins once a plan is running, then the ordinary run on the message with the token stripped |
-| Anybody else                             | An ordinary goal, exactly as before. The cards are about the owner's own business                      |
+| Who, and what is running       | What happens                                                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| The owner, with a project live | An acknowledgement in that voice, then a replan card it signs. No intake call, and the open question cards are left alone            |
+| The owner, with nothing live   | One Strategist line saying the specialist joins once a plan is running, then the ordinary run on the message with the token stripped |
+| Anybody else                   | An ordinary goal, exactly as before. The cards are about the owner's own business                                                    |
 
 `@Strategist` on a live project routes the same way rather than starting a fresh intake, because a second plan competing with the running one is the regeneration replan-by-diff exists to prevent.
 

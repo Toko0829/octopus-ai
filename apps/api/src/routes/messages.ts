@@ -7,15 +7,18 @@ import {
   EmbedState,
   ListMessagesQuery,
   Message,
+  MessageFeedbackBody,
   PlanEmbedPayload,
   PostMessageBody,
   QuestionEmbedPayload,
   ReplanEmbedPayload,
   type ListMessagesResponse,
+  type MessageFeedbackResponse,
 } from '@octopus/contracts';
 import { z } from 'zod';
 import { createRequireAuth, type AuthVerifier } from '../plugins/auth';
-import { createUserClient, type SupabaseConfig } from '../lib/supabase';
+import { createServiceClient, createUserClient, type SupabaseConfig } from '../lib/supabase';
+import { resolveRoom } from '../lib/resolve-room';
 
 /**
  * Chat write path + since-cursor catch-up. Implements `postMessage` / `listMessages`
@@ -35,6 +38,7 @@ const PG_RLS_VIOLATION = '42501';
 const PGRST_NO_ROWS = 'PGRST116';
 
 const RoomParams = z.object({ roomId: z.string().uuid() });
+const MessageParams = RoomParams.extend({ messageId: z.string().uuid() });
 
 /**
  * The embed joined onto a message, when one exists.
@@ -87,6 +91,11 @@ export const MessageRow = z.object({
   // repository predates it. A missing persona and an explicit null mean the
   // same thing to the reader: the single legacy voice.
   persona: AgentPersona.nullable().default(null),
+  // Defaulted for `persona`'s reason (a row written before `20260913122000` has
+  // no such key) and typed as a plain string rather than an enum for the reason
+  // the column itself is: model ids are a vendor's vocabulary, and one we do not
+  // recognise is still the true answer to what wrote a message.
+  model: z.string().nullable().default(null),
   body: z.string().nullable(),
   seq: z.coerce.number().int(),
   created_at: z.string(),
@@ -111,9 +120,14 @@ type MessageRow = z.infer<typeof MessageRow>;
 // the legacy Octopus with nothing failing anywhere. Exported so a test can pin
 // it against `MessageRow`, the way `PROJECT_COLUMNS` is pinned: a select string
 // that drifts from the schema fails at runtime only.
+//
+// `model` joins it with `20260913122000`, and like `persona` it has a reader on
+// the day it lands: the stream renders the model beside the voice, so a select
+// that forgot the column would render every message as though nobody had chosen
+// a provider, with nothing failing anywhere.
 export const MESSAGE_COLUMNS =
-  'id, room_id, channel_id, author_id, author_kind, persona, body, seq, created_at, thread_id, ' +
-  'action_embeds(id, message_id, component, payload, required_role, state, created_at)';
+  'id, room_id, channel_id, author_id, author_kind, persona, model, body, seq, created_at, ' +
+  'thread_id, action_embeds(id, message_id, component, payload, required_role, state, created_at)';
 
 function toEmbed(raw: unknown): Message['embed'] {
   const candidate = Array.isArray(raw) ? raw[0] : raw;
@@ -158,6 +172,23 @@ function toEmbed(raw: unknown): Message['embed'] {
   }
 }
 
+/**
+ * Whether a card is attached at all, from the raw column rather than from
+ * `toEmbed`.
+ *
+ * **The distinction is the whole reason this exists.** `toEmbed` returns null
+ * for a row it cannot parse, deliberately, so a corrupt payload degrades to a
+ * plain message instead of breaking the stream. That is right for rendering and
+ * wrong for a refusal: reading the parsed value as "no card here" would let a
+ * message whose card failed to parse take a second verdict, and the two would
+ * then be counted as two labels on one output. Presence is a fact about the
+ * join; parseability is a fact about the payload.
+ */
+function hasEmbed(raw: unknown): boolean {
+  const candidate = Array.isArray(raw) ? raw[0] : raw;
+  return candidate !== null && candidate !== undefined;
+}
+
 function toMessage(row: MessageRow): Message {
   return {
     id: row.id,
@@ -166,12 +197,7 @@ function toMessage(row: MessageRow): Message {
     authorId: row.author_id,
     authorKind: row.author_kind,
     persona: row.persona,
-    // Always null for now, and honestly so: `messages.model` is a column that
-    // does not exist yet, so no message in this system was written by a model
-    // anybody chose. The contract carries the field from the slice that added
-    // the registry, and the column and the reader land together with the Node
-    // wiring, at which point this line reads `row.model`.
-    model: null,
+    model: row.model,
     body: row.body,
     seq: row.seq,
     createdAt: row.created_at,
@@ -406,6 +432,125 @@ export async function messageRoutes(
       } catch (err) {
         request.log.error({ err, roomId, userId: user.sub }, 'postMessage failed');
         return fail(reply, 500, 'internal_error', 'Could not post message.');
+      }
+    },
+  );
+
+  /**
+   * Rate a model-written reply. Owner only.
+   *
+   * **This is the half of the flywheel that had no subject.** Every path into
+   * `feedback_events` since `20260812130000` has gone through a card, because
+   * every AI output a person could judge was one. The labelled ungrounded tier
+   * (ADR-0021) is not: it answers in prose, carries no card by construction, and
+   * is the one output whose quality rests on the model rather than on the
+   * corpus, which makes it the most worth labelling and the only one that could
+   * not be labelled. Joined to `messages.model`, these rows are what turn a
+   * per-provider approval rate into a query.
+   *
+   * **The message is read as the caller, and that read is the membership
+   * check.** RLS decides what exists; a message in a room the caller is not in,
+   * or in a thread they are not admitted to, comes back as zero rows and is
+   * reported as 404 rather than 403, so the API does not confirm the existence
+   * of something it will not show. `resolveRoom` then answers the separate
+   * question of who owns the workspace, which is a different sentence.
+   *
+   * **The three 409s are the interesting part**, and each is a different
+   * "nothing here to rate":
+   *
+   *   - not an agent message. A person's or a node's words are not our output.
+   *   - `model` is null. Run notices, sweep notices, waiting digests and
+   *     recorded answers are Octopus's own copy, written by TypeScript. A
+   *     thumbs-down on one is a label on a sentence no model composed, which
+   *     would quietly poison the rate it exists to measure.
+   *   - a card is attached. That card has its own verdict, with consequences,
+   *     and two verdicts on one output would be counted twice.
+   *
+   * The insert is service-role because `feedback_events` grants no client
+   * INSERT: a label is the server's record of a decision it saw, and a client
+   * that could file its own could file one under somebody else's name.
+   */
+  app.post(
+    '/api/rooms/:roomId/messages/:messageId/feedback',
+    { preHandler: requireAuth },
+    async (request, reply): Promise<MessageFeedbackResponse | FastifyReply> => {
+      const params = MessageParams.safeParse(request.params);
+      if (!params.success) {
+        return fail(reply, 400, 'bad_request', 'roomId and messageId must be UUIDs.');
+      }
+      const body = MessageFeedbackBody.safeParse(request.body);
+      if (!body.success) {
+        return fail(reply, 400, 'bad_request', 'Say whether the answer was helpful.');
+      }
+
+      const { roomId, messageId } = params.data;
+      const { verdict, note } = body.data;
+      const userId = (request.user as NonNullable<typeof request.user>).sub;
+
+      const room = await resolveRoom(request, reply, opts.supabase, roomId, fail);
+      if (!room) return reply;
+      if (room.ownerId !== userId) {
+        return fail(reply, 403, 'forbidden', 'Only the workspace owner can rate an answer.');
+      }
+
+      const db = createUserClient(opts.supabase, request.accessToken as string);
+
+      try {
+        // As the caller, with the same pinned select the stream uses, so a
+        // message this person cannot see is simply not there.
+        const { data, error } = await db
+          .from('messages')
+          .select(MESSAGE_COLUMNS)
+          .eq('id', messageId)
+          .eq('room_id', roomId)
+          .maybeSingle();
+        if (error) throw error;
+        if (!data) return fail(reply, 404, 'not_found', 'Message not found.');
+
+        const row = MessageRow.parse(data);
+        const message = toMessage(row);
+
+        if (message.authorKind !== 'agent' || message.model === null) {
+          return fail(
+            reply,
+            409,
+            'conflict',
+            'There is nothing to rate here. Only an answer a model wrote can be rated.',
+          );
+        }
+        // From the raw column, not from `message.embed`: see `hasEmbed`.
+        if (hasEmbed(row.action_embeds)) {
+          return fail(reply, 409, 'conflict', 'Rate the card instead.');
+        }
+
+        const admin = createServiceClient(opts.supabase);
+        const { data: label, error: labelError } = await admin
+          .from('feedback_events')
+          .insert({
+            room_id: roomId,
+            message_id: messageId,
+            actor_id: userId,
+            verdict,
+            note: note ?? null,
+            // What was judged, captured at decision time, exactly as the card
+            // path denormalises the payload it approved. The message can be
+            // deleted and the model can be re-routed; a label whose subject has
+            // to be re-derived later is a label that stops being evidence.
+            subject: { body: message.body, model: message.model, persona: message.persona },
+          })
+          .select('id, verdict, created_at')
+          .single();
+        if (labelError) throw labelError;
+
+        const written = label as { id: string; verdict: string; created_at: string };
+        return reply.code(201).send({
+          id: written.id,
+          verdict,
+          createdAt: written.created_at,
+        });
+      } catch (err) {
+        request.log.error({ err, roomId, messageId, userId }, 'labelMessage failed');
+        return fail(reply, 500, 'internal_error', 'Could not record that.');
       }
     },
   );

@@ -1036,12 +1036,38 @@ export type QuestionEmbedPayload = z.infer<typeof QuestionEmbedPayload>;
 export const ArtifactEmbedPayload = z.object({
   taskId: z.string().uuid(),
   artifactId: z.string().uuid(),
+  /**
+   * Which project this belongs to, so the card can point at the panel that holds
+   * the files. Optional because every card written before slice 6 has no such
+   * field, and a card that fails to parse is a deliverable that disappears from
+   * a room it was already delivered into.
+   */
+  projectId: z.string().uuid().optional(),
   /** The step this delivers, in the plan's own words. */
   step: z.string().min(1).max(200),
   stage: FunnelStage.optional(),
   title: z.string().min(1).max(140),
   body: z.string().min(1).max(8000),
   citations: z.array(z.string()).default([]),
+  /**
+   * The file artifacts produced beside this one, which today means generated
+   * images ([ADR-0033](../../../docs/40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)).
+   *
+   * **Ids and types, never bytes and never a URL.** A signed download link is a
+   * ten-minute bearer credential, and this payload is stored in `action_embeds`
+   * and re-broadcast on every room update, so a link in here would be a
+   * credential written to a table and handed to everyone in the room for as long
+   * as the row lives. The card renders a count and the panel mints a link per
+   * click, which is the rule `ArtifactFileUrl` already states one layer down.
+   *
+   * `contentType` rides along because the reader has to decide between an image
+   * and a download **before** it fetches anything, and the alternative source for
+   * that decision is a filename this system sanitised out of a model's own title.
+   */
+  files: z
+    .array(z.object({ artifactId: z.string().uuid(), contentType: z.string().min(1).max(255) }))
+    .max(3)
+    .default([]),
 });
 export type ArtifactEmbedPayload = z.infer<typeof ArtifactEmbedPayload>;
 
@@ -1358,6 +1384,44 @@ export const ListMessagesResponse = z.object({
 });
 export type ListMessagesResponse = z.infer<typeof ListMessagesResponse>;
 
+/**
+ * The owner's verdict on a model-written reply that carries no card.
+ *
+ * **A different pair of words from a card's verdict, on purpose.** A card asks
+ * for an authorisation, so `approved` / `changes_requested` is what it gets and
+ * consequences follow both. A prose answer asks for nothing, so `helpful` /
+ * `not_helpful` says what the reader got out of it without implying anybody
+ * agreed to anything. Both land in `feedback_events` and both feed the same
+ * correction rate; only the subject differs.
+ *
+ * **What this exists for.** The labelled ungrounded tier (ADR-0021) is the one
+ * output whose quality rests on the model rather than on the corpus, and until
+ * now it was also the only one that could not be judged, because every path into
+ * `feedback_events` went through a card. Joined to `messages.model` it is what
+ * makes a per-provider approval rate a query rather than a guess.
+ *
+ * `note` is optional and is the most valuable part of a `not_helpful`, for the
+ * reason `EmbedVerdictBody` gives about a rejection: the verdict says something
+ * was wrong and only the note says what.
+ */
+export const MessageFeedbackBody = z.object({
+  verdict: z.enum(['helpful', 'not_helpful']),
+  note: z.string().trim().max(2000).optional(),
+});
+export type MessageFeedbackBody = z.infer<typeof MessageFeedbackBody>;
+
+/**
+ * The label as written. Deliberately thin: nothing follows from a label, so
+ * there is no state for the client to reconcile, and the row is append-only, so
+ * there is nothing to update either.
+ */
+export const MessageFeedbackResponse = z.object({
+  id: z.string().uuid(),
+  verdict: z.enum(['helpful', 'not_helpful']),
+  createdAt: z.string(),
+});
+export type MessageFeedbackResponse = z.infer<typeof MessageFeedbackResponse>;
+
 /** A room the caller belongs to. Renders as an entry in the guild rail. */
 export const Room = z.object({
   id: z.string().uuid(),
@@ -1472,6 +1536,16 @@ export const Artifact = z.object({
   title: z.string().nullable(),
   body: z.string().nullable(),
   storagePath: z.string().nullable(),
+  /**
+   * The media type of the stored object, for the rows that have one.
+   *
+   * Null on every text artifact, since there is no file, and on every file
+   * written before `20260914120000`: there was no backfill, because a type
+   * inferred from a path afterwards is a guess recorded as a fact. The panel
+   * reads it to decide between rendering an image and offering a download, and
+   * null means the behaviour those rows already had, which is the download.
+   */
+  contentType: z.string().nullable().default(null),
   citations: z.array(z.string()),
   createdBy: AuthorKind,
   createdAt: z.string(),
@@ -2840,6 +2914,29 @@ export const contract = c.router(
         409: ApiError,
       },
       summary: 'Post a message (server-authoritative; Postgres trigger broadcasts it)',
+    },
+
+    labelMessage: {
+      method: 'POST',
+      path: '/rooms/:roomId/messages/:messageId/feedback',
+      pathParams: RoomParams.extend({ messageId: z.string().uuid() }),
+      body: MessageFeedbackBody,
+      responses: {
+        201: MessageFeedbackResponse,
+        400: ApiError,
+        401: ApiError,
+        /** Rating the work is the owner's, like approving a card. */
+        403: ApiError,
+        /** A message the caller cannot see is not confirmed to exist. */
+        404: ApiError,
+        /**
+         * There is nothing here to rate: the message is a person's, or it is
+         * Octopus's own copy rather than something a model wrote, or it carries
+         * a card whose own verdict is the label that belongs to it.
+         */
+        409: ApiError,
+      },
+      summary: 'Rate a model-written reply helpful or not (owner only)',
     },
 
     listNotifications: {

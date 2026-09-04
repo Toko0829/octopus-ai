@@ -30,6 +30,7 @@ import {
   setCampaignCpaCeiling,
   setProjectBudget,
 } from '../../lib/api-client';
+import { isImageArtifact } from '../../lib/artifact-files';
 
 /**
  * What happened after a plan was approved.
@@ -1175,9 +1176,23 @@ function TaskRow({
                     {[...new Set(artifact.citations)].join(' · ')}
                   </p>
                 ) : (
-                  <p className="work-artifact-unverified">
-                    No sources are cited for this, so treat it as unverified.
-                  </p>
+                  /* **Not under a generated image**, and that exception is
+                     narrow on purpose. Rule 10 exists so an uncited CLAIM
+                     cannot pass as grounded, and a generated picture makes no
+                     claim the corpus could have supported: it carries no
+                     citations by design (ADR-0033), because copying the
+                     brief's labels onto it would present it as sourced when
+                     it is not. The brief it was drawn from sits directly
+                     above with its own sources, so the reader has the
+                     grounding they need, and three repeats of the same
+                     warning under three pictures is noise that teaches people
+                     to skip the sentence where it does mean something.
+                     Every text artifact and every non-image file keeps it. */
+                  !isImageArtifact(artifact) && (
+                    <p className="work-artifact-unverified">
+                      No sources are cited for this, so treat it as unverified.
+                    </p>
+                  )
                 )}
               </article>
             ))}
@@ -1205,6 +1220,17 @@ function TaskRow({
  * it.** A pop-up blocker can stop `window.open` after an await, and a button
  * that appears to do nothing is worse than a link somebody has to click twice.
  * Which of the two happened is visible, rather than being guessed at.
+ *
+ * **An image is shown rather than downloaded, and the two arms share one fetch.**
+ * A generated ad concept that a person has to download to look at is a worse
+ * product than one they can see, and this is the only surface in the system where
+ * the picture is the deliverable (ADR-0033). It is still one signed URL per
+ * click: the image loads when somebody asks for it, not when the panel opens, so
+ * a bearer credential is minted for the person who wanted it and nobody else.
+ *
+ * The decision is `contentType`, read from the row. Null is every file written
+ * before that column existed, and its answer is the download those rows already
+ * had.
  */
 function ArtifactFile({
   artifact,
@@ -1215,13 +1241,19 @@ function ArtifactFile({
 }) {
   const [busy, setBusy] = useState(false);
   const [link, setLink] = useState<string | null>(null);
+  const [shown, setShown] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const isImage = isImageArtifact(artifact);
 
   async function download() {
     setBusy(true);
     setError(null);
     try {
       const { url } = await getArtifactFileUrl(projectId, artifact.id);
+      if (isImage) {
+        setShown(url);
+        return;
+      }
       const opened = window.open(url, '_blank', 'noopener,noreferrer');
       if (!opened) setLink(url);
     } catch (err) {
@@ -1229,6 +1261,29 @@ function ArtifactFile({
     } finally {
       setBusy(false);
     }
+  }
+
+  if (isImage) {
+    return (
+      <div className="work-artifact-file">
+        {shown ? (
+          // eslint-disable-next-line @next/next/no-img-element -- a signed URL on
+          // Storage's own host, minted per click and expiring in minutes. The
+          // image optimiser would proxy and cache it, which is a private object
+          // cached on a public path.
+          <img
+            className="work-artifact-image"
+            src={shown}
+            alt={artifact.title ?? 'Generated image'}
+          />
+        ) : (
+          <button type="button" className="work-action" onClick={download} disabled={busy}>
+            {busy ? 'Loading the image' : 'Show the image'}
+          </button>
+        )}
+        {error && <p className="work-error">{error}</p>}
+      </div>
+    );
   }
 
   return (

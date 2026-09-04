@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { IntakeQuestion, IntakeSlot, TaskRiskTier } from '@octopus/contracts';
+import { toWire, type GenerationTarget } from './model-routing';
 
 /**
  * Client for the Python AI service (ADR-0006).
@@ -14,6 +15,13 @@ import { IntakeQuestion, IntakeSlot, TaskRiskTier } from '@octopus/contracts';
  * generated from that service's OpenAPI document once generation is wired
  * (ADR-0004); until then this is the one hand-maintained seam, kept deliberately
  * small for that reason.
+ *
+ * **Nothing in this file logs a request body, and that is now load-bearing.**
+ * Since ADR-0032 a body can carry `generation.api_key`, a customer's live
+ * provider credential, decrypted for the length of one call. There is no logger
+ * in this module at all, which is the cheapest way to keep it true: adding one
+ * that takes a body is how a key reaches a log aggregator. Errors here name a
+ * status, a timeout or a schema failure, never what was sent.
  */
 
 export const PostMessageProposal = z.object({
@@ -163,12 +171,38 @@ export const ProposeCampaignProposal = z.object({
 });
 export type ProposeCampaignProposal = z.infer<typeof ProposeCampaignProposal>;
 
+/**
+ * Draw this, `count` times, at this ratio.
+ *
+ * **The first proposal whose execution produces bytes**, and the only one that
+ * reaches a vendor a second time inside one step. The core says what to draw and
+ * never draws it: `services/ai` holds no storage key and no Supabase write path,
+ * so the bytes are minted in `image-gen.ts` on the workspace's own Google key and
+ * land in the private artifacts bucket (ADR-0033).
+ *
+ * `prompt` is untrusted (rule 8) and bounded on both sides of the seam. It is a
+ * data field in a JSON body and reaches no URL and no header.
+ *
+ * **`count` is capped at three here as well as in the schema that produced it.**
+ * Each image is a separate billed call on somebody else's account, authorised by
+ * one approval of one step, so the ceiling is re-checked on the side that spends
+ * rather than trusted from the side that asks (rule 6).
+ */
+export const GenerateImageProposal = z.object({
+  kind: z.literal('generate_image'),
+  prompt: z.string().min(1).max(1000),
+  count: z.number().int().min(1).max(3).default(1),
+  aspect: z.enum(['1:1', '4:5', '9:16', '16:9']).default('1:1'),
+});
+export type GenerateImageProposal = z.infer<typeof GenerateImageProposal>;
+
 export const Proposal = z.discriminatedUnion('kind', [
   PostMessageProposal,
   ProposePlanProposal,
   WriteArtifactProposal,
   ProposeReplanProposal,
   ProposeCampaignProposal,
+  GenerateImageProposal,
 ]);
 export type Proposal = z.infer<typeof Proposal>;
 
@@ -186,10 +220,81 @@ export const PlanResponse = z.object({
   citations: z.array(Citation),
   reasoning_summary: z.string(),
   core: z.string(),
+  /**
+   * Which provider and model actually answered (ADR-0032 decision 4).
+   *
+   * **Optional and nullable so an older AI service still parses**, which is the
+   * only kind of tolerance this file grants: a service deployed before the
+   * connector slice returns neither field, and refusing its perfectly good plan
+   * over a missing attribution would make a rolling deploy an outage.
+   *
+   * That tolerance is bounded by `assertAttributed` below. It is safe when we
+   * asked for nothing in particular; it is a contract break when we sent a
+   * target, because a service that ignored the target and answered on the house
+   * key would look exactly like this.
+   */
+  provider: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
 });
 export type PlanResponse = z.infer<typeof PlanResponse>;
 
-export interface PlanInput {
+/**
+ * What each request carries about which model should answer it.
+ *
+ * Optional on every input, and absent means **Auto**: the service uses its own
+ * key, which is what every call did before connectors existed and what most rooms
+ * will keep doing. The resolution is `resolveGeneration`'s; this is only the
+ * carriage.
+ */
+interface GenerationInput {
+  generation?: GenerationTarget | null;
+}
+
+/**
+ * The request body's generation fields, or nothing at all.
+ *
+ * **Spread into a body rather than written as `generation: x ?? null`**, so a
+ * call with no target sends a body byte-identical to the one it sent before this
+ * existed. That is not tidiness: it is what makes "the house path is unchanged"
+ * a claim a diff can settle rather than an assurance.
+ */
+function generationFields(target: GenerationTarget | null | undefined): Record<string, unknown> {
+  return target ? { generation: toWire(target) } : {};
+}
+
+/**
+ * A service that was handed a target and generated something must say what.
+ *
+ * **The one place tolerance stops.** `provider` and `model` are optional on the
+ * schema so an older service parses, and that same optionality would let an older
+ * service silently answer every routed call on the house OpenAI key: the plan
+ * would be good, the room would show no model, and the workspace would be paying
+ * for a connector it was not using. Asked and unanswered is a contract break;
+ * never asked is not.
+ *
+ * **`grounded` is the discriminator, and getting that wrong turns a correct
+ * refusal into a failed run.** A refusal calls no provider at all, so it reports
+ * no model, and that null is the truth rather than a stale deployment; found by
+ * driving the stack rather than by any test here. Every generated answer on both
+ * sides of the seam is `grounded: true`, so demanding attribution of those alone
+ * has no false positives and still catches an old service the first time it
+ * answers anything at all on a routed room.
+ *
+ * The labelled ungrounded tier is `grounded: false` and does carry attribution,
+ * so it is not checked. That costs nothing: an old service cannot route that tier
+ * either, and the grounded path on the same deployment catches it first.
+ */
+function assertAttributed(response: PlanResponse, target: GenerationTarget | null | undefined) {
+  if (target && response.grounded && !response.model) {
+    throw new AiServiceError(
+      'AI service was given a model target and produced a grounded answer without naming a ' +
+        'model, so it is older than the connector contract and would be running on the house key.',
+      'contract',
+    );
+  }
+}
+
+export interface PlanInput extends GenerationInput {
   roomId: string;
   goal: string;
   /**
@@ -206,6 +311,18 @@ export interface PlanInput {
   context?: IntakeSlot[];
   agentRunId: string;
   projectId?: string | null;
+  /**
+   * The target for the labelled ungrounded answer, when the gate refuses.
+   *
+   * Its own field because it is its own role: a workspace can route the Fallback
+   * answers somewhere other than the Strategist, and `/plan` is the one endpoint
+   * that may take either path within a single request. The service falls back to
+   * `generation` when this is absent, and to the house default when both are.
+   * Every rule 10 constraint is unchanged by it (ADR-0021): still `post_message`
+   * only, still `grounded=False`, still refused in code on a regulated topic
+   * before any provider is called.
+   */
+  generationFallback?: GenerationTarget | null;
 }
 
 /**
@@ -254,13 +371,31 @@ export class AiServiceError extends Error {
  * 12 threads and 230s on one. 90s therefore fits a well-provisioned instance and
  * not a small one, which is why AI_REQUEST_TIMEOUT_MS exists.
  *
- * The default is deliberately NOT raised to cover the slowest case. Agent runs
- * are asynchronous (202 + runId), so a longer plan is a longer wait rather than
- * a failure, whereas a default long enough for a single vCPU would mean a
- * genuinely hung service takes four minutes to report instead of ninety seconds.
- * Size the instance, or raise this per environment.
+ * **Raised from 90s when connectors landed** (ADR-0032), and the paragraph that
+ * used to be here argued the opposite, so it is worth saying why it changed
+ * rather than quietly deleting it. It read: the default is deliberately not
+ * raised to cover the slowest case, because a long default only delays reporting
+ * a hung service. That was written when every generation went to the house
+ * OpenAI key, which answers in seconds and does no thinking.
+ *
+ * A connected reasoning model breaks the premise. Claude Sonnet 5 spends
+ * thousands of tokens thinking before it emits the first character of a plan,
+ * and `services/ai` now allows 240s for a single provider call. A Node budget
+ * under that hangs up on Python mid-answer, which surfaces as "the reasoning
+ * service did not respond" while it is working correctly, and is exactly the
+ * failure the 30s-to-90s paragraph above was written about.
+ *
+ * So the ordering is the rule: this must stay comfortably above
+ * `request_timeout_s` in the AI service, because the outer budget should only
+ * ever fire when the inner one has already failed to. 300s is retrieval on a
+ * modest instance plus one slow generation, with margin.
+ *
+ * The cost is accepted rather than dismissed: a genuinely hung service now takes
+ * five minutes to report instead of ninety seconds. Agent runs are asynchronous
+ * (202 + runId), so that is a longer wait on a rare fault, against every
+ * connector plan failing on a common one.
  */
-export const DEFAULT_PLAN_TIMEOUT_MS = 90_000;
+export const DEFAULT_PLAN_TIMEOUT_MS = 300_000;
 
 export async function requestPlan(
   baseUrl: string,
@@ -284,6 +419,10 @@ export async function requestPlan(
           project_id: input.projectId ?? null,
           room_id: input.roomId,
         },
+        ...generationFields(input.generation),
+        ...(input.generationFallback
+          ? { generation_fallback: toWire(input.generationFallback) }
+          : {}),
       }),
     });
 
@@ -300,6 +439,11 @@ export async function requestPlan(
         'contract',
       );
     }
+    // Checked against the grounded target only. A plan that took the ungrounded
+    // path answered on `generation_fallback`, and the service names whichever one
+    // actually ran, so demanding attribution here would be demanding it of a call
+    // this side did not necessarily route.
+    assertAttributed(parsed.data, input.generation);
     return parsed.data;
   } catch (err) {
     if (err instanceof AiServiceError) throw err;
@@ -325,7 +469,7 @@ export interface ReplanTaskInput {
   dependsOn: string[];
 }
 
-export interface ReplanInput {
+export interface ReplanInput extends GenerationInput {
   projectId: string;
   roomId: string;
   goal: string;
@@ -382,6 +526,7 @@ export async function requestReplan(
           project_id: input.projectId,
           room_id: input.roomId,
         },
+        ...generationFields(input.generation),
       }),
     });
 
@@ -394,6 +539,7 @@ export async function requestReplan(
         'contract',
       );
     }
+    assertAttributed(parsed.data, input.generation);
     return parsed.data;
   } catch (err) {
     if (err instanceof AiServiceError) throw err;
@@ -510,7 +656,24 @@ export async function requestIntake(
   }
 }
 
-export interface ExecuteInput {
+/**
+ * What Node can draw with, told to the core so it knows whether to ask.
+ *
+ * **`GenerationTarget` with the credential removed, and the removal is the
+ * point.** The core never generates an image, so it never needs a key to do it
+ * with: it decides whether a creative step should ask for one, and this side
+ * makes the call with the key it already holds. A key on this object would be a
+ * live credential travelling to a process that has no use for it.
+ */
+export interface CreativeCapability {
+  provider: string;
+  model: string;
+  images: boolean;
+}
+
+export interface ExecuteInput extends GenerationInput {
+  /** Absent means the workspace has routed no Creative model, which is Auto's answer too. */
+  creative?: CreativeCapability | null;
   taskId: string;
   title: string;
   detail: string;
@@ -556,6 +719,12 @@ export async function requestExecution(
           // business documents as well as the shared corpus.
           room_id: input.roomId ?? null,
         },
+        ...generationFields(input.generation),
+        // Spread rather than sent as null, for `generationFields`'s reason: a
+        // workspace with no Creative route sends the body it sent before images
+        // existed, so "the path without a connector is unchanged" stays a claim
+        // a diff can settle rather than an assurance.
+        ...(input.creative ? { creative: input.creative } : {}),
       }),
     });
 
@@ -568,6 +737,7 @@ export async function requestExecution(
         'contract',
       );
     }
+    assertAttributed(parsed.data, input.generation);
     return parsed.data;
   } catch (err) {
     if (err instanceof AiServiceError) throw err;
@@ -618,6 +788,7 @@ export async function requestCampaignDraft(
           project_id: input.projectId,
           room_id: input.roomId ?? null,
         },
+        ...generationFields(input.generation),
       }),
     });
 
@@ -630,6 +801,7 @@ export async function requestCampaignDraft(
         'contract',
       );
     }
+    assertAttributed(parsed.data, input.generation);
     return parsed.data;
   } catch (err) {
     if (err instanceof AiServiceError) throw err;

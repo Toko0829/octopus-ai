@@ -101,6 +101,8 @@ interface StoredArtifact {
   title: string | null;
   body: string | null;
   citations: unknown;
+  /** The attempt that produced it, or null for an artifact written before runs carried one. */
+  task_run_id: string | null;
 }
 
 export interface HealSweepDeps {
@@ -200,7 +202,7 @@ async function healOne(
   // is known before it is finished and the warning can say so precisely.
   const { data: artifactRow, error: artifactError } = await admin
     .from('artifacts')
-    .select('id, title, body, citations')
+    .select('id, title, body, citations, task_run_id')
     .eq('task_id', task.id)
     .eq('kind', 'draft')
     .order('created_at', { ascending: false })
@@ -257,6 +259,33 @@ async function healOne(
     ? artifact.citations.filter((c): c is string => typeof c === 'string')
     : [];
 
+  // **Read back rather than re-derived.** This sweep delivers an artifact some
+  // other process wrote, possibly on a different day and possibly before the
+  // owner changed their routes, so asking `model_routes` what would answer today
+  // would stamp a message with a model that never saw it. `task_runs` is where
+  // the attempt recorded what actually did.
+  //
+  // Two reads rather than one embedded select, deliberately: a PostgREST
+  // relationship join is a string this file cannot typecheck, and a delivery that
+  // failed on it would be silent work lost rather than a missing label. Never
+  // fatal for the same reason the room lookup is not.
+  let model: string | null = null;
+  if (artifact.task_run_id) {
+    const { data: run, error: runError } = await admin
+      .from('task_runs')
+      .select('model')
+      .eq('id', artifact.task_run_id)
+      .maybeSingle<{ model: string | null }>();
+    if (runError) {
+      log.warn(
+        { taskId: task.id, taskRunId: artifact.task_run_id, err: String(runError) },
+        'could not read which model wrote this artifact; delivering it unattributed',
+      );
+    } else {
+      model = run?.model ?? null;
+    }
+  }
+
   await postArtifact(admin, {
     projectId: task.project_id,
     roomId,
@@ -267,6 +296,7 @@ async function healOne(
     title: artifact.title ?? task.title,
     body: artifact.body ?? '',
     citations,
+    model,
     log,
   });
 

@@ -6,6 +6,62 @@
 >
 > Update on any change to channels, creative tools, the campaign model, or the optimization loop.
 
+## Current shape
+
+> What exists today in `packages/marketing` and the marketing half of `apps/api`, read out of the
+> code. **Update this section in the same change as the code**, and keep its "Not built" list
+> honest: it is what a later session trusts instead of reading the whole doc. The narrative of how
+> each piece arrived is further down this doc and in [status-log.md](../00-overview/status-log.md).
+
+**The domain, without the IO** (`packages/marketing`). No Supabase client, no `fetch`, no
+filesystem and no clock anywhere in it: `spend.ts` (`checkSpendCap`), `publish.ts`, `metrics.ts`,
+`optimize.ts` (`decideCpaBreach`), `scopes.ts`, the `AdChannelAdapter` seam with its
+`fake-adapter`, the `ChannelAuthProvider` seam with its `fake-auth-provider`, and two registries
+that carry `carriesRealCredentials` / `carriesRealMoney`.
+
+**Live in `apps/api`.** Connecting a channel account (OAuth state signed by HMAC, tokens
+encrypted at rest, the only registered provider being the in-repo fake); the campaign card, whose
+approval is what publishes ([ADR-0013](../40-adr/0013-approving-a-campaign-publishes-it.md)); the
+publish, metrics and optimize sweeps on the ticker; the CPA ceiling an owner types, which is the
+authorisation to pause ([ADR-0014](../40-adr/0014-cpa-ceiling-authorises-auto-pause.md)).
+
+**Creative is a byte-producer now, and it is the first one this system has had**
+([ADR-0033](../40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)).
+
+| Piece                           | What it is                                                                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the brief                       | An ordinary text artifact with citations, classified by `deliverable.py` from the step's own words. **Still the deliverable**, whatever happens next |
+| `generate_image`                | The sixth proposal kind. Prompt, count of one to three, one of four aspect ratios. No bytes, no key                                                  |
+| `apps/api/src/lib/image-gen.ts` | The Gemini Interactions call, one request per image, on the workspace's own Google key, capped at 8 MB per image                                     |
+| the files                       | `kind = 'asset'` artifacts with `content_type`, in the private bucket under `<project_id>/<artifact_id>/`                                            |
+| the card                        | Says how many images and where they are. Never a link: a signed URL is a ten-minute bearer credential and the payload is stored and re-broadcast     |
+| `IMAGE_GEN_ENABLED`             | The deployment kill switch, on by default, in the `PUBLISH_ENABLED` family                                                                           |
+
+**The prompt is derived from the brief rather than asked of the model.** Concept and Art
+direction, in code, capped at 1000 characters, so what a person approved and what the generator
+was handed are the same words. Shot list is excluded because three frames folded into one prompt
+asks for a single picture of three ideas, and Specs are excluded because a ratio is a field the
+vendor validates rather than prose to parse.
+
+**Three conditions decide whether anything is drawn, and all three are checked before the request
+leaves Node**: the deployment flag, a Creative route on this workspace, and `images: true` on the
+routed model's registry entry. Withheld rather than ignored afterwards, because the brief's own
+opening sentence is written from that capability: told images are coming and then drawing none,
+the deliverable would carry a false statement about the product.
+
+**Not built.**
+
+- **Video and audio generation.** `generate_creative` in the tool table below names all three;
+  only images have a proposal kind and a provider.
+- **A checker for a generated image.** The critic reads the brief. Trigger: a measured quality bar
+  worth enforcing.
+- **`creative_assets`.** An artifact row carries everything true about a generated image today.
+  Trigger: the first need for per-asset performance rows.
+- **Real channel adapters.** Meta and Google are named throughout this doc and the only registered
+  adapter is the in-repo fake, which makes no network call at all.
+- **Scale and reallocate in the optimize loop.** Pause only, because pausing is what the typed
+  ceiling authorises.
+
 ## Responsibilities
 
 - Turn a creator's growth goal into a **coordinated full-funnel plan** and execute it.
@@ -31,7 +87,7 @@ All channel actions are typed tools with **risk tiers**; anything that publishes
 | Tool                                              | Risk       | Notes                                                                                                                                                                               |
 | ------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `research_audience` / `research_keywords`         | read-only  | grounding + planning                                                                                                                                                                |
-| `generate_creative` (image/video/audio)           | reversible | creative-gen providers; stored as artifacts                                                                                                                                         |
+| `generate_creative` (image/video/audio)           | reversible | **images live** on the workspace's own Gemini key, as `generate_image` executed by Node into the private artifacts bucket (ADR-0033). Video and audio have no producer              |
 | `draft_copy` / `draft_email_sequence`             | reversible | copy assets                                                                                                                                                                         |
 | `build_landing`                                   | reversible | conversion pages/drafts                                                                                                                                                             |
 | `connect_channel`                                 | high-risk  | OAuth to the user's ad/social/email accounts — **explicit user authorization only**                                                                                                 |
@@ -51,7 +107,7 @@ All channel actions are typed tools with **risk tiers**; anything that publishes
 
 - A **project** = a growth goal; its **task DAG** is the funnel (strategy → content → creative → channels → conversion → measurement).
 - **Campaigns** belong to a project and map to channel entities (ad campaigns/ad sets/ads, content calendars, email sequences).
-- **Assets** (creative/copy/landing) are artifacts with performance attached. Copy is an inline artifact; a generated image or video will be a **file artifact** in the private `artifacts` bucket (`20260829124000`), written by `writeFileArtifact` and read through a signed URL. **No creative provider is wired yet and `generate_creative` still produces a structured brief as ordinary text**: choosing an image or video provider is an irreversible decision that needs its own ADR, and until a byte-producer exists a file-producing proposal kind would be a wire shape designed before anything can fill it. Slice 6.
+- **Assets** (creative/copy/landing) are artifacts, with performance attached where a channel reports any. Copy is an inline artifact; a generated image is a **file artifact** in the private `artifacts` bucket (`20260829124000`), written by `writeFileArtifact` and read through a signed URL. **Images are live and the provider is the customer's own** ([ADR-0033](../40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)): choosing an image provider for everybody was the irreversible decision this bullet was waiting on, and connectors dissolved it, because the workspace chooses and pays. A creative step produces a brief and up to three images from it; the brief remains the record and the artifact row is the asset. **Video and audio still have no producer.**
 - See [business-projects-workflow.md](business-projects-workflow.md) for the DAG/state machine and [data-model.md](../10-architecture/data-model.md) for tables. That pointer is now true: the marketing domain has a schema section there rather than a forward reference.
 
 ## `packages/marketing` (the domain, without the IO)

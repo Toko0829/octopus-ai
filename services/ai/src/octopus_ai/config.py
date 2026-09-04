@@ -428,7 +428,25 @@ class Settings:
     # per chunk would be both slower and more expensive in overhead.
     embed_batch_size: int = 96
 
-    request_timeout_s: int = 60
+    # How long one provider HTTP call may take. **Not a tuning knob: 60 seconds
+    # was a measured defect.** It was sized for the house OpenAI path, which
+    # answers a plan in well under a minute with no thinking phase. A connected
+    # reasoning model does not behave that way: Claude Sonnet 5 on a 15-chunk
+    # sources block spends about 3,300 tokens thinking before it writes the first
+    # character of the plan, and the whole reply runs past 60 seconds.
+    #
+    # What that cost is the reason this comment is long. The client hung up, the
+    # model kept generating and billed the completion, `_post_with_retry` tried
+    # twice more, and all three completions were paid for and discarded. The eval
+    # then recorded `FELL BACK to prose (no card)` and the number looked like a
+    # verdict on the model. It was a verdict on this line.
+    #
+    # 240 seconds covers a long plan on a thinking model with margin. It is safe
+    # to raise because it is a ceiling rather than a reservation: a fast call
+    # still returns as fast as it did. Node bounds the whole request from outside
+    # (`AI_REQUEST_TIMEOUT_MS`), which is the timeout that decides how quickly a
+    # genuinely hung service is reported.
+    request_timeout_s: int = 240
 
     tags: dict[str, str] = field(default_factory=dict)
 
@@ -542,5 +560,5 @@ def get_settings() -> Settings:
         rerank_fanout=_int("RERANK_FANOUT", 1, minimum=1),
         rerank_batch_size=_int("RERANK_BATCH_SIZE", 0, minimum=0),
         embed_batch_size=_int("EMBED_BATCH_SIZE", 96),
-        request_timeout_s=_int("AI_REQUEST_TIMEOUT_S", 60),
+        request_timeout_s=_int("AI_REQUEST_TIMEOUT_S", 240),
     )

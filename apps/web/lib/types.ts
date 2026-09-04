@@ -52,6 +52,20 @@ export interface UiPersona {
   working: boolean;
   /** What it is doing, in words, or null when it is not doing anything. */
   activity: string | null;
+  /**
+   * The model this voice's proposals are composed on, in words.
+   *
+   * Always a string, never null: a room that has routed nothing still runs on
+   * something, and the honest answer there is the house default rather than a
+   * blank. When even that is unknown (the AI service did not answer `/health`)
+   * the phrase says a default exists without naming one, because naming one
+   * would be inventing the fact this line reports.
+   *
+   * A voice can be busy on a model the owner did not choose. That is not a
+   * contradiction: a route is a preference read when a proposal is composed, and
+   * a run already in flight keeps the model it started on.
+   */
+  runsOn: string;
 }
 
 export interface UiChannel {
@@ -82,6 +96,17 @@ export interface UiMessage {
    * specialist it would have been.
    */
   persona: AgentPersona | null;
+  /**
+   * Which model wrote this, as the vendor's own id.
+   *
+   * Null for everything a person or a node said, for a system line, for every
+   * agent message this side composed in TypeScript, and for every agent message
+   * written before `20260913122000`. **Not an enum**: the id is rendered through
+   * `labelForModel`, which returns an unrecognised id unchanged, because a build
+   * shipped before a model existed should say the model's name rather than
+   * nothing.
+   */
+  model: string | null;
   body: string;
   /** Ordering cursor from Postgres. Null only for a not-yet-confirmed local send. */
   seq: number | null;

@@ -164,12 +164,19 @@ async def test_anthropic_gets_headroom_for_thinking_on_top_of_the_budget():
     Without this a 4000-token plan budget is spent thinking and the JSON arrives
     truncated, which is the exact failure `generation_max_tokens_long` exists to
     prevent on the house path.
+
+    **The headroom is 12000 because 4000 was measured too small**, not because a
+    round number was wanted. Sonnet 5 was seen thinking 7191 tokens on a 16-chunk
+    prompt, which left 809 of the old 8000 cap for a plan that needs about 2500;
+    the reply truncated and the eval read it as the model failing to make a card.
+    Asserted as the sum rather than as the constant so the arithmetic the caller
+    depends on is what breaks if somebody changes either half.
     """
     seen, p = _providers(ANTHROPIC_REPLY)
     await p.complete_json(system="s", user="u", max_tokens=4000, target=_target("anthropic"))
     await p.aclose()
 
-    assert _body(seen[0])["max_tokens"] == 8000
+    assert _body(seen[0])["max_tokens"] == 4000 + 12000
 
 
 async def test_a_truncated_anthropic_reply_is_an_error_and_not_an_answer():

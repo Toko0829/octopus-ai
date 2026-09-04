@@ -196,4 +196,16 @@ describe('the bytes are whatever the caller had', () => {
 
     expect(uploaded[0]?.contentType).toBe('application/pdf');
   });
+
+  it('writes the same type onto the row, so the object and the row agree', async () => {
+    // One call site knows both, which is the whole reason the column exists: a
+    // reader without it would infer the type from the filename, and the filename
+    // is sanitised out of untrusted input (ADR-0033).
+    const { admin, uploaded, inserted } = fakeAdmin();
+
+    await writeFileArtifact(admin, input({ contentType: 'image/png', filename: 'image-1.png' }));
+
+    expect(inserted[0]?.content_type).toBe('image/png');
+    expect(inserted[0]?.content_type).toBe(uploaded[0]?.contentType);
+  });
 });

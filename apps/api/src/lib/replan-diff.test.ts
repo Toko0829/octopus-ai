@@ -27,11 +27,17 @@ interface Write {
 }
 
 let written: Write[];
-let replanResponse: { proposals: unknown[]; citations: unknown[] };
+let replanResponse: { proposals: unknown[]; citations: unknown[]; model?: string | null };
 let replanThrows: Error | null;
+/** Every `/replan` request the producer built, so the resolved role can be seen. */
+let replanInputs: Record<string, unknown>[];
+/** Rows the fake client hands back for the two model tables. */
+let routeRow: Record<string, unknown> | null;
+let connectionRow: Record<string, unknown> | null;
 
 vi.mock('./ai', () => ({
-  requestReplan: async () => {
+  requestReplan: async (_url: string, input: Record<string, unknown>) => {
+    replanInputs.push(input);
     if (replanThrows) throw replanThrows;
     return replanResponse;
   },
@@ -63,7 +69,11 @@ function admin() {
       in: () => b,
       order: () => b,
       limit: () => b,
-      maybeSingle: async () => ({ data: null, error: null }),
+      maybeSingle: async () => {
+        if (table === 'model_routes') return { data: routeRow, error: null };
+        if (table === 'model_connections') return { data: connectionRow, error: null };
+        return { data: null, error: null };
+      },
       single: async () => {
         const values = (b.__values ?? {}) as Record<string, unknown>;
         return { data: { id: 'msg-1', ...values }, error: null };
@@ -86,9 +96,9 @@ const log = {
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
-} as never;
+};
 
-const opts = { aiServiceUrl: 'http://ai', log };
+const opts = { aiServiceUrl: 'http://ai', log: log as never };
 const input = {
   projectId: PROJECT,
   roomId: ROOM,
@@ -120,7 +130,10 @@ const aReplan = {
 beforeEach(() => {
   written = [];
   replanThrows = null;
-  replanResponse = { proposals: [aReplan], citations: [] };
+  replanInputs = [];
+  routeRow = null;
+  connectionRow = null;
+  replanResponse = { proposals: [aReplan], citations: [], model: 'gpt-5.4' };
 });
 
 const messages = () => written.filter((w) => w.table === 'messages');
@@ -182,5 +195,75 @@ describe('when the reasoning core cannot answer', () => {
     replanThrows = new Error('unreachable');
     await produceDiff(admin(), opts, input);
     for (const m of messages()) expect(String(m.values.body)).not.toContain('—');
+  });
+});
+
+/**
+ * The voice and the route are one choice (ADR-0032).
+ *
+ * `@Ads move the budget to Meta` comes back signed by Ads **and written on the
+ * model this workspace routed to Ads**. Splitting the two would make the
+ * signature decorative: a card that reads as one specialist while being composed
+ * by another specialist's model is telling the reader something untrue about the
+ * only thing the signature claims.
+ */
+describe('which model answers a diff', () => {
+  const HEX = 'a'.repeat(64);
+  const KEY = 'sk-ant-live-not-a-real-key-4f2a';
+
+  async function route(role: string) {
+    const { modelConnectionAad, parseMasterKey, seal } = await import('./envelope');
+    const sealed = seal(KEY, parseMasterKey(HEX), modelConnectionAad(ROOM, 'anthropic', 1));
+    routeRow = { role, provider: 'anthropic', model: 'claude-opus-5' };
+    connectionRow = {
+      key_ciphertext: sealed.ciphertext,
+      key_iv: sealed.iv,
+      key_tag: sealed.tag,
+      key_version: 1,
+    };
+  }
+
+  it('resolves the strategist route when nobody named a specialist', async () => {
+    await route('strategist');
+    await produceDiff(admin(), { ...opts, modelKeySecret: HEX }, input);
+    expect(replanInputs[0]?.generation).toMatchObject({ model: 'claude-opus-5' });
+  });
+
+  it('resolves the addressed specialist route on a mention', async () => {
+    // The fake answers whatever route row the test set, so what this pins is the
+    // role the producer asked for: the persona is the role, by construction.
+    await route('ads');
+    await produceDiff(admin(), { ...opts, modelKeySecret: HEX }, { ...input, persona: 'ads' });
+    const roles = log.info.mock.calls.map((c) => (c[0] as { role?: string }).role).filter(Boolean);
+    expect(roles).toContain('ads');
+  });
+
+  it('stamps the card with the model that answered', async () => {
+    replanResponse.model = 'claude-opus-5';
+    await produceDiff(admin(), opts, { ...input, persona: 'ads' });
+    expect(messages()[0]?.values).toMatchObject({ persona: 'ads', model: 'claude-opus-5' });
+  });
+
+  it("stamps the core's own message when it sends one instead of a diff", async () => {
+    replanResponse = {
+      proposals: [{ kind: 'post_message', body: 'Nothing to change here.' }],
+      citations: [],
+      model: 'claude-opus-5',
+    };
+    await produceDiff(admin(), opts, input);
+    expect(messages()[0]?.values).toMatchObject({ model: 'claude-opus-5' });
+  });
+
+  it('leaves our own failure sentence unstamped', async () => {
+    // The one function posts both, so this is the assertion that keeps the
+    // distinction: no model wrote "I could not work out a change".
+    replanThrows = new Error('unreachable');
+    await produceDiff(admin(), opts, input);
+    expect(messages()[0]?.values.model).toBeNull();
+  });
+
+  it('sends nothing when the room has routed nothing', async () => {
+    await produceDiff(admin(), opts, input);
+    expect(replanInputs[0]?.generation).toBeNull();
   });
 });

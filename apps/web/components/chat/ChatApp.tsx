@@ -8,6 +8,7 @@ import type {
   EmbedActionResponse,
   ListNotificationsResponse,
   Message,
+  ModelSettingsResponse,
   ProjectSummary,
   Room,
   RoomMember,
@@ -26,6 +27,7 @@ import {
   getChannels,
   getMembers,
   getMessages,
+  getModelSettings,
   getProjects,
   postMessage,
   startAgentRun,
@@ -121,6 +123,23 @@ export function ChatApp({
    */
   const [strategistBusy, setStrategistBusy] = useState(false);
   const strategistTimer = useRef<number | null>(null);
+  /**
+   * The room's model settings, read once per room and again after any change.
+   *
+   * **Held here rather than inside the Models block**, because two surfaces read
+   * it: the block itself, and the line under each voice in the members panel
+   * that says which model composes its proposals. Two fetches of the same
+   * endpoint would let the two halves of one panel disagree while the second
+   * request was in flight.
+   *
+   * **Not refetched on every message**, unlike the project list. Nothing an
+   * agent does changes a route; only a person on this surface does, and they
+   * announce it by calling `reloadModels`.
+   */
+  const [models, setModels] = useState<ModelSettingsResponse | null>(null);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelsRefresh, setModelsRefresh] = useState(0);
+  const reloadModels = useCallback(() => setModelsRefresh((n) => n + 1), []);
   // Rooms arrive as a server prop and become state here, because creating one has
   // to show up without a full page reload and has to move the selection with it.
   const [roomList, setRoomList] = useState(rooms);
@@ -159,8 +178,12 @@ export function ChatApp({
     [uiMembers],
   );
   const personas = useMemo(
-    () => activityByPersona(projects, strategistBusy),
-    [projects, strategistBusy],
+    () =>
+      activityByPersona(projects, strategistBusy, {
+        routes: models?.routes ?? [],
+        houseDefault: models?.houseDefault ?? null,
+      }),
+    [projects, strategistBusy, models],
   );
 
   /**
@@ -261,7 +284,6 @@ export function ChatApp({
     setToast(text);
     window.setTimeout(() => setToast(null), 2600);
   }, []);
-
 
   /** Pull anything that landed while we were not subscribed. */
   const catchUp = useCallback(async (id: string) => {
@@ -406,6 +428,33 @@ export function ChatApp({
     };
   }, [roomId, lastMessageId]);
 
+  /**
+   * The model settings for this room.
+   *
+   * A failure here is reported rather than swallowed, which is the opposite of
+   * the projects read above and for a reason: that one feeds a count on a
+   * button, and this one feeds a block where somebody is about to paste a paid
+   * credential. A Models block that silently showed "no provider connected"
+   * because a request failed would send them to connect a key they already have.
+   */
+  useEffect(() => {
+    let live = true;
+    getModelSettings(roomId)
+      .then((res) => {
+        if (!live) return;
+        setModels(res);
+        setModelsError(null);
+      })
+      .catch((err) => {
+        if (!live) return;
+        setModels(null);
+        setModelsError(err instanceof Error ? err.message : 'Could not load the model settings.');
+      });
+    return () => {
+      live = false;
+    };
+  }, [roomId, modelsRefresh]);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -447,10 +496,11 @@ export function ChatApp({
         id: localId,
         authorId: viewerId,
         authorKind: 'user',
-        // A person's message never carries one, and the table refuses it: the
-        // field is here because the type requires every message to say, rather
-        // than because this one could have a value.
+        // A person's message never carries either of these, and the table
+        // refuses both: the fields are here because the type requires every
+        // message to say, rather than because this one could have a value.
         persona: null,
+        model: null,
         body: text,
         seq: null,
         ts: new Date().toTimeString().slice(0, 5),
@@ -569,6 +619,7 @@ export function ChatApp({
           channelName={activeChannel?.name ?? null}
           messages={messages}
           membersById={membersById}
+          roomId={roomId}
           canAct={canAct}
           onEmbedAction={handleEmbedAction}
           onQuestionAction={handleQuestionAction}
@@ -580,7 +631,15 @@ export function ChatApp({
           mentionable={canAct}
         />
       </div>
-      <ContextPanel members={uiMembers} personas={personas} roomId={roomId} canAct={canAct} />
+      <ContextPanel
+        members={uiMembers}
+        personas={personas}
+        roomId={roomId}
+        canAct={canAct}
+        models={models}
+        modelsError={modelsError}
+        onModelsChanged={reloadModels}
+      />
       <CommandPalette
         open={cmdkOpen}
         channels={uiChannels}

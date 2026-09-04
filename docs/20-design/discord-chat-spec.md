@@ -28,7 +28,7 @@ A **Discord-shaped** collaboration space where the **user, the AI agent, and hum
 1. **Guild rail** (far left) — one entry per **business/venture** the user runs (the octopus's parallel arms). Per-business accent color.
 2. **Channel sidebar** — **workstreams** as channels (`#registration`, `#location`, `#suppliers`, `#licensing`, `#hiring`, `#branding`, `#budget`) + threads/topics for subtasks.
 3. **Message list** — the stream. The AI posts **inline** here; human nodes post here when engaged; system messages record the audit trail.
-4. **Context panel** (right) — members (with roles/presence), the current task card, and **RAG sources/citations** for what the AI just claimed.
+4. **Context panel** (right) — members (with roles/presence), the four agent voices with the model each runs on, the workspace's **Models** block (connected providers and one route per role, [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)), connected marketing accounts, the current task card, and **RAG sources/citations** for what the AI just claimed. Every owner-only control in it is **absent** for a member rather than disabled. The panel is hidden below 1080px, so all of it is desktop-only today.
 5. **Composer** — slash commands (`/plan`, `/status`, `/approve`, `/hire`, `/budget`), autocomplete, attachments, markdown.
 
 Top bar carries business name, current phase, live **budget (tabular numerics)**, ⌘K, and presence avatars.
@@ -44,6 +44,10 @@ Top bar carries business name, current phase, live **budget (tabular numerics)**
 | Admin/Ops    | `--role-admin` | "Ops"                         |
 
 **Never color alone** — every role is color **+ badge + icon** (accessibility, and to survive colorblind/low-contrast).
+
+**The message head names the model that wrote it.** A mono chip beside the Agent badge, from `messages.model`, and only ever on text a model actually wrote: a run notice, a sweep notice and a waiting digest are Octopus's own copy and carry none. An id this build does not recognise is rendered verbatim rather than as "Unknown", because it is still the true answer to what wrote this. The persona and the model are two different facts and the head carries both: the voice is the job, the model is who did it.
+
+**An answer a model wrote alone can be rated.** Helpful / Not helpful chips under an agent message that carries a model and no card, owner-only. Everything on a card already has a verdict, and the one reply that is prose with no card is the ungrounded fallback tier, which is the output whose quality rests on the model rather than on the corpus.
 
 **The AI Agent row is four voices, one badge.** Strategist, Content, Ads and Analyst share `--role-agent`, the teal avatar and the "Agent" badge; only the name and the two initials differ (`messages.persona`, `20260912120000`). The badge deliberately does not fork: what a reader must not get wrong is that the AI wrote this rather than a person, and that claim stays carried by a word. A message with no persona renders under the single legacy name, `Octopus`. See [chat-discord.md](../30-modules/chat-discord.md) for the stage-to-voice table.
 

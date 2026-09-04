@@ -77,6 +77,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     supabase,
     aiServiceUrl: env.AI_SERVICE_URL,
     aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+    modelKeySecret: env.MODEL_KEY_SECRET ?? null,
   });
 
   // Changing a plan that is already running. Produces a card; applying it is the
@@ -87,6 +88,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     supabase,
     aiServiceUrl: env.AI_SERVICE_URL,
     aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+    modelKeySecret: env.MODEL_KEY_SECRET ?? null,
   });
   await app.register(messageRoutes, { verify, supabase });
   await app.register(agentRunRoutes, {
@@ -95,6 +97,12 @@ export async function buildServer(): Promise<FastifyInstance> {
     aiServiceUrl: env.AI_SERVICE_URL,
     aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
     intakeTimeoutMs: env.INTAKE_REQUEST_TIMEOUT_MS,
+    // Every path that can reach the reasoning core takes the master key, because
+    // every one of them can be the first call in a room that routes its own
+    // provider. A deployment that never sets it passes null everywhere and keeps
+    // planning on the house default; a room with routes and no key fails the run
+    // with the variable named (ADR-0032).
+    modelKeySecret: env.MODEL_KEY_SECRET ?? null,
   });
   // Approving a plan runs a scheduler tick, and a tick can execute AI tasks, so
   // this route needs the same reasoning-core wiring as agent runs.
@@ -106,6 +114,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     // Finishing a question card continues the run that asked, so this route
     // needs the intake budget as well.
     intakeTimeoutMs: env.INTAKE_REQUEST_TIMEOUT_MS,
+    modelKeySecret: env.MODEL_KEY_SECRET ?? null,
   });
 
   // What the workspace tells us about its own business. Ingestion is embedding
@@ -181,6 +190,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     executor: {
       aiServiceUrl: env.AI_SERVICE_URL,
       aiTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
+      modelKeySecret: env.MODEL_KEY_SECRET ?? null,
+      imageGenEnabled: env.IMAGE_GEN_ENABLED,
       log: app.log,
     },
     stepBudgetMs: env.AI_REQUEST_TIMEOUT_MS,

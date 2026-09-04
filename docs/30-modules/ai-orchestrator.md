@@ -15,50 +15,87 @@
 
 **Endpoints** (`main.py`). Every one of them returns proposals and performs nothing ([ADR-0006](../40-adr/0006-python-ai-service-node-backend.md)).
 
-| Endpoint | Does | Generation |
-| --- | --- | --- |
-| `GET /health` | Liveness, whether configuration resolved, and the house default's `generation_provider` / `generation_model` | none |
-| `POST /intake` | One round of clarifying questions, before anything is retrieved | house, cheap tier |
-| `POST /plan` | Decompose, retrieve, gate, then plan or refuse or answer ungrounded | **target** (`generation`, and `generation_fallback` for the ungrounded tier) |
-| `POST /execute` | Draft one approved step as a cited artifact, or refuse | **target** (`generation`) |
-| `POST /campaign` | Draft one authorisation-blocked step as a campaign, or decline | **target** (`generation`) |
-| `POST /replan` | Propose a diff against a running project, or decline | **target** (`generation`) |
-| `POST /sources` | Ingest one document the workspace supplied about itself | none |
-| `POST /ingest` | Ingest a crawled document | none |
+| Endpoint         | Does                                                                                                         | Generation                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `GET /health`    | Liveness, whether configuration resolved, and the house default's `generation_provider` / `generation_model` | none                                                                         |
+| `POST /intake`   | One round of clarifying questions, before anything is retrieved                                              | house, cheap tier                                                            |
+| `POST /plan`     | Decompose, retrieve, gate, then plan or refuse or answer ungrounded                                          | **target** (`generation`, and `generation_fallback` for the ungrounded tier) |
+| `POST /execute`  | Draft one approved step as a cited artifact, or refuse, and ask for images on a visual step                  | **target** (`generation`); `creative` says whether Node can draw            |
+| `POST /campaign` | Draft one authorisation-blocked step as a campaign, or decline                                               | **target** (`generation`)                                                    |
+| `POST /replan`   | Propose a diff against a running project, or decline                                                         | **target** (`generation`)                                                    |
+| `POST /sources`  | Ingest one document the workspace supplied about itself                                                      | none                                                                         |
+| `POST /ingest`   | Ingest a crawled document                                                                                    | none                                                                         |
 
 **Cores**, which is what `PlanResponse.core` reports: `grounded-plan-v1`, `grounded-v1` (cited prose when the card could not be built), `refusing-v0`, `refusing-ungrounded-v1`, `refusing-unverified-v1`, `ungrounded-general-v1`, `executing-v1`, `refusing-unexecutable-v1`, `campaign-v1`, `declining-campaign-v1`, `replan-diff-v1`, `refusing-unreplannable-v1`.
 
 **Generation dialects** (`providers.py`), one per wire shape, no vendor SDK. Each is pinned by an `httpx.MockTransport` test rather than by a library's release notes.
 
-| Dialect | Endpoint | Auth header | JSON mode | Sampling |
-| --- | --- | --- | --- | --- |
-| `openai_compatible` | `{base_url}/chat/completions`, default `https://api.openai.com/v1` | `Authorization: Bearer` | `response_format: json_object` | `temperature` 0 for JSON, 0.3 for prose |
-| `anthropic` | `POST https://api.anthropic.com/v1/messages` | `x-api-key` plus `anthropic-version: 2023-06-01` | instruction, then `_extract_json_object` | **none sent**: models after Opus 4.6 reject every value but 1.0 |
-| `google` | `POST .../v1beta/interactions` (the Interactions API) | `x-goog-api-key` | instruction, then `_extract_json_object` | `generation_config.temperature`, same numbers |
-| `fake` | none: no network at all | none | `FAKE_JSON` | none |
+| Dialect             | Endpoint                                                           | Auth header                                      | JSON mode                                | Sampling                                                        |
+| ------------------- | ------------------------------------------------------------------ | ------------------------------------------------ | ---------------------------------------- | --------------------------------------------------------------- |
+| `openai_compatible` | `{base_url}/chat/completions`, default `https://api.openai.com/v1` | `Authorization: Bearer`                          | `response_format: json_object`           | `temperature` 0 for JSON, 0.3 for prose                         |
+| `anthropic`         | `POST https://api.anthropic.com/v1/messages`                       | `x-api-key` plus `anthropic-version: 2023-06-01` | instruction, then `_extract_json_object` | **none sent**: models after Opus 4.6 reject every value but 1.0 |
+| `google`            | `POST .../v1beta/interactions` (the Interactions API)              | `x-goog-api-key`                                 | instruction, then `_extract_json_object` | `generation_config.temperature`, same numbers                   |
+| `fake`              | none: no network at all                                            | none                                             | `FAKE_JSON`                              | none                                                            |
 
-Two dialect details are load-bearing rather than incidental. Anthropic's `max_tokens` is **required and spent by adaptive thinking**, so the caller's budget gets 4000 tokens of headroom and a `stop_reason` of `max_tokens` becomes a `ProviderError`, which is what makes the planner's corrective retry and its prose fallback run instead of a half-written card reaching somebody. And Google's OpenAI-compatibility layer is **deliberately unused**: it is beta and silently ignores parameters it does not support, so a token cap or a JSON request would look applied when it was not.
+Two dialect details are load-bearing rather than incidental. Anthropic's `max_tokens` is **required and spent by adaptive thinking**, so the caller's budget gets **12000 tokens of headroom** and a `stop_reason` of `max_tokens` becomes a `ProviderError`, which is what makes the planner's corrective retry and its prose fallback run instead of a half-written card reaching somebody. And Google's OpenAI-compatibility layer is **deliberately unused**: it is beta and silently ignores parameters it does not support, so a token cap or a JSON request would look applied when it was not.
+
+**The headroom is 12000 because 4000 was measured too small, and how that was found is worth keeping.** Sonnet 5 on a 16-chunk sources block was observed thinking 3217, 3246, 3445, 3528 and then **7191** tokens for the same prompt: thinking length is adaptive and has a long tail, so the headroom has to cover the tail rather than the median. At 7191 the old 8000 cap left 809 tokens for a plan that needs about 2500, the JSON arrived cut off, and the run fell back to prose. Raising a ceiling costs nothing when it is not reached, since providers bill tokens produced rather than tokens allowed.
+
+**Two timeouts had to move with it, and one of them was charging for nothing.** `request_timeout_s` was 60, sized for the house OpenAI path, and shorter than a single legitimate thinking-model reply; worse, `_post_with_retry` treated the resulting read timeout as transient and tried three times. A read timeout means the provider accepted the request and is generating, so each retry bought **another full billed completion for the same reason the first one "failed"**, and all three were discarded. Read, write and pool timeouts are now terminal; only connect failures retry, because nothing was generated. `request_timeout_s` is 240 and Node's `AI_REQUEST_TIMEOUT_MS` is 300s, and the ordering is the rule: the outer budget must only fire when the inner one already has.
+
+**All of this surfaced as `--plan` scoring `card_rate` below 1.0**, which reads as a verdict on the model and was a verdict on our arithmetic. It is the second time this repository has measured a competent model badly through its own harness, so the rule stands: audit the caller before the model.
 
 **Which call runs on what.** A `GenerationTarget` (`vendor`, `provider`, `model`, `api_key`, optional `base_url`) arrives **per request** and is never stored; with none, the call is byte-for-byte the one it has always been on the server's own key, which is what **Auto** means on the settings surface ([ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)).
 
-| Call | Runs on | Why |
-| --- | --- | --- |
-| plan, plan retry, plan prose fallback | the request's target | the retry is the same model shown its own error, not a second opinion |
-| execute, campaign draft, replan diff | the request's target | Node resolves the role from the step's own stage or the signing persona |
-| the ungrounded fallback | `generation_fallback`, else `generation` | a workspace that named a model should not get the house key because the corpus came up short |
-| query decomposition, the groundedness gate, intake | **the house model, always** | pinned at `temperature: 0` and their thresholds were measured there; the gate is scored two-sided by `--gate` on it. `test_target_threading.py` asserts these three receive `None` |
-| embeddings, rerank | in-process, no provider | ADR-0008 and ADR-0009 are untouched by connectors, so no corpus text leaves the process because somebody chose a different reasoning model |
+| Call                                               | Runs on                                  | Why                                                                                                                                                                                |
+| -------------------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| plan, plan retry, plan prose fallback              | the request's target                     | the retry is the same model shown its own error, not a second opinion                                                                                                              |
+| execute, campaign draft, replan diff               | the request's target                     | Node resolves the role from the step's own stage or the signing persona                                                                                                            |
+| the ungrounded fallback                            | `generation_fallback`, else `generation` | a workspace that named a model should not get the house key because the corpus came up short                                                                                       |
+| query decomposition, the groundedness gate, intake | **the house model, always**              | pinned at `temperature: 0` and their thresholds were measured there; the gate is scored two-sided by `--gate` on it. `test_target_threading.py` asserts these three receive `None` |
+| embeddings, rerank                                 | in-process, no provider                  | ADR-0008 and ADR-0009 are untouched by connectors, so no corpus text leaves the process because somebody chose a different reasoning model                                         |
 
-**Who answered is reported, not assumed.** `PlanResponse.provider` and `PlanResponse.model` carry the target's pair, or `("openai", generation_model)` for the house default. `plan_grounded` sets them on every response it builds and `answer_ungrounded` on its own; a refusal that generated nothing leaves both null. Node stamps that onto the message it writes, and never accepts one from a client (ADR-0032 decision 4).
+**Who answered is reported, not assumed.** `PlanResponse.provider` and `PlanResponse.model` carry the target's pair, or `("openai", generation_model)` for the house default, from the shared `providers.attribution` helper. **Every generated answer sets them**: `plan_grounded` (card, retry and prose fallback), `answer_ungrounded`, `execute_task`, `draft_campaign` and `replan`. **A refusal leaves both null, and that is not an omission**: the pair says what answered, and a refusal called no provider at all, so naming one would put a model's name on words it never saw. Node reads it the same way and demands attribution of a `grounded` answer only, which is what keeps a correct refusal from failing a run. Node stamps the pair onto the message it writes and never accepts one from a client (ADR-0032 decision 4).
+
+That last paragraph was written twice. The first version set the pair in the planner alone, which is invisible until something routes `/execute`: a workspace with a Content route got a grounded artifact with no model on it, Node refused it as a contract break, the step retried, failed identically and escalated to a person who could do nothing about it. Found by driving the compose stack, not by any test, and now pinned by five in `test_target_threading.py`.
 
 **Key handling.** `api_key` is a `SecretStr`, unwrapped exactly where the outbound header is built and nowhere else. It reaches no log line, no `what=` string and no exception message. The one non-obvious leak is pydantic v2, which puts the failing parent **object** in a 422 body's `input` on a missing field, so `main.py`'s `RequestValidationError` handler strips `input` and `ctx` on every endpoint. That leak is verified rather than assumed, and `test_plan.py` covers both the case that leaks and the one that does not.
 
 **The `--plan` eval is the admission gate for a registry entry.** `python -m octopus_ai.evaluation --plan --provider <id> --model <id> --key-env NAME` scores plan structure over the golden positives on that model; the bar is `card_rate` 1.0 and `clean_rate` at or above 0.8. The key is read from the named variable rather than passed on the command line, so it stays out of shell history and process listings. Credentialed and not in CI, like `--gate`.
 
-**Tests:** 592 across 40 files under `services/ai/tests/`, no `conftest.py`, stubs duck-typed. Wire shapes use `httpx.MockTransport`; endpoint tests assign onto `main_module.state`.
+**Tests:** 616 across 41 files under `services/ai/tests/`, no `conftest.py`, stubs duck-typed. Wire shapes use `httpx.MockTransport`; endpoint tests assign onto `main_module.state`.
 
-**A key can now be connected and a role routed**, and nothing reads either yet. `model_connections` and `model_routes` exist, `apps/api/src/routes/models.ts` writes them behind an owner check, and `openSecretForProvider` is the one function that opens a sealed key. **No agent run resolves a route**, so every call here still runs on the house key.\n\n**Not built.** Schema-mode JSON for Anthropic (`output_config`) or Google, whose trigger is a `card_rate` below 1.0 on either. Streaming. The Responses API. Vendor web search on the fallback call. Image generation. The Node wiring that would resolve a route into a `GenerationTarget`, and the settings surface that would let somebody choose one without curl. Pooled billing and metering. `MODEL_KEY_SECRET` rotation. The `base_url` seam exists on the wire and has no UI.
+**Every role is now resolved and every call is routed.** `apps/api/src/lib/model-routing.ts` reads the room's `model_routes` row for the role, opens the sealed key through `openSecretForProvider`, and puts the target on the request. Which role a call takes is Node's, from a fact it already had:
 
+| Call                            | Role                                   | Where the role comes from                                                                                            |
+| ------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| the plan                        | `strategist`                           | fixed: the Strategist owns the plan                                                                                  |
+| the ungrounded fallback         | `fallback`                             | resolved beside the plan and sent as `generation_fallback`, because `/plan` has two exits and the gate decides which |
+| one executed step               | `personaForStage(tasks.stage)`         | the same value that signs the delivery, so a landing page is written by Content on Content's model                   |
+| a campaign draft                | `ads`                                  | by name, not by stage: a campaign card is drafted for any step the router parked for spend authorisation             |
+| a replan diff                   | the signing persona, else `strategist` | `@Ads move the budget to Meta` comes back signed by Ads and written on Ads' model                                    |
+| decomposition, the gate, intake | none                                   | the house model, always, per the table above                                                                         |
+
+**A sixth proposal kind, `generate_image`, and it carries no bytes and no key.** A `brief` step on a workspace that has routed Creative at an image model gets its brief **and** a request to draw it: a prompt built in code from the brief's own Concept and Art direction sections, a count of one to three read off the step, and one of four aspect ratios. `apps/api` executes it with the workspace's Google key and writes the files into the private artifacts bucket, because this service holds no storage key and never handles bytes ([ADR-0033](../40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)). `ExecuteRequest.creative` is the other half: `provider`, `model` and `images`, deliberately **without** an `api_key`, since deciding whether to ask needs no credential.
+
+The brief's opening sentence moves with the capability. It said "this system cannot generate images yet" unconditionally, which was true until slice 6; `instruction_for(kind, images=...)` now has two openings and one body, and Node **withholds** the capability rather than ignoring the answer when the deployment flag is off or the routed model cannot draw, so the deliverable never opens by promising pictures nobody is going to make.
+
+**Failing loud is the rule, and the two error kinds say what to do.** A route with no `MODEL_KEY_SECRET` on the server raises `ModelRoutingError('not_configured')`; a ciphertext that will not open raises `unreadable`. Both stop the run with a system notice naming the variable, rather than quietly using the house key, which would bill us for a provider the owner chose and stamp a model they did not. A route pointing at a provider with no live connection is different and warns rather than stopping: revoking a key deletes its routes, so that state is stale bookkeeping rather than a decision.
+
+**The gap ledger records who answered, and only where somebody did.** `retrieval_gaps` gained `provider` and `model` with `20260913123000`, and `gaps.py` takes them as parameters that default to `None` rather than reading them off the settings. That default is the design. Every refusal reaches the ledger without an answer, because a refusal calls no model at all: `refusing-v0` never got to generation, and both gate cores are the gate declining or being unavailable. The one core that carries the pair is `ungrounded-general-v1`, and it is passed the `PlanResponse` the tier actually produced, so the row names **what answered** rather than what was asked for or what the house default happens to be.
+
+| Core                     | `provider` / `model` | Because                                                                                                                    |
+| ------------------------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `ungrounded-general-v1`  | the answer's pair    | this is the one tier whose answer rests on the model rather than on the corpus, so the queue is worth reading per provider |
+| `refusing-v0`            | null                 | nothing was retrieved and nothing was generated                                                                            |
+| `refusing-ungrounded-v1` | null                 | the gate declined, **or** `is_regulated` declined the tier in code before any provider was called                          |
+| `refusing-unverified-v1` | null                 | the gate itself could not run                                                                                              |
+
+**The regulated row is the sharpest case and was verified live rather than argued.** A GDPR consent question cleared the domain check with 8 chunks, the gate judged the corpus did not cover it, `is_regulated` declined before a key was spent, and the resulting `refusing-ungrounded-v1` row named nobody. A workspace's own connector is never billed for a question this tier refuses to answer.
+
+**Nothing here is a training set.** A queue naming the model behind each gap is exactly the shape a distillation set has, and it is not one (ADR-0032 decision 3): nothing reads these rows into the corpus, and no answer recorded here is trained on, house provider or connector alike. The columns buy a person reading a queue with one more fact in it.
+
+**Not built.** Schema-mode JSON for Anthropic (`output_config`) or Google, whose trigger is a `card_rate` below 1.0 on either. Streaming. The Responses API. Vendor web search on the fallback call. A checker for a generated image: the critic reads the brief and has no opinion about a picture, because nobody has measured a quality bar for one. Video and audio generation, which have no proposal kind and no provider. Pooled billing and metering. `MODEL_KEY_SECRET` rotation. The `base_url` seam exists on the wire and has no UI.
 
 > **Implementation status (Phase 1):** the **seam is live end to end, with a deliberately trivial core.** `services/ai` (FastAPI) exposes `GET /health` and `POST /plan`, returning typed **proposals**; `apps/api` exposes `POST /api/rooms/:roomId/agent-runs` which returns `202 + runId` and executes those proposals, posting to chat as `author_kind='agent'`. The agent is therefore a real chat member: its messages persist under RLS and reach clients over Realtime like anyone else's.
 >
@@ -434,12 +471,12 @@ Non-negotiables (full list in [security-compliance.md](../10-architecture/securi
 
 **A persona is a voice, not a runner** ([ADR-0031](../40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)). The executor, the scheduler and the router are unchanged; there is still one writer to the task DAG and one place a spend cap is checked. The voice is a label chosen in `apps/api` from the step's own `tasks.stage`, by `personaForStage` in `packages/contracts`, so no model picks it and no new authorisation surface appears.
 
-| Persona      | Stages                              | What it signs                                                                              |
-| ------------ | ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| Persona      | Stages                              | What it signs                                                                                  |
+| ------------ | ----------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `strategist` | `strategy`, and any unmatched stage | intake, the run notices, the plan card, the question card, the replan card, the waiting digest |
-| `content`    | `content`, `creative`, `conversion` | the artifact delivered for those stages                                                    |
-| `ads`        | `channels`                          | the campaign card and the publish sweep's notices                                          |
-| `analyst`    | `measurement`                       | the metrics and optimize sweeps' notices, including the CPA-ceiling pause                  |
+| `content`    | `content`, `creative`, `conversion` | the artifact delivered for those stages                                                        |
+| `ads`        | `channels`                          | the campaign card and the publish sweep's notices                                              |
+| `analyst`    | `measurement`                       | the metrics and optimize sweeps' notices, including the CPA-ceiling pause                      |
 
 `personaForStage` is **total**: `tasks.stage` is free text, so an unrecognised stage and a null one both fall to the Strategist rather than throwing. A thrown label would mean delivered work that never reaches the room, which is the failure `roomForProject` was written to fix.
 

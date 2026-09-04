@@ -57,6 +57,8 @@ export interface EmbedRoutesOptions {
   verify: AuthVerifier;
   supabase: SupabaseConfig;
   aiServiceUrl: string;
+  /** See `AgentRunnerOptions.modelKeySecret`. */
+  modelKeySecret?: string | null;
   /** Budget for one execution step. Defaults to the production value. */
   aiTimeoutMs?: number;
   /** For the run a finished question card continues. See `AgentRunnerOptions`. */
@@ -73,6 +75,7 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
     supabase: opts.supabase,
     aiServiceUrl: opts.aiServiceUrl,
     aiTimeoutMs: opts.aiTimeoutMs,
+    modelKeySecret: opts.modelKeySecret ?? null,
     intakeMaxRounds: opts.intakeMaxRounds,
     intakeTimeoutMs: opts.intakeTimeoutMs,
     log: app.log,
@@ -371,6 +374,7 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
             const ports = createSchedulerPorts(admin, {
               aiServiceUrl: opts.aiServiceUrl,
               aiTimeoutMs: opts.aiTimeoutMs,
+              modelKeySecret: opts.modelKeySecret ?? null,
               log: request.log,
             });
             const report = await tick(projectId, ports);
@@ -383,6 +387,7 @@ export async function embedRoutes(app: FastifyInstance, opts: EmbedRoutesOptions
             await produceCampaignCards(admin, report, {
               aiServiceUrl: opts.aiServiceUrl,
               aiTimeoutMs: opts.aiTimeoutMs,
+              modelKeySecret: opts.modelKeySecret ?? null,
               log: request.log,
             });
           } catch (tickError) {

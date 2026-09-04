@@ -22,12 +22,22 @@ const EnvSchema = z.object({
 
   // Python AI service (ADR-0006). Node calls it over an OpenAPI-typed seam.
   AI_SERVICE_URL: z.string().url().default('http://localhost:8000'),
-  // Budget for one grounded planning turn. Reranking is in-process CPU work
-  // (ADR-0009), so the real cost scales with the cores the AI service has:
-  // ~71s per goal on 12 threads, ~230s on one. Raise this on a small instance.
-  // The default is not raised to cover the slowest case, because agent runs are
-  // async (202 + runId) and a long default only delays reporting a hung service.
-  AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
+  // Budget for one grounded planning turn, end to end: retrieval plus one
+  // generation. Reranking is in-process CPU work (ADR-0009), so retrieval scales
+  // with the cores the AI service has: ~71s per goal on 12 threads, ~230s on one.
+  //
+  // **Raised from 90s when connectors landed** (ADR-0032). 90s was sized for the
+  // house OpenAI path and is shorter than a single legitimate call to a
+  // reasoning model: Claude Sonnet 5 spends thousands of tokens thinking before
+  // it writes anything, and `services/ai` now allows 240s for one provider call.
+  // A Node budget under that would hang up on Python mid-answer, which reads as
+  // "the reasoning service did not respond" while it is working correctly.
+  //
+  // The old comment argued a long default only delays reporting a hung service.
+  // That still holds and is now the accepted cost: agent runs are async
+  // (202 + runId), so a slow plan is a longer wait rather than a failure, while
+  // a short default turns every connector plan into one.
+  AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
   /**
    * Intake's own budget, deliberately far shorter than the planning one.
    *
@@ -335,6 +345,36 @@ const EnvSchema = z.object({
    * number here would post a burst of old deliverables into rooms at once.
    */
   HEAL_MAX_PER_TICK: z.coerce.number().int().positive().default(3),
+
+  /**
+   * Whether this deployment generates images for creative steps.
+   *
+   * **On by default, which is the `PUBLISH_ENABLED` polarity rather than
+   * `CRAWL_ENABLED`'s**, and the rule this file has followed since publish decides
+   * it: a capability is off by default only when there is a stranger to protect.
+   * Crawling reaches regulators' servers; this reaches the vendor whose key the
+   * workspace owner pasted in themselves, inside a step the same person approved,
+   * and it spends **their** quota rather than ours.
+   *
+   * It is triply inert before it costs anybody anything: the workspace has to have
+   * connected a provider, routed Creative at a model that actually makes images,
+   * and approved a plan containing a visual step. A workspace that has done none
+   * of those never pays for this being on.
+   *
+   * Off by default would also make the product lie, which is the argument that
+   * settled the polarity of every flag above. With a Creative route set, the brief
+   * itself now opens by saying images will be generated from it (ADR-0033); on a
+   * deployment where this was quietly false, the deliverable would state a
+   * capability the deployment had switched off, which is a false surface rather
+   * than an absent one.
+   *
+   * So it is a kill switch: set it to `false` and creative steps still produce
+   * their brief, which was always the record, and nothing is drawn.
+   */
+  IMAGE_GEN_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false' && v !== '0'),
 
   /**
    * Signing key for the OAuth `state` parameter.

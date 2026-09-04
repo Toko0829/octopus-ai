@@ -90,9 +90,19 @@ def test_instructions_ask_for_structure_rather_than_quality():
     assert "## Hero" in instruction_for("landing")
 
 
-def test_the_brief_says_plainly_that_images_are_not_generated():
-    """Claiming a capability we do not have is worse than naming the gap."""
+def test_the_brief_says_which_of_the_two_products_the_reader_is_holding():
+    """Claiming a capability we do not have is worse than naming the gap.
+
+    It was a constant sentence until a workspace could connect an image model
+    (ADR-0033), and then the honest sentence became two sentences: the gap is
+    still named where there is a gap, and a workspace whose Creative role is
+    routed is told its brief is about to be drawn. Both directions are pinned,
+    because the failure that matters is a brief that promises pictures nobody is
+    going to make.
+    """
     assert "cannot generate images" in instruction_for("brief")
+    assert "cannot generate images" not in instruction_for("brief", images=True)
+    assert "Images will be generated" in instruction_for("brief", images=True)
 
 
 def test_no_instruction_uses_an_em_dash():

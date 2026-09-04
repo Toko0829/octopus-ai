@@ -131,6 +131,7 @@ def _record_gap(
     retrieval: RetrievalResult | None,
     *,
     detail: str = "",
+    answer: PlanResponse | None = None,
 ) -> None:
     """Note a refusal in the ledger, if the ledger is up.
 
@@ -138,6 +139,13 @@ def _record_gap(
     own failures. The `is None` guard is for the tests that call these endpoints
     without a lifespan, where the absence of a ledger must not be the difference
     between a passing and a failing assertion about refusal copy.
+
+    `answer` is the ungrounded reply when there was one, and it is passed as the
+    whole response rather than as two strings on purpose: the attribution has to
+    come from **what actually answered**, which is what the service reported back
+    through `PlanResponse`, and never from the target we asked for. A refusal
+    passes nothing, so its row names no provider, which is the same rule
+    `messages_model_agent_only` enforces one table over.
     """
     if state.gaps is None:
         return
@@ -150,6 +158,8 @@ def _record_gap(
         room_id=request.room_id,
         project_id=request.trace.project_id,
         agent_run_id=request.trace.agent_run_id,
+        provider=answer.provider if answer else None,
+        model=answer.model if answer else None,
     )
 
 
@@ -449,7 +459,18 @@ async def plan(request: PlanRequest) -> PlanResponse:
                     # same signal: a question the corpus could not support. The
                     # rate is a corpus-health number that should fall as documents
                     # are added, not a feature whose usage should grow.
-                    _record_gap(request, UNGROUNDED_CORE, retrieval, detail=verdict.reason)
+                    #
+                    # The answer goes with it, so the row names the connector that
+                    # produced it. This is the only core that carries one: the
+                    # queue can then be read per provider, and the same gap
+                    # answered by two connectors stops averaging into one number.
+                    _record_gap(
+                        request,
+                        UNGROUNDED_CORE,
+                        retrieval,
+                        detail=verdict.reason,
+                        answer=answer,
+                    )
                     logger.info(
                         "answered ungrounded",
                         extra={

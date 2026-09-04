@@ -7,7 +7,56 @@
 > **`packages/ui` is named in `.docmeta.yml` and does not exist.** It was written down as an owner path before anything was built and has stayed there since. There is one consumer, so extracting the components into a workspace package today costs build wiring and buys nothing; the tokens live in `apps/web/app/globals.css` and the library is the stylesheets beside it. The mapping is kept so that the day a package appears it already has an owning doc.
 >
 > The design language + tokens are specified in [design-system.md](../20-design/design-system.md); this doc owns the **implementation**. Update both together on any token/component change.
->
+
+## Current shape
+
+> What exists today in `apps/web`, read out of the code. **Update this section in the same
+> change as the code**, and keep its "Not built" list honest: it is what a later session trusts
+> instead of reading the whole doc. The narrative of how each piece arrived is in the status
+> blockquote below and in [status-log.md](../00-overview/status-log.md).
+
+**Routes.** Nine, and the split is who the page belongs to rather than what it renders.
+
+| Route                                                | Whose               | What it is                                                                  |
+| ---------------------------------------------------- | ------------------- | --------------------------------------------------------------------------- |
+| `/`                                                  | nobody              | the landing page                                                            |
+| `/sign-in`                                           | nobody              | GoTrue email sign-in; middleware gates everything below                     |
+| `/app`                                               | the workspace owner | the chat shell, read server-side and hydrated into `ChatApp`                |
+| `/node`, `/node/verify`                              | a human node        | the expert's own surface, deliberately not the owner's shell                |
+| `/ops`                                               | an operator         | the internal queue                                                          |
+| `/connections/callback`, `/connections/fake-consent` | the owner           | the OAuth round trip for a marketing account                                |
+| `/api/bff/[...path]`                                 | the browser         | the only path from a page script to Fastify; attaches the token server-side |
+
+**The chat shell** is three columns: `GuildRail` (rooms), `ChannelSidebar`, the stream, and `ContextPanel` (the room rail). The rail is **hidden below 1080px** by an existing media query, so every block in it is desktop-only today.
+
+**Cards**, each one a component that renders an `action_embeds` payload and posts a verdict back through one route: `PlanCard`, `ArtifactCard`, `ReplanCard`, `CampaignCard`, `QuestionCard`. A card is an enhancement of a message that is already readable in plain text, never a replacement for one.
+
+**Rail blocks**, in order down `ContextPanel`: the member list, the four agent voices, **Models** (`ModelSettings.tsx`), and `ConnectedAccounts`. Both connector blocks are room-scoped facts set once and read often, which is why they live in the room's own column rather than behind the project modal, and the Models block borrows the accounts block's classes wholesale rather than inventing a second visual language for the same object.
+
+**The Models block** ([ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)) is the whole BYOK surface.
+
+| Part                | Owner sees                                                                                                                        | Member sees                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Connected providers | provider label, **Connected** plus a dot, the key's last four characters, Disconnect                                              | the same row, **without** Disconnect |
+| Connect a model     | a disclosure: provider `<select>`, `type="password"` key field, the registry's `keyHelp`, one line saying what happens to the key | **absent**, not disabled             |
+| Who runs on what    | six `<select>`s, one per role, each saving on change with a "saved" word                                                          | the six roles as text lines          |
+
+Four rules hold it together. **The key is not renderable**: `ModelSettingsResponse` has no field for one, so a projection that started returning credentials would fail to typecheck in the browser rather than reach it. **Auto names itself**, as "Auto (house default: GPT-5.4)" from the AI service's `/health`, falling back to "Auto (house default)" when the service did not answer rather than guessing a model. **A role is only editable when there is something to choose**, so Creative on a workspace with only a text provider connected renders a sentence, not a dead select. And **Creative says what routing it does**: it read "Nothing produces an image yet" for exactly one slice, which was honest while it was true, and now names the images and the brief that is written either way ([ADR-0033](../40-adr/0033-the-first-byte-producer-is-the-workspace-image-connector.md)).
+
+**The message head** carries the persona badge, the time, and, when a model wrote the text, a mono chip naming it. Only text a model actually wrote has one, so every run notice, sweep notice, waiting digest and question card is bare, and an id this build does not recognise is rendered verbatim rather than as "Unknown". Each of the four voices in the rail carries a "Runs on" line reading the same settings, which is a statement about the route as it stands rather than about the run beside it.
+
+**The artifact card counts its images and never shows one.** A creative step on a workspace with an image connector delivers a brief plus up to three PNGs, and the card says "3 images, in the project panel." rather than rendering them. That is a security decision, not a layout one: the bucket is private, so an `<img>` means a signed URL, which is a ten-minute bearer credential, and the stream re-renders on every broadcast, so it would mint one per artifact per re-render for everybody with the room open. `imageFilesOf` filters on the content type, so the first non-image file producer is a download rather than a broken picture.
+
+**The panel is where an image is seen**, and the two arms of the file block share one fetch. A file whose `contentType` starts with `image/` offers **Show the image** and renders it inline once somebody asks; anything else keeps the Download button and the pop-up fallback it already had. Null is every file written before the column existed, and its answer is the download those rows already had. One click, one signed URL, for the person who wanted it. **The uncited warning is suppressed under an image and kept everywhere else**: rule 10 protects a reader from an uncited claim, a picture makes none, and the brief it came from is directly above with its sources, so three consecutive "treat it as unverified" lines under three pictures taught a reader to skip the sentence where it matters. One shared predicate decides what an image is, so the card and the panel cannot drift.
+
+**The label control** (`MessageFeedback.tsx`) offers Helpful and Not helpful, and only under an agent message that carries a model and **no card**: everything else already has a verdict, and the route refuses a second one. Local state only, so a reload shows the buttons again and a second label is recorded rather than replacing the first, which is the append-only table doing what it says.
+
+**Copy that people read is in TypeScript, not in JSX**, wherever a test can then walk it: `lib/notification-copy.ts` and `lib/models-copy.ts` are the two, and both have a suite asserting rule 22 over every string they can produce.
+
+**Tests:** 87 across seven files under `apps/web/lib/`, all pure helpers, `vitest run` on defaults with no config. There is no component-rendering suite and no browser test; every visual claim in this doc was checked by driving the compose stack.
+
+**Not built:** a `packages/ui` (see the note above); any component or end-to-end test; the rail on a narrow viewport, so a phone cannot connect a model or read who runs on what; label hydration, so a verdict is invisible after a reload; a custom `base_url` field for an OpenAI-compatible gateway, which exists on the wire and has no control; a per-message model picker; a gallery, a lightbox or any way to re-order, replace or delete a generated image, so the panel shows what a step produced and nothing more.
+
 > **Implementation status (Phase 1, in progress):** the **Discord-style chat shell** at `/app` now runs on **live data, with no mock or demo content anywhere**. Sign-in (`/sign-in`, Supabase GoTrue) gates the workspace via middleware; reads happen in the Server Component; the browser talks to Fastify only through the thin BFF at `/api/bff/*`; messages arrive over Realtime and sends are optimistic, reconciled on the server copy. House style via design tokens in `app/globals.css` + `app/app/chat.css`, type (Fraunces / Hanken Grotesk / JetBrains Mono via `next/font`), light + dark skins.
 >
 > **A blocked step now says what it is waiting for.** `TaskRow` renders a `work-waiting` line under the owner line when `blockedBy` is non-empty and the step is `pending` or `blocked`. From `ready` onward the scheduler has already proved every hard dependency satisfied, so the line would be describing a queue that had cleared. Before this, twelve of fifteen steps on a live project read "Not started" with nothing to tell them apart, which is the same sentence a step that is simply next in line gets.

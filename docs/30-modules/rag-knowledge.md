@@ -169,6 +169,34 @@ Four properties, each of which is a way it could have been done wrong:
 **There is no `resolved` column.** A gap is closed when the question stops being
 refused, which is measured rather than asserted.
 
+**Read the queue per provider, and read it for what to ingest rather than for
+what to copy.** `20260913123000` added `provider` and `model`, set on
+`ungrounded-general-v1` rows and null on every refusal, because a refusal calls
+no model at all. Once a workspace routes Fallback to its own connector, two rows
+with the identical core, the identical `reason` and the identical `top_sources`
+can be two entirely different products, and grouping without the pair averages
+them:
+
+```sql
+select provider, model, count(*) as answered_from_general_practice
+from public.retrieval_gaps
+where core = 'ungrounded-general-v1'
+group by 1, 2
+order by 3 desc;
+```
+
+Two cautions when reading it. The share answered rather than refused is a
+**corpus-health number that should fall** as documents are added, so a provider
+appearing often here is the tier working and the corpus not keeping up, never an
+achievement. And **the answer is a lead, never a source**
+([ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)
+decision 3): what a row licenses is a human going and finding a real document
+about the topic, not the model's prose entering the corpus, which would turn an
+unverified claim into a citation and is the exact failure the whole retrieval
+stack exists to prevent. Nothing here is trained on, house provider or connector
+alike. Whether the answer was any good is a separate signal and lives in
+`feedback_events`, joined through `messages.model`.
+
 ## The corpus decides which words work, and that is now fixed from both ends
 
 Retrieval is sensitive to the exact metric word, and the margin is what makes it so. Two phrasings of one intent against the same corpus, measured before the fix:

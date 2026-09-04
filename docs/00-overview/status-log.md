@@ -117,3 +117,190 @@
 **Then driven for real against the live database, because a route test stubs PostgREST and cannot fail on a column name.** A wrong OpenAI key came back 400 `invalid_key` with nothing written. The real one came back 201 with a four-character hint, and the row held a 220-character ciphertext, a 16-character IV and a 24-character tag under `key_version` 1, which is also the first proof that the upsert's `onConflict: 'room_id,provider'` resolves against the real unique constraint. `PATCH` set two roles and then refused three things in three different sentences: a model the provider does not offer, a provider with no key, and an image model on a text role. Through PostgREST as `authenticated`, `model_connections` answered `42501` and `model_routes` returned the two routes, which is the pair of postures working as designed rather than as described. `DELETE` revoked the OpenAI row, left the record with all three key columns null, took the strategist route with it and left the ads route alone, and answered 409 the second time. `openSecretForProvider` opened a key the route had sealed, and returned null for the revoked provider and for another room. The three `events` rows carry `actor_kind: user`, a real actor id, and a payload with the provider and the hint and no key. The API log contains neither the OpenAI key, nor the master key, nor the fake key. The fixtures were then deleted from the owner's workspace; the events stayed, because they are the record of what was actually done.
 
 **What is not built, and is deliberately not.** Nothing consumes a route. No agent run resolves one into a target, so every call still goes to the house key, and there is no surface: the four routes are reachable by curl and by four typed functions in `api-client.ts` that nothing calls. `Message.model` is in the contract and is always null, because the column does not exist yet and no message in this system was written by a model anybody chose. Key rotation is named with the first rotation as its trigger. The seam was cut here so that the credential can be wrong on its own, before anything depends on it being right.
+
+**And now a workspace's own choice actually decides who proposes, which is the slice that turns two tables into a product.** `resolveGeneration` reads the room's route for a role, opens the sealed key through the one decrypting function, and puts a target on the request; `toWire` renames it onto the body. The roles are not a new vocabulary, they are facts Node already had: the plan is the Strategist's, an executed step takes `personaForStage(tasks.stage)` so a landing page is written by Content on Content's model, a campaign card is `ads` by name because the router parks a step for spend authorisation whatever stage it was filed under, and a replan diff takes the voice that signs it, so `@Ads move the budget to Meta` comes back signed by Ads **and written on the model routed to Ads**. Splitting those two would have made the signature decorative. `/plan` sends two targets because it has two exits: the grounded card is the Strategist's and a gate refusal takes the labelled ungrounded tier, which is its own role a workspace can point somewhere else, and the service reports whichever one actually ran.
+
+**A room that has routed nothing sends no `generation` field at all**, rather than `generation: null`, and a test asserts that rather than a comment claiming it. That is what makes "nothing changed for everybody else" something a diff can settle.
+
+**The attribution column is the opposite of the persona column one migration back, on purpose.** `persona` closed its set with a check, on the argument that a client trusts the four names it renders. Model ids belong to vendors, who retire and rename them without asking, so `messages.model` is `text` with a length bound and nothing else: a closed set would mean the day a vendor ships a model this repository has not listed, a run that succeeded and produced real work fails at the write, and the person loses the output to a label. What the table can refuse is a model on a system notice or a person's message. What it cannot refuse, and what `apps/api` therefore has to hold, is the other half of the rule: **only text a model actually wrote carries one.** Every run notice, sweep notice, waiting digest and question card is an `agent` row composed in TypeScript, and each of those writes `model: null` explicitly rather than leaving it to the column default, so the claim is in the code somebody greps. Intake is the case worth stating: a model did classify the goal, and the words are still ours.
+
+**`messages_insert_own` gained `and model is null`, which meant retyping the whole predicate again.** `alter policy ... with check` replaces the expression rather than appending to it, so `message_persona.sql` (10) and `thread_scope.sql` (55) were both re-run against the restatement inside the same rolled-back transaction, and both passed. That is not ceremony: a conjunct dropped in a retyping fails nothing until somebody asserts the capability it protected, and every such failure reads as "the chat stopped working" rather than as a security change.
+
+**`task_runs` takes the pair per attempt, and the second reader is why the column exists at all.** The executor stamps its own delivery from the response it just received, which needs no column. The heal sweep re-delivers an artifact some earlier process wrote, possibly days later and possibly after the owner changed their routes, so it reads `task_runs.model` back through `artifacts.task_run_id` rather than asking the routes what would answer today, which would stamp a message with a model that never saw it.
+
+**Failing loud was chosen over falling back, twice.** A route with no `MODEL_KEY_SECRET` on the server, and a ciphertext that will not open, both stop the run with a system notice naming the variable. The tempting behaviour is to shrug and use the house key, and it is wrong in two directions at once: the workspace chose a provider and would be silently billed to us instead, and the message would be stamped with a model the owner did not pick. A route pointing at a provider with no live connection is a different case and warns rather than stopping, because revoking a key deletes its routes, so that state is stale bookkeeping rather than a decision anybody is making now.
+
+**Verified against the live stack, and that is where the two real defects were.** The first: slice 1 set `provider` and `model` in the planner alone, so `/execute`, `/campaign` and `/replan` came back grounded and unattributed. Nothing showed it until something routed a step, at which point Node's contract check refused a perfectly good artifact, the executor retried, failed identically and escalated the step to a person who could do nothing about it. Three response builders now use the shared `attribution` helper, and five tests pin it. The second was that check itself: written as "a routed call must name a model", it would have turned a correct refusal into a failed run on every routed room, because a refusal calls no provider and honestly names none. It now demands attribution of a **grounded** answer only, which has no false positives and still catches a stale service the first time it answers anything at all.
+
+**What the live run showed, in order.** The fake provider connected with a checked key; routes set to `fake-strong` for the Strategist and `fake-cheap` for Content; a real goal logged `generation resolved role=strategist provider=fake model=fake-strong` on the API side and `generation on a workspace target vendor='fake'` on the AI side, and the plan card landed stamped `fake-strong` while the "Working on a plan" notice above it stayed null. Clearing the route sent no target and the next card was stamped `gpt-5.4`, which the service reported rather than Node assuming. An executed Content step wrote two `task_runs` rows both carrying `fake / fake-cheap`, and its `task.executed` and `task.reviewed` events carried the pair beside `persona: content`. A delivered artifact on the house default arrived signed by Ads and stamped `gpt-5.4`. `GET /messages` returned the column. With the routes still set and the master key removed from the container, the run failed with `MODEL_KEY_SECRET` named in the room and nothing written. Disconnecting the provider took its routes with it. No key of any kind appears in any log line.
+
+**Not built here.** Nothing renders the model yet: the chip beside the Agent badge, the thumbs on a reply and the Models block itself are the web slice. `retrieval_gaps` does not carry the pair, so the fallback tier is routed and not yet measured per provider. The `creative` role has a picker value and no producer.
+
+**Then the admission gate was run against Claude Sonnet 5, and it failed in a way that was entirely our fault.** `--plan` scored `card_rate` below 1.0 with cases reading `FELL BACK to prose (no card)`, and the owner noticed something the score did not say: money had been spent and nothing had come back. Three defects, none of them the model's.
+
+**The first was a 60-second HTTP timeout in `services/ai`**, sized when every generation went to the house OpenAI key, which answers in seconds and does no thinking. A connected reasoning model does not: on a 16-chunk sources block Sonnet 5 spends thousands of tokens thinking before it writes the first character of the plan, and the reply runs past a minute.
+
+**The second turned that into a bill.** `_post_with_retry` treated the read timeout as transient and tried three times. A read timeout means the provider accepted the request and is generating, so the completion is produced and billed whatever we do next, and each retry bought another full one for the same reason the first had "failed" — three abandoned plans per case, all paid for, all discarded. Read, write and pool timeouts are now terminal. Connect failures still retry, because nothing was generated and another attempt costs nothing.
+
+**The third was arithmetic.** The Anthropic dialect added 4000 tokens of headroom for thinking, giving an 8000-token cap. Measured across five runs of one prompt, thinking came in at 3217, 3246, 3445, 3528 and then **7191** tokens: adaptive, with a long tail. At 7191 the cap left 809 tokens for a plan that needs about 2500, so the JSON arrived cut off, `ProviderError` fired, the corrective retry ran, and the turn fell to prose. The headroom is 12000 now, which covers the worst observed run with margin and costs nothing when it is not reached, since providers bill tokens produced rather than tokens allowed.
+
+**Node's budget moved with it, and the ordering is now the stated invariant.** `AI_REQUEST_TIMEOUT_MS` defaulted to 90s, below the AI service's new 240s per-call ceiling, which would have meant Node hanging up on Python mid-answer and reporting a healthy service as unresponsive — the exact failure the 30s-to-90s change had been made to fix. It is 300s, and the rule is that the outer budget only ever fires when the inner one has already failed to. The accepted cost is that a genuinely hung service takes five minutes to report instead of ninety seconds, which is a longer wait on a rare fault against every connector plan failing on a common one. The paragraph in `architecture.md` arguing the opposite was rewritten rather than deleted, because the argument was right for the house path and is worth being able to find.
+
+**Verified on the exact case that failed:** three runs of the 16-chunk `cpa-too-high` prompt, three valid cards, thinking 4679, 5342 and 7111 tokens. The third used 10,525 output tokens in total and would have truncated under the old cap.
+
+**The measurement that started this is void.** No `card_rate` for Anthropic is recorded here, because what was measured was a 60-second timeout and an 8000-token ceiling, not Claude Sonnet 5. The gate still has to be run, and the numbers still belong in this log before either vendor is offered to anybody. **This is the second time a competent model has been scored badly through this repository's own harness**, so the rule is written where the dialect is documented rather than left in a commit message: audit the caller before the model.
+
+### An ungrounded answer says who gave it, and the owner can say whether it helped (ADR-0032, slice 4 of seven)
+
+**The "another model answers when Octopus cannot" half, built as data rather than as a feature.** Slice 3 routed the fallback tier to whichever connector a workspace named for it. Nothing recorded which one answered, and nothing could say whether the answer was any good, so the tier that most depends on the model was the only one nobody could measure. Two migrations, a parameter in Python and one route in Node close that.
+
+**`retrieval_gaps` gains `provider` and `model`, and the default is the design.** `gaps.py` takes them as parameters defaulting to `None` rather than reading the configured model, because **the common row in that table is a refusal and a refusal calls no model at all**: `refusing-v0` never reached generation, and both gate cores are the gate declining or being unavailable. Filling them in from settings would put an attribution on sentences no model wrote, which is the mistake `messages_model_agent_only` exists to make impossible one table over, and it would be wrong in the other direction too, since a workspace's Fallback route need not be the house model. Only `ungrounded-general-v1` carries the pair, and it is handed the `PlanResponse` the tier produced, so the row names what **answered** rather than what was asked for.
+
+**Why the columns are worth a migration at all.** Once a workspace routes Fallback to its own connector, two rows with the identical core, the identical gate `reason` and the identical near misses can be two entirely different products, and reading the queue without the pair is reading an average of things that did not happen. That is also the whole of what they are for. A queue naming the model behind each gap is exactly the shape a distillation set has, and it is explicitly not one: nothing ingests these rows, nothing trains on them, house provider or connector alike. A provider's output is a lead, never a source.
+
+**`feedback_events` gains its second subject.** Every path into it since `20260812130000` went through a card, because at the time every AI output a person could judge was one. The labelled ungrounded tier is not: it answers in prose, carries no card by construction, and rests on the model rather than on the corpus. `message_id` joins `embed_id` as a nullable sibling, and `helpful` / `not_helpful` join the two card verdicts in the same column. The wording is asymmetric on purpose: a card asks for an authorisation and consequences follow both its verdicts, while a prose answer asks for nothing and nothing downstream materialises from these two.
+
+**No cross-column check requiring exactly one subject**, and the reason is a race rather than a preference. Both columns are `on delete set null`, so a room cascade deleting its messages and its embeds would turn an ordinary cleanup into a constraint violation depending on which cascade Postgres ran first. The write path sets exactly one; the table declines to make a deletion order into a failure. `set null` rather than `cascade` for the same family of reason: `subject` holds what was actually judged at decision time, so a label outlives its subject and stays readable evidence.
+
+**A defect the route's own test suite found, which is worth recording because it looks like nothing.** The 409 for "this message carries a card" was first written against `message.embed`, the rendered value. `toEmbed` deliberately returns `null` for a payload it cannot parse, so a corrupt row degrades to a plain message rather than breaking the stream, which is right for rendering and wrong for a refusal: a message whose card failed to parse would then take a **second** verdict, and one output would be counted twice. Presence is a fact about the join; parseability is a fact about the payload. The route now asks the raw column, and a test with a deliberately unparseable payload pins it.
+
+**Three refusals, each protecting the rate from a different kind of nonsense**: a message no model wrote (`model` null, so a run notice, a sweep notice or a waiting digest would be a label on a sentence composed in TypeScript), a person's or a node's message, and a message carrying a card. The message is read as the caller with the pinned `MESSAGE_COLUMNS`, so RLS decides what exists and an invisible message is 404 rather than 403; ownership is a separate question answered by `resolveRoom` with 403. The insert is service-role, because a label is the server's record of a decision it saw.
+
+**Verified against the live compose stack, and the honest limitation is stated first.** No Anthropic or Google key was available in this session, so the connector half ran on the built-in `fake` vendor, which exists for exactly this and spends nothing. The Anthropic and Google wire shapes are pinned by `MockTransport` in slice 1 and were driven live in slice 3; what this run exercised is the routing, the ledger, the attribution invariant and the label route, none of which is vendor-specific.
+
+**What the live run showed, in order, including the runs that did not do what the plan expected.** The scope negative named in the plan, "how do I build a webinar funnel for my course", came back `refusing-v0` twice: nothing cleared the 0.0013 rerank threshold, so the domain check refused before the gate ever ran and the tier never fired. Both rows landed with `provider` and `model` null, which is the assertion for a refusal and was got for free. **The groundedness gate is a model call and is not deterministic**, which showed up next: a goal that scored `unsupported` on a direct probe came back sufficient through the full run and produced a grounded plan on the house model. A goal further from coverage while still in-vocabulary, exact SPF and DKIM records for a lifecycle email, reached the tier reliably. That run left four consecutive messages in the room, and the four together are the whole invariant in one query: the ungrounded answer stamped `fake-strong` with no card, the run notice above it null, the grounded plan stamped `gpt-5.4` with a card, and its notice null. The gap row read `ungrounded-general-v1 / fake / fake-strong` with the gate's own sentence naming what was missing.
+
+**The regulated case was the one most worth driving, and it behaved.** A GDPR cookie-consent question cleared the domain check with 8 chunks, the gate judged the corpus did not cover it, and `is_regulated` declined the tier **before any provider was called**, so the row came back `refusing-ungrounded-v1` naming nobody. A customer's own key is never spent on a question this tier refuses to answer, and that is now demonstrated rather than argued.
+
+**The label route was driven through every path**: the owner rating the ungrounded answer 201 with the note trimmed by the contract and `subject` carrying the body, model and persona; a room member who is not the owner 403; a run notice 409 with "only an answer a model wrote can be rated"; the plan card 409 with "Rate the card instead."; a message in no visible room 404; a card verdict word sent to the prose route 400. Rating the same message again returned 201 and left **two** rows, which is what append-only means here: the table has no client `UPDATE`, so a changed mind is a second row and the latest wins. The per-provider join then ran against real rows and returned one model with one `helpful` and one `not_helpful` against it.
+
+**The migration-version drift fired again**, as it has on every slice applied through the MCP without exception: both were stamped from the wall clock as `2026090412…` and corrected in a separate call, after which the audit in `supabase/README.md` reported 98 files against 98 recorded. Advisors show no new lint beyond `feedback_events_message_idx` reporting `unused_index`, which is what a new index looks like on the day it lands; the new foreign key is not reported unindexed, so the partial index covers it.
+
+**Not built here.** The control itself: nothing in `apps/web` calls `labelMessage`, and the thumbs, the model chip and the Models block are all the web slice. Vendor web search on the fallback call. The `creative` role still has a picker value and no producer. And the `service_role` `UPDATE` grant on `feedback_events` remains the known gap `20260812130000` opened, recorded rather than quietly inherited.
+
+### The Cursor-shaped surface: a workspace picks its models in the rail, and every reply says which one wrote it (ADR-0032, slice 5 of seven)
+
+**Four slices of connector plumbing had no surface, and this is it.** A key could be connected, checked, sealed and revoked; a route could be set; every proposal ran on it and every message carried the model that answered. All of it was reachable only through curl. This slice is the Models block in the room rail, the model chip on a message head, the "Runs on" line under each of the four voices, and the Helpful / Not helpful control on the one answer that has no card.
+
+**The block went in the rail because that argument was already settled, on a different table.** `ConnectedAccounts` was first built into the project panel, which was structurally defensible and failed on the only test that matters: that panel is a modal called "The work" and the first person to look for account settings could not find it. A model connection is the same kind of fact as an ad account, room-scoped and set once and read often, so it took the same home and, deliberately, the same classes. The connection rows, the text-button actions, the quiet detail lines and the error sentence are the neighbour's, because a second visual language for "a thing this workspace has connected" would be a difference that means nothing. Five new classes were needed and no new tokens.
+
+**Four rules carry the block, and each one is a lie the surface could otherwise tell.** The key is not renderable, because `ModelSettingsResponse` has no field for one, so a projection that started returning credentials fails to typecheck in the browser rather than reaching it; what is shown is the last four characters. **Auto names itself**, as "Auto (house default: GPT-5.4)" read from the AI service's own `/health`, and falls back to "Auto (house default)" when the service did not answer instead of guessing a model, because that option's whole job is to report which model will actually answer. **A role is editable only when there is something to choose**, so Creative on a workspace that has connected only a text provider renders a sentence rather than a select with one dead option. And **Creative admits it is not read yet**, since image generation is slice 6 and a picker that quietly did nothing would be worse than one that says so.
+
+**Owner-only controls are absent for a member, never disabled.** A member sees which providers are connected and reads the six routes as text lines, because which model answers is a fact about the replies they are already reading; they see no Disconnect link, no connect form and no select. Verified by signing in as a real second member of the room rather than by reading the JSX: zero buttons and zero selects inside the block, and the routes rendered as prose.
+
+**The copy went into TypeScript for the reason `notification-copy.ts` did.** Rule 22 bans em dashes in product copy and this is the surface where somebody pastes a paid credential, so every sentence lives in `lib/models-copy.ts` and a suite walks all of them. The assertions that turned out to be worth writing are not the dash ones: the storage line must say what happens to the key ("Stored encrypted. Used only to call this provider for this workspace.") and must **not** say "secure" or "never shared", because those are reassurances rather than facts, and this file is the one place a later edit would be tempted to add one.
+
+**Two reads became one, and that was a correctness choice rather than a saving.** The Models block and the "Runs on" line under each voice read the same settings, so `ChatApp` holds them and passes them down. Two fetches of one endpoint would let the two halves of a single panel disagree for as long as the second request took to land. The read is deliberately **not** refetched on every message, unlike the project list: nothing an agent does changes a route, only a person on this surface does, and they say so by calling back.
+
+**A duplication the browser found immediately.** Each option first read "Fake (testing) > Fake (testing) · Fake strong": the optgroup already names the provider, so repeating it inside every option was noise in a 288px column. The option is now the model's name alone. Found by dumping the rendered `<option>` list rather than by looking at a screenshot, which is the habit worth keeping for a control whose text is generated.
+
+**The thumbs render in exactly one place on a real room, and that is the point.** Across 33 rendered messages the control appeared once, under the ungrounded fallback answer, while five model-written plan and campaign messages carried a chip and no control and every notice, digest and recorded goal carried neither. That single query is the whole invariant: a card already has a verdict, a message no model wrote has nobody to judge, and the tier that answers in prose with no citations is the one output whose quality rests on the model.
+
+**Verified live on the compose stack with the built-in `fake` vendor**, no key of any vendor's spent. A wrong key was refused with "That key was refused by the provider.", the field kept its value and nothing was written; a valid one connected and the row read "Connected" with its hint; routing Strategist changed its rail line to "Runs on Fake strong" within one round trip while the other three stayed on GPT-5.4; the choice survived a reload; and Disconnect took the route with it, leaving all four voices back on the house default and the ciphertext columns null. Contrast was measured **through the browser**, compositing each colour on the surface it actually sits on rather than parsing a declaration: the model chip is 4.82 light and 6.08 dark, the "Runs on" line 4.99 and 5.70, the "saved" marker 4.61, the detail lines 7.27 and 6.62. 77 web tests green across six files, typecheck and Prettier clean.
+
+**Two limitations found rather than assumed, and both are named in the module doc.** The room rail is hidden below 1080px by a media query that predates all of this, so the Models block is desktop-only and a phone cannot connect a model; that is the whole rail's behaviour and changing it is not this slice's business. And a label does not survive a reload, since nothing fetches it back, so the buttons reappear and a second verdict appends. The table is append-only and the latest wins, so that is the storage doing what it says rather than a bug, but it is stated on the surface's own doc rather than left for somebody to discover.
+
+**One defect found in passing and left alone, deliberately** (rule 20). Every load of `/app` throws React error #418, a hydration mismatch, because `formatTime` in `apps/web/lib/adapt.ts` formats with the local clock: the container renders 13:24 and the browser renders 17:24 for the same row. It predates this slice, it is a real bug on a page this slice did not otherwise touch, and folding a timezone fix into the connector surface would have made both harder to review. Recorded here and raised as its own task.
+
+### The first thing this system produces that is not a sentence (ADR-0033, slice 6 of seven)
+
+**Every deliverable Octopus had ever made was text.** `artifacts.storage_path` has existed since
+`20260813160000`, the private bucket and its tenancy policy since `20260829124000`, and
+`writeFileArtifact` since the proof slice, with exactly one caller: a human node uploading
+evidence that they finished a step. The AI arm wrote prose. A creative step came back as a brief
+whose first sentence said, in as many words, that **this system cannot generate images yet**.
+
+That sentence was true until [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)
+stopped making it true. A workspace can connect its own Google key and route the `creative` role
+at an image model, and for one slice that route was a preference nothing read. This slice reads it.
+
+**The seam did not move to accommodate bytes, and that was the first decision.** `services/ai`
+emits a sixth proposal kind, `generate_image`, carrying a prompt, a count of one to three and one
+of four aspect ratios; `apps/api` performs it. Returning base64 from the Python service was the
+obvious alternative and it is wrong three times over: that process holds no storage key by design,
+so the bytes would have had nowhere to go except back across an HTTP hop built to carry sentences;
+a live customer credential would reach a second process with no use for it; and a proposal
+executed by the side that is allowed to act is the shape of every other act in this system.
+`ExecuteRequest.creative` is the mirror image: `provider`, `model` and `images`, deliberately
+**without** an `api_key`, because deciding whether to ask for a picture needs no credential.
+
+**The brief is the deliverable and the images ride with it.** It carries the citations, it is the
+record of what was asked for, and it is what a person hands to a designer when the generated image
+is wrong. So every failure path ends in the same place: the step reaches `done`, the brief lands,
+and one sentence in the same message says what happened. Five of them, one per `ImageGenError`
+kind, because a refused key is a key to re-paste and a rate limit is a wait and telling somebody
+"the provider returned 429" is telling them a number. On the same message rather than a second
+one: a delivery and the reason it is thinner than expected are one event, and two rows would
+notify twice.
+
+**The prompt is built in code from the brief's own Concept and Art direction sections.** Asking
+the model for its own image prompt beside the brief would have created a second deliverable that
+nothing renders and nobody reads, and the first time the two disagreed the picture would have come
+from the one that was never on the card. Shot list is excluded because three frames folded into
+one prompt asks for a single picture of three ideas, and Specs because a ratio is a field the
+vendor validates rather than prose to parse.
+
+**The subtle half is that the brief's opening sentence became conditional.** `instruction_for` now
+has two openings and one body, and the capability is **withheld** from the reasoning core rather
+than ignored on the way back when the deployment flag is off or the routed model cannot draw.
+Told it could be drawn and then drawing nothing, the product would have written a false statement
+into the deliverable itself, which is worse than an absent feature. The corollary is that a
+workspace with no Creative route gets **no second message** about it: the brief already says so,
+in the deliverable, and a room message repeating it would be noise on every creative step of every
+workspace that has connected nothing, addressed largely to members who could not connect one.
+
+`20260914120000` adds `artifacts.content_type`: nullable, no backfill, no default, constrained to
+rows that actually have a file. Its reader is a browser deciding whether it is being handed a
+picture, and the only other source for that decision is a filename `safeFilename` sanitised out of
+a title a model wrote. `artifacts.sql` grew from 15 assertions to 18, dry-run inside a transaction
+with the DDL (18 of 18) and controlled without it (15 of 18, the three new ones failing `42703` on
+the missing column). No new advisor lint.
+
+**The card counts the images and never shows one.** A signed URL is a ten-minute bearer credential
+and an `action_embeds` row is stored and re-broadcast on every room update, so a link in the
+payload would be a credential written to a table and handed to the room for as long as the row
+lives; and the stream re-renders on every broadcast, so an inline `<img>` would mint one per
+artifact per re-render for everybody with the room open. The card says "3 images, in the project
+panel." and the panel mints one link when one person clicks to see one.
+
+**A retry must not draw twice**, which is the failure that would cost real money. The executor is
+not durable, so a crash between the images and the delivery leaves the step to the heal sweep, and
+a second run would otherwise spend the customer's quota again on pictures they already have. The
+existing `asset` rows on the task are the idempotency key, exactly as the artifact id is the
+delivery message's. That path is covered by a test rather than driven live: reaching it needs a
+worker killed inside a window of two adjacent writes.
+
+**Verified on the compose stack with the built-in `fake` vendor**, so the whole path was walked
+without spending a vendor's quota: connect, route Creative at `fake-image`, execute, upload,
+render. A brief step produced its brief on the house model and **three `asset` rows**, each with
+`content_type = 'image/png'` under `<project_id>/<artifact_id>/image-N.png`; both signed URLs
+fetched returned `200 image/png` and 70 bytes, which is the fake vendor's 1×1 PNG, so the type Node
+uploaded with is the type Storage serves. The card rendered "3 images, in the project panel.", the
+embed payload carried three `{artifactId, contentType}` pairs, a `projectId` and **no string
+containing `http`**, and the panel rendered all three from `img.work-artifact-image` after three
+separate clicks. Contrast on `.artifact-files` measured through the browser by compositing on a
+canvas: **4.99 light, 5.70 dark**, both above the 4.5 floor for 12px text. No horizontal overflow
+at 375px.
+
+**The flag was verified by turning it off, not by reading it.** With `IMAGE_GEN_ENABLED=false` a
+second brief step produced its brief and **zero** assets, the brief did not promise images, the
+card carried no files, and no failure sentence was appended, because no attempt was made. That is
+the withheld-capability decision working: the deployment's answer reached the prompt rather than
+only the executor.
+
+**Driving the stack found a defect the tests could not.** Every generated image rendered its own
+"No sources are cited for this, so treat it as unverified." line, three in a row under three
+pictures. Not false: a generated image carries no citations by design, because copying the brief's
+labels onto it would present it as sourced when it is not. But rule 10 exists so an uncited
+**claim** cannot pass as grounded, and a picture makes no claim the corpus could have supported,
+while the brief it came from sits directly above with its own sources. Three repeats of a warning
+that means nothing here is how a reader learns to skip the sentence where it means something. The
+warning is now suppressed for an image artifact and kept for every text artifact and every
+non-image file, through one shared `isImageArtifact` so the panel and the card read the same rule.
+
+**Two things about the verification are worth being straight about.** The brief step was **seeded
+by SQL** rather than produced by a plan card: the corpus's plans for the goals in that workspace
+contain copy steps and no brief step, and a replan diff is model-generated, so neither could be
+relied on to produce one. `materialise_plan` is untouched and covered by its own 42 pgTAP
+assertions. And the image failure sentences were exercised by test rather than live, because
+making a real vendor refuse mid-run is not something a verification can arrange honestly.
