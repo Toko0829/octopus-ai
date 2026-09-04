@@ -620,3 +620,23 @@ recipient role, every dispute resolution and every KYC outcome and asserts no em
 dash appears in any of them. **AGENTS.md rule 22 names notifications explicitly**,
 and this is the first place in the repository where that rule is checked by a
 machine rather than by a reviewer noticing.
+
+## The model connectors (typed client only, no surface yet)
+
+`lib/api-client.ts` gained `getModelSettings`, `connectModel`, `disconnectModel` and
+`patchModelRoutes` ([ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)).
+**Nothing renders them yet**, and they are here rather than in the slice that builds the
+Models block for one reason: `ModelConnection` has **no key field**, so a projection that
+started returning a customer's API key would fail to typecheck at this boundary before it
+reached a browser. That is the same property `getConnections` relies on for OAuth tokens,
+and it is worth having in place from the moment the routes exist rather than from the moment
+something calls them.
+
+`patchModelRoutes` is PATCH because the BFF proxy exports GET, POST, PATCH and DELETE and no
+PUT, which is the room-profile precedent, and because the body carries the roles that changed
+rather than all six. A null provider and model clears a role, which is how a person will
+choose **Auto**.
+
+The Models block itself, the per-role picker, the model chip on a message and the helpful /
+not helpful control are the next slices. This doc gains its **Current shape** section there,
+where there is a surface to describe.

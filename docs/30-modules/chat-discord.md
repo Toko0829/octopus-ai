@@ -24,6 +24,8 @@
 | `room_members`  | `role`, `scope` (`room`/`thread`, checked), `thread_id?`, `expires_at`                        | `20260728120000`; thread scope `20260901122000`                                                     |
 | `action_embeds` | The card on a message: `component`, `payload`, `required_role`, `state`; `unique (message_id)` | `20260812120000`                                                                                    |
 | `room_profiles` | What the workspace knows about its own business, owner-only                                  | `20260911120000`                                                                                    |
+| `model_connections` | The workspace's own provider key, sealed AES-256-GCM: `provider`, `key_ciphertext`/`key_iv`/`key_tag`, `key_version`, `key_hint`, `status` | `20260913120000`. **No client policy and no client grant**, like `channel_connections`; a client gets `42501` |
+| `model_routes` | Which model answers for each role: `(room_id, role)`, `provider`, `model`                    | `20260913121000`. Member-readable, server-written. No row for a role means the house default, which is what **Auto** means |
 
 **Who can be an author.** `public.author_kind` is `user | agent | node | system` and has never
 been extended. `user` and `node` are client-writable through `messages_insert_own`, which derives
@@ -63,6 +65,25 @@ message under the caller's own grant; `GET /api/rooms/:roomId/messages` reads hi
 `since` cursor. The read's column list is `MESSAGE_COLUMNS`, exported and pinned against
 `MessageRow` by a test, because a PostgREST select is a string and a column it omits fails at
 runtime only. Neither `authorKind` nor `persona` is accepted from the request.
+
+**Which model answers, per workspace** (`apps/api/src/routes/models.ts`, [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)).
+Four routes under `/api/rooms/:roomId/models`: a member GET returning the connections
+projection, the routes and the house default; owner-only POST and DELETE on
+`/models/connections`; owner-only PATCH on `/models/routes`. **Reading is any member and
+writing is the owner**, because which model wrote a message is already visible on the
+message, while pasting a key is an authorisation. The GET assembles its answer two ways in
+one handler: `model_connections` as the service role behind an ownership check, since it has
+no client grant, and `model_routes` **as the caller**, since it has a member policy and holds
+no secret.
+
+`Message.model` exists in `packages/contracts` and is **always null today**: the column lands
+with the Node wiring, so no message in this system was written by a model anybody chose. Only
+text a model wrote will ever carry one, and it is stamped by `apps/api` from the route it
+resolved, never accepted from a client, which is `persona`'s rule for `persona`'s reason.
+
+Verified by `supabase/tests/model_connections.sql`, 22 assertions, and by
+`apps/api/src/routes/models.test.ts`, 18.
+
 
 **Realtime.** `public.broadcast_message()` sends the whole inserted row to `chat:room:<id>`, and
 additionally to `chat:thread:<id>` when the message carries one (`20260906120000`). A new column

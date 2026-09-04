@@ -16,6 +16,7 @@ import {
   writeConnection,
 } from '../lib/connections';
 import { signState, verifyState, type StateConfig } from '../lib/oauth-state';
+import { resolveRoom as resolveRoomFor } from '../lib/resolve-room';
 
 /**
  * Connecting a channel account: the writer `channel_connections` has been
@@ -77,32 +78,12 @@ export async function connectionRoutes(
   /**
    * Membership and ownership in one read, as the caller.
    *
-   * Returns 404 rather than 403 for a room the caller cannot see, matching every
-   * other route here: a non-member is not told the room exists.
+   * Lives in `lib/resolve-room.ts` since the model routes became its second
+   * caller: the 404-not-403 rule is the same fact for both, and a second copy
+   * would be a second place for it to drift.
    */
-  async function resolveRoom(
-    request: FastifyRequest,
-    reply: FastifyReply,
-    roomId: string,
-  ): Promise<{ ownerId: string | null } | null> {
-    const db = createUserClient(opts.supabase, request.accessToken as string);
-    const { data: room, error } = await db
-      .from('rooms')
-      .select('owner_id')
-      .eq('id', roomId)
-      .maybeSingle<{ owner_id: string | null }>();
-
-    if (error) {
-      request.log.error({ err: error, roomId }, 'room read failed');
-      void fail(reply, 500, 'internal_error', 'Could not load the workspace.');
-      return null;
-    }
-    if (!room) {
-      void fail(reply, 404, 'not_found', 'Workspace not found.');
-      return null;
-    }
-    return { ownerId: room.owner_id };
-  }
+  const resolveRoom = (request: FastifyRequest, reply: FastifyReply, roomId: string) =>
+    resolveRoomFor(request, reply, opts.supabase, roomId, fail);
 
   /** What a member may see. Any member; the tokens are not in the projection. */
   app.get(

@@ -360,6 +360,30 @@ const EnvSchema = z.object({
    */
   OAUTH_STATE_TTL_SECONDS: z.coerce.number().int().positive().default(600),
 
+  /**
+   * Master key for the customer model keys in `model_connections` (ADR-0032).
+   *
+   * **Optional here and required at the point of use**, the same pair as
+   * `OAUTH_STATE_SECRET` above and for the reason one step stronger. Requiring
+   * it would stop every deployment booting for a feature most are not using. A
+   * default would be worse than either: a master key checked into a repository
+   * encrypts somebody else's paid API key with a value anybody can read, which
+   * is indistinguishable from storing it in plaintext while looking safe.
+   *
+   * So a missing secret refuses to connect a provider, by name, and breaks
+   * nothing else. It also fails a run whose workspace already has routes,
+   * rather than falling back to the house key: a silent fallback would send a
+   * customer's work to a provider they did not choose and bill it to us.
+   *
+   * Exactly 64 hex characters, which is a 32-byte AES-256 key. Length is checked
+   * here rather than at first use so a truncated paste fails at boot.
+   * `openssl rand -hex 32`.
+   */
+  MODEL_KEY_SECRET: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/i, 'MODEL_KEY_SECRET must be 64 hex characters (openssl rand -hex 32)')
+    .optional(),
+
   // Services.
   API_PORT: z.coerce.number().int().positive().default(3001),
   API_HOST: z.string().default('0.0.0.0'),

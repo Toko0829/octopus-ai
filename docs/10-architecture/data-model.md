@@ -993,6 +993,24 @@ Verified by `supabase/tests/question_answers.sql`, **12 assertions against the l
 
 Verified by `supabase/tests/room_profiles.sql`, **10 assertions against the live database**: the owner reads one row, a member of the room reads zero, an outsider reads zero, `anon` is refused outright (no grant, as on every table here), the owner cannot insert, update or delete as a client, the helper is security definer, the harness itself succeeds as a client so the refusals are real, and deleting the room deletes its profile.
 
+Verified by `supabase/tests/room_profiles.sql`, **10 assertions against the live database**: the owner reads one row, a member of the room reads zero, an outsider reads zero, `anon` is refused outright (no grant, as on every table here), the owner cannot insert, update or delete as a client, the helper is security definer, the harness itself succeeds as a client so the refusals are real, and deleting the room deletes its profile.
+
+### The workspace's own model provider (`20260913120000_model_connections.sql`, `20260913121000_model_routes.sql`)
+
+[ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md) makes the reasoning provider a workspace connector. Two tables land together, and **they take opposite postures on purpose**, which is the clearest worked example in this database of the rule that RLS filters rows and not columns.
+
+`model_connections` is one row per `(room_id, provider)`: the customer's API key as `key_ciphertext`, `key_iv` and `key_tag`, plus `key_version`, a four-character `key_hint`, `status`, and who connected it. It has **no client policy and no client grant at all**, the `channel_connections` posture for a credential worth rather more: a fake OAuth token buys nothing, and somebody's Anthropic key buys their whole quota. A client reading it gets `permission denied` rather than zero rows, which is the distinction this database has already paid for once (`20260827110000`).
+
+**The key is encrypted from the first migration, which is `channel_connections`' accepted risk finally being met on a different table.** That risk names its own trigger, "the first real provider credential"; this is it, and the exception is not repeated. AES-256-GCM in `apps/api/src/lib/envelope.ts` under `MODEL_KEY_SECRET`, with the additional authenticated data bound to the row (`model_connections:{roomId}:{provider}:v{key_version}`), so a ciphertext copied from one row into another fails to open rather than decrypting under the wrong owner. Three columns rather than one blob, so a malformed row is a constraint violation rather than a parse error four minutes into an agent run. Two check constraints make the two states honest: an `active` row must have all three key columns, and a `revoked` row must have none of them, so revoking is what destroys the credential while keeping the record.
+
+**Supabase Vault was rejected**, for a reason specific to this system rather than a general one: Vault decrypts inside Postgres for any role that can read `vault.decrypted_secrets`, and `services/ai` holds `service_role`. Storing keys there would let the Python container read every customer's key by selecting a view, which defeats the property the design exists to buy, that decryption is confined to the Node code that builds the outbound request.
+
+`model_routes` is the opposite and is **member-readable**: `(room_id, role)` with a provider and a raw model id. It holds no secret, because "the Ads voice runs on GPT-5.4" is the same fact every message chip in the room already shows. Members select it under `model_routes_select_member`; nobody writes it as a client, because a client that could would point another member's voice at a provider the owner never connected. The role vocabulary **is** closed by a check constraint and the model id is not, and the asymmetry is deliberate: a role is a fact about this system's own six jobs and a typo would silently never resolve, while model ids are an open vocabulary that vendors rename without asking. **An absent row is the feature**, not a missing default: no row means the house model answers, which is what Auto means on the surface.
+
+Verified by `supabase/tests/model_connections.sql`, **22 assertions against the live database**, run as a rolled-back dry run before the migrations were applied and once again without the DDL as a control. The owner of the very room is refused `model_connections` with `42501`; `authenticated` and `anon` hold no SELECT and no TRUNCATE; a second key for one provider in one room is `23505`; a third status, an active row with no key and a revoked row that kept one are each `23514`; the owner and a member each read one route and an outsider reads none; the owner cannot insert, update or delete a route as a client; an unknown role and a 121-character model id are each `23514`; and deleting the room takes the sealed key and the routes with it.
+
+**The intended lint.** `model_connections` reports `rls_enabled_no_policy` at INFO, joining `channel_connections`, `events`, `ledger_entries`, `retrieval_gaps`, `ops_actions`, `plan_diffs`, `node_verifications` and `eval_golden_set`. That is the design rather than a finding: the table is server-only, and the day it grows a select policy is the day a member can read a ciphertext. `model_routes` does not appear, because it has one.
+
 ## ERD overview (domains)
 
 ```
@@ -1006,6 +1024,8 @@ Marketplace   node_profiles ─*─ offers ─*─ engagements ─*─ proof_art
 Payments      escrow_holds ─*─ ledger_entries (double-entry) ─*─ payouts   users ─*─ subscriptions
 Marketing     campaigns ─*─ ad_entities (tree)   campaigns ─*─ campaign_outcomes
               rooms ─*─ channel_connections (OAuth, room-scoped, no client reader)
+Models        rooms ─*─ model_connections (sealed customer key, no client reader)
+              rooms ─*─ model_routes (which model per voice; members read, server writes)
 Knowledge     documents ─*─ doc_chunks (halfvec + tsvector)   knowledge_sources   suppliers   cost_benchmarks
 Audit         events (append-only, event-sourced)   notifications   delivery_log   ops_actions
 ```

@@ -805,3 +805,90 @@ export async function requestIngest(
     clearTimeout(timer);
   }
 }
+
+/* --------------------------------------------------- the house default */
+
+/**
+ * What "Auto" currently means, read from the AI service rather than restated.
+ *
+ * The alternative was a second copy of the house model id in Node's environment.
+ * Two copies of one fact eventually disagree, and this one disagrees invisibly:
+ * the settings block would name a model, the runs would use another, and nothing
+ * would be wrong enough to notice. So the service that actually holds the key
+ * answers the question, on the `/health` document it already publishes.
+ *
+ * Neither value is a secret. A model id and a provider name are what every
+ * message chip in the room already shows; the key they belong to is not
+ * reported and never will be.
+ */
+export interface HouseDefault {
+  provider: string;
+  model: string;
+}
+
+const HouseDefaultShape = z.object({
+  generation_provider: z.string().nullable().optional(),
+  generation_model: z.string().nullable().optional(),
+});
+
+/**
+ * A short cache, because this is read on every settings load and changes only
+ * when the AI service is redeployed.
+ *
+ * Sixty seconds is chosen against the failure it prevents rather than for
+ * throughput: a settings page open in three tabs should not make three calls,
+ * and a deploy that changes the house model should be visible without a restart.
+ * In-process and per-instance, which is the honest scope; there is nothing here
+ * worth a shared cache.
+ *
+ * **A failure is cached too, as null.** Without that, an AI service that is down
+ * turns every settings load into a ten-second wait for the same answer. The
+ * surface says it does not currently know rather than guessing a name, which is
+ * the same posture the refusal copy takes everywhere else.
+ */
+const HOUSE_DEFAULT_TTL_MS = 60_000;
+let houseDefaultCache: { at: number; value: HouseDefault | null } | null = null;
+
+/** Exported for tests, which must not inherit a cached answer from each other. */
+export function resetHouseDefaultCache(): void {
+  houseDefaultCache = null;
+}
+
+export async function requestHouseDefault(
+  baseUrl: string,
+  now: number = Date.now(),
+  timeoutMs = 5_000,
+): Promise<HouseDefault | null> {
+  if (houseDefaultCache && now - houseDefaultCache.at < HOUSE_DEFAULT_TTL_MS) {
+    return houseDefaultCache.value;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let value: HouseDefault | null = null;
+  try {
+    const res = await fetch(new URL('/health', baseUrl).toString(), {
+      method: 'GET',
+      signal: controller.signal,
+    });
+    if (res.ok) {
+      const parsed = HouseDefaultShape.safeParse(await res.json());
+      if (parsed.success && parsed.data.generation_provider && parsed.data.generation_model) {
+        value = {
+          provider: parsed.data.generation_provider,
+          model: parsed.data.generation_model,
+        };
+      }
+    }
+  } catch {
+    // Deliberately swallowed and cached as null. The settings block is not a
+    // health check: an AI service that is down must not make connecting a key
+    // impossible, and "we do not currently know what Auto means" is a true and
+    // survivable answer.
+  } finally {
+    clearTimeout(timer);
+  }
+
+  houseDefaultCache = { at: now, value };
+  return value;
+}

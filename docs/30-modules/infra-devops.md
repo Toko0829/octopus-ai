@@ -129,6 +129,28 @@ and breaks nothing else. Generate one per deployment with `openssl rand -hex 32`
 authorisation stays valid, and it is short because the signature is the whole
 control: there is no server-side record to revoke.
 
+**A second variable is now in the same family, one step stronger.**
+`MODEL_KEY_SECRET` is the master key for the customer model keys in
+`model_connections` ([ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)).
+Optional in the schema, required at the point of use, never defaulted, for the
+reason above carried further: this does not sign a request, it encrypts somebody
+else's paid API key at rest, and a master key checked into a repository encrypts
+nothing at all. So a missing secret refuses to connect a provider, by name and
+with a 503, and breaks nothing else. Exactly 64 hex characters, which is checked
+in the schema rather than at first use so a truncated paste fails at boot rather
+than at somebody's first connection. `openssl rand -hex 32`.
+
+**The compose file blanks it on the AI container, and that line is a security
+control rather than a tuning knob.** `services/ai` inherits `apps/api/.env`
+wholesale through `env_file`, which is what makes it convenient and exactly what
+would hand it the master key for every customer's key. `environment` beats
+`env_file`, so `MODEL_KEY_SECRET: ''` is what stops that. The property being kept
+is that decryption is confined to the Node code that builds the outbound request:
+`services/ai` holds `service_role`, so a container with both the ciphertext and
+the master key could open every customer's key by selecting a table. It receives
+one key, per request, in the request body, and stores none. Production provisions
+the variable to the API app alone.
+
 **Credentials come from `apps/api/.env`, read rather than copied**, so there is
 no second file holding a service key. The `ai` service is deliberately given that
 file and **not** `services/ai/.env`: the API file holds credentials, which is all

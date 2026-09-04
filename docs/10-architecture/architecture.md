@@ -592,6 +592,26 @@ projection that started returning one would fail to typecheck before it reached 
 browser. `packages/marketing` gained `ChannelAuthProvider`, its fake, a registry
 whose `carriesRealCredentials` flag the writer refuses on, and `checkScopes`.
 
+## Connecting a model provider
+
+The Models block's server half ([ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md)). Four routes, all authenticated, registered beside the channel connections because it is the same shape of decision one table along: a customer-held credential, an owner-only write, and a projection carrying no secret.
+
+`GET /api/rooms/:roomId/models` is the member view and returns three things in one document: the connections projection, the per-role routes, and what Auto currently means. `POST …/models/connections` connects a provider with the workspace's own key, owner-only. `DELETE …/models/connections/:id` revokes it. `PATCH …/models/routes` sets or clears up to six roles, owner-only; PATCH rather than PUT because the BFF exports GET, POST, PATCH and DELETE and no PUT, which is the room-profile precedent.
+
+**One response, two postures, and reading how it is assembled is the fastest way to understand this pair.** `model_connections` holds a customer's paid API key and has no client grant, so it is read as the service role behind the ownership check, exactly as the group above reads `channel_connections`. `model_routes` holds no secret and has a member select policy, so it is read **as the caller** and Postgres decides. The same handler uses two clients on purpose.
+
+**`resolveRoom` moved to `lib/resolve-room.ts`** when this became its second caller. It reads the room as the caller and answers 404 rather than 403 for a room RLS hides, and that rule is now stated in one place rather than copied into a second closure that could drift from it.
+
+**The key is checked with the provider before anything is stored.** `verifyKey` calls the vendor's own list-models endpoint, which is the one request every vendor answers for free: it authenticates, needs no model id and bills nothing. A refused key is 400 and an unreachable provider is 502, and **nothing is written on either path**, because a key stored unchecked would make the block say "connected" for something that may never work. Without that check the failure would land four minutes into an agent run, in a system notice, where a person cannot tell a typo from an outage.
+
+**This is the one place in the system where a stored credential is decrypted.** `openSecretForProvider` in `lib/model-connections.ts` is the only function that opens a sealed key, and it is named so that "where does decryption happen" has an answer somebody can grep for. That is the property [ADR-0032](../40-adr/0032-reasoning-providers-are-workspace-connectors.md) decision 7 buys by rejecting Supabase Vault, which would have decrypted inside Postgres for `service_role` and therefore for `services/ai`. `apps/api/src/lib/envelope.ts` is AES-256-GCM over `node:crypto` with the additional authenticated data bound to the row; nothing else in the repository seals or opens anything.
+
+**Revoking a key also deletes the routes that pointed at it**, which is the part with no precedent in the group above. A route naming a provider with no key would be a role that resolves to nothing, and the resolver would then have to choose between failing the run and silently using the house key. Neither is a good answer, so the state is made unreachable: those roles fall back to Auto, which the surface already explains.
+
+`ModelConnection` in `packages/contracts` **has no key field**, so a projection that started returning one would fail to typecheck before it reached a browser, which is the property `ChannelConnection` relies on above. `MODEL_PROVIDERS` is the checked-in registry: providers, their dialects and their model lists as data, with `carriesRealCredentials` reading exactly as it does in `packages/marketing` and `packages/payments`, and every lookup failing closed on an unregistered name.
+
+**Nothing consumes any of this yet.** No agent run reads a route, so every call still runs on the house key until the Node wiring lands.
+
 ## A node reading and editing their own record
 
 `GET | PATCH /api/node`, `POST | DELETE /api/node/skills[/:tag]`,

@@ -12,6 +12,7 @@ import { agentRunRoutes } from './routes/agent-runs';
 import { embedRoutes } from './routes/embeds';
 import { sourceRoutes } from './routes/sources';
 import { connectionRoutes } from './routes/connections';
+import { modelRoutes } from './routes/models';
 import { nodeRoutes } from './routes/nodes';
 import { notificationRoutes } from './routes/notifications';
 import { opsRoutes } from './routes/ops';
@@ -127,6 +128,21 @@ export async function buildServer(): Promise<FastifyInstance> {
     supabase,
     webUrl: env.WEB_URL,
     state: stateConfigFrom(env),
+  });
+
+  // The workspace's own reasoning provider (ADR-0032). Registered beside the
+  // channel connections because it is the same shape of decision one table
+  // along: a customer-held credential, an owner-only write, and a projection
+  // that carries no secret. Takes the master key as null when MODEL_KEY_SECRET
+  // is unset, so a deployment that never connects a provider boots normally and
+  // one that tries to is refused with the variable named; and the AI service URL,
+  // because what "Auto" means is read from that service rather than restated in
+  // a second environment variable that could disagree with it.
+  await app.register(modelRoutes, {
+    verify,
+    supabase,
+    modelKeySecret: env.MODEL_KEY_SECRET ?? null,
+    aiServiceUrl: env.AI_SERVICE_URL,
   });
 
   // A node's own record. Takes no web URL and no state config, because nothing

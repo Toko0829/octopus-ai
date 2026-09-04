@@ -166,6 +166,12 @@ function toMessage(row: MessageRow): Message {
     authorId: row.author_id,
     authorKind: row.author_kind,
     persona: row.persona,
+    // Always null for now, and honestly so: `messages.model` is a column that
+    // does not exist yet, so no message in this system was written by a model
+    // anybody chose. The contract carries the field from the slice that added
+    // the registry, and the column and the reader land together with the Node
+    // wiring, at which point this line reads `row.model`.
+    model: null,
     body: row.body,
     seq: row.seq,
     createdAt: row.created_at,

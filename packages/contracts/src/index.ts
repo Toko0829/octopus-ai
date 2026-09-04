@@ -200,6 +200,366 @@ export function stripMention(text: string, persona: AgentPersona): string {
   return text.replace(token, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/* ------------------------------------------------------ model connectors */
+
+/**
+ * The reasoning providers a workspace may connect its own key to
+ * ([ADR-0032](../../../docs/40-adr/0032-reasoning-providers-are-workspace-connectors.md)).
+ *
+ * A **checked-in registry rather than a table**, which is the stance
+ * `AUTH_PROVIDER_REGISTRY` and the crawl registry already take for the same
+ * reason: a file gets reviewed in a diff by a person and a row does not. Which
+ * models this product will route a customer's work and money-adjacent drafting
+ * through is an editorial and security judgement, so it belongs where judgements
+ * are reviewed.
+ *
+ * **The code never branches on a model id.** Ids are data here and nowhere else;
+ * `services/ai` dispatches on `vendor`, which is the wire shape, and the display
+ * layer resolves an unknown id to itself. That is deliberate: vendors retire and
+ * rename models without asking, and an id we do not recognise is still the true
+ * answer to "what wrote this".
+ */
+export const ModelProviderId = z.enum(['anthropic', 'openai', 'google', 'fake']);
+export type ModelProviderId = z.infer<typeof ModelProviderId>;
+
+/**
+ * The wire shape, which is not the provider.
+ *
+ * Several providers can speak one dialect: an OpenAI-compatible gateway is
+ * `openai_compatible` with its own base URL while still being billed as itself.
+ * `services/ai` dispatches on this and records the provider beside it.
+ */
+export const ModelVendor = z.enum(['openai_compatible', 'anthropic', 'google', 'fake']);
+export type ModelVendor = z.infer<typeof ModelVendor>;
+
+/**
+ * What a model is for, not how good it is.
+ *
+ * `strong` writes plans and deliverables; `cheap` is classification-shaped work.
+ * Only `strong` is selectable per role today, because the cheap tier's two
+ * callers, query decomposition and the groundedness gate, **stay on the house
+ * model whatever a workspace connects** (ADR-0032 decision 5). The tier is here
+ * so `defaultModelFor` can pick a sensible first entry rather than the first key
+ * in an object.
+ */
+export const ModelTier = z.enum(['strong', 'cheap']);
+export type ModelTier = z.infer<typeof ModelTier>;
+
+export interface ModelEntry {
+  /** The vendor's own id, sent verbatim on the wire. */
+  readonly id: string;
+  /** What a person picks from a list. */
+  readonly label: string;
+  readonly tier: ModelTier;
+  /** True when this model produces image bytes rather than text. */
+  readonly images: boolean;
+}
+
+export interface ModelProviderProfile {
+  readonly id: ModelProviderId;
+  readonly label: string;
+  readonly vendor: ModelVendor;
+  /** Where a person finds their key, in one sentence. Rendered beside the input. */
+  readonly keyHelp: string;
+  readonly models: readonly ModelEntry[];
+  /**
+   * True when a key for this provider authorises real, billable calls on
+   * somebody's real account. The same flag `packages/marketing` and
+   * `packages/payments` carry, for the same reason and read the same way: it is
+   * what stands between a live credential and a careless path.
+   */
+  readonly carriesRealCredentials: boolean;
+}
+
+/**
+ * Model ids were verified against each vendor's own current documentation on
+ * 2026-09-04 and are **not a pin** (rule 21). A wrong id here is not a silent
+ * failure: `verifyKey` lists the provider's models at connect time and a run
+ * against an unknown id is a provider error naming it, so this list is a
+ * curation of what to offer rather than a contract with the vendor.
+ *
+ * Curated rather than fetched, deliberately. A live list would offer every
+ * embedding, moderation and audio model a key can see, and would make the
+ * picker's contents depend on whose key is pasted.
+ */
+export const MODEL_PROVIDERS: Readonly<Record<ModelProviderId, ModelProviderProfile>> =
+  Object.freeze({
+    anthropic: Object.freeze({
+      id: 'anthropic',
+      label: 'Anthropic',
+      vendor: 'anthropic',
+      keyHelp: 'Create a key in the Anthropic Console, under Settings then API keys.',
+      models: Object.freeze([
+        Object.freeze({
+          id: 'claude-opus-5',
+          label: 'Claude Opus 5',
+          tier: 'strong',
+          images: false,
+        }),
+        Object.freeze({
+          id: 'claude-sonnet-5',
+          label: 'Claude Sonnet 5',
+          tier: 'strong',
+          images: false,
+        }),
+        Object.freeze({
+          id: 'claude-haiku-4-5',
+          label: 'Claude Haiku 4.5',
+          tier: 'cheap',
+          images: false,
+        }),
+      ]),
+      carriesRealCredentials: true,
+    }),
+    openai: Object.freeze({
+      id: 'openai',
+      label: 'OpenAI',
+      vendor: 'openai_compatible',
+      keyHelp: 'Create a key in the OpenAI platform dashboard, under API keys.',
+      models: Object.freeze([
+        Object.freeze({ id: 'gpt-5.4', label: 'GPT-5.4', tier: 'strong', images: false }),
+        Object.freeze({ id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', tier: 'cheap', images: false }),
+        Object.freeze({ id: 'gpt-5.4-nano', label: 'GPT-5.4 nano', tier: 'cheap', images: false }),
+      ]),
+      carriesRealCredentials: true,
+    }),
+    google: Object.freeze({
+      id: 'google',
+      label: 'Google Gemini',
+      vendor: 'google',
+      keyHelp: 'Create a key in Google AI Studio, under Get API key.',
+      models: Object.freeze([
+        Object.freeze({
+          id: 'gemini-3.1-pro-preview',
+          label: 'Gemini 3.1 Pro (preview)',
+          tier: 'strong',
+          images: false,
+        }),
+        Object.freeze({
+          id: 'gemini-3.8-flash',
+          label: 'Gemini 3.8 Flash',
+          tier: 'strong',
+          images: false,
+        }),
+        Object.freeze({
+          id: 'gemini-2.5-pro',
+          label: 'Gemini 2.5 Pro',
+          tier: 'strong',
+          images: false,
+        }),
+        Object.freeze({
+          id: 'gemini-3.5-flash-lite',
+          label: 'Gemini 3.5 Flash Lite',
+          tier: 'cheap',
+          images: false,
+        }),
+        Object.freeze({
+          id: 'gemini-3.1-flash-image',
+          label: 'Gemini 3.1 Flash Image',
+          tier: 'strong',
+          images: true,
+        }),
+        Object.freeze({
+          id: 'gemini-3-pro-image',
+          label: 'Gemini 3 Pro Image',
+          tier: 'strong',
+          images: true,
+        }),
+      ]),
+      carriesRealCredentials: true,
+    }),
+    /**
+     * The in-repo vendor that answers without a network or a bill, so the whole
+     * path (connect, route, run, attribute, render) can be walked on a live
+     * stack without spending anything. `carriesRealCredentials: false` is what
+     * makes that honest rather than a hole: it is the flag every guard in this
+     * codebase reads before it treats a stored string as a real secret.
+     */
+    fake: Object.freeze({
+      id: 'fake',
+      label: 'Fake (testing)',
+      vendor: 'fake',
+      keyHelp: 'Any value starting with "fake-". It calls nothing and produces nothing usable.',
+      models: Object.freeze([
+        Object.freeze({ id: 'fake-strong', label: 'Fake strong', tier: 'strong', images: false }),
+        Object.freeze({ id: 'fake-cheap', label: 'Fake cheap', tier: 'cheap', images: false }),
+        Object.freeze({ id: 'fake-image', label: 'Fake image', tier: 'strong', images: true }),
+      ]),
+      carriesRealCredentials: false,
+    }),
+  }) as Readonly<Record<ModelProviderId, ModelProviderProfile>>;
+
+export function isRegisteredModelProvider(provider: string): provider is ModelProviderId {
+  return Object.prototype.hasOwnProperty.call(MODEL_PROVIDERS, provider);
+}
+
+/**
+ * `hasOwnProperty` rather than a truthiness check, so `constructor` and
+ * `toString` cannot resolve through the prototype chain into something that is
+ * not a provider profile. The guard `entryFor` in `packages/marketing` uses, for
+ * the same reason.
+ */
+function modelProviderEntry(provider: string): ModelProviderProfile {
+  if (!isRegisteredModelProvider(provider)) {
+    throw new Error(
+      `Unknown model provider "${provider}". Registered: ${Object.keys(MODEL_PROVIDERS).join(', ')}. ` +
+        'Adding one is a reviewed change to packages/contracts, not a row.',
+    );
+  }
+  return MODEL_PROVIDERS[provider];
+}
+
+/** The wire shape a provider speaks. Throws on an unregistered name. */
+export function vendorFor(provider: string): ModelVendor {
+  return modelProviderEntry(provider).vendor;
+}
+
+/**
+ * Raises on an unknown provider rather than answering `false`, exactly as
+ * `packages/marketing`'s does and for the inverted-reading reason recorded
+ * there: an unregistered name is one nobody reviewed, and answering `false`
+ * would let a writer treat its key as harmless. Fail closed.
+ */
+export function modelCarriesRealCredentials(provider: string): boolean {
+  return modelProviderEntry(provider).carriesRealCredentials;
+}
+
+/** Whether this provider actually offers this model. The route's 400 check. */
+export function modelBelongsTo(provider: string, model: string): boolean {
+  if (!isRegisteredModelProvider(provider)) return false;
+  return MODEL_PROVIDERS[provider].models.some((m) => m.id === model);
+}
+
+/** The registry entry for a model id, searched across providers, or null. */
+export function modelEntryFor(model: string): ModelEntry | null {
+  for (const provider of Object.values(MODEL_PROVIDERS)) {
+    const found = provider.models.find((m) => m.id === model);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * What to show beside a message, **falling back to the raw id**.
+ *
+ * An id we no longer recognise is still the true answer to "what wrote this"
+ * (ADR-0032 decision 4), so rendering it verbatim is more honest than rendering
+ * "Unknown" over a real audit trail.
+ */
+export function labelForModel(model: string): string {
+  return modelEntryFor(model)?.label ?? model;
+}
+
+/** The first model of a tier for a provider, or null. Used to seed a picker. */
+export function defaultModelFor(provider: string, tier: ModelTier = 'strong'): string | null {
+  if (!isRegisteredModelProvider(provider)) return null;
+  return MODEL_PROVIDERS[provider].models.find((m) => m.tier === tier)?.id ?? null;
+}
+
+/**
+ * Which job a connected model does. The four voices ([ADR-0031](../../../docs/40-adr/0031-an-agent-persona-is-a-voice-not-a-writer.md)),
+ * plus the labelled ungrounded tier and image generation.
+ *
+ * **A route is a preference, not a grant.** It names which endpoint composes a
+ * proposal. `routeTask`, `checkSpendCap` and `apply_plan_diff` do not read it,
+ * so a role with the strongest model connected has exactly the authority it had
+ * with none, which is none. Stated here because the picker is the surface most
+ * likely to tempt a later change into treating a route as a capability.
+ */
+export const ModelRole = z.enum([
+  'strategist',
+  'content',
+  'ads',
+  'analyst',
+  'fallback',
+  'creative',
+]);
+export type ModelRole = z.infer<typeof ModelRole>;
+
+export const ModelRoute = z.object({
+  role: ModelRole,
+  provider: ModelProviderId,
+  model: z.string().min(1).max(120),
+});
+export type ModelRoute = z.infer<typeof ModelRoute>;
+
+/**
+ * A connected provider, **as a member is allowed to see it**.
+ *
+ * The `ChannelConnection` argument verbatim, one table along: `model_connections`
+ * holds the customer's API key as ciphertext with its IV and tag, RLS filters
+ * rows and not columns, so the table carries no client policy and no client
+ * grant and a member's legitimate view is an API projection.
+ *
+ * **The absence of any key field is the security property**, not an
+ * abbreviation. Because this type is what the route returns, adding the key to
+ * the response later is a change somebody has to make on purpose, in this file,
+ * where it reads as what it is. `keyHint` is the last four characters and exists
+ * so a person can tell two keys apart; it is not a credential and cannot be
+ * completed into one.
+ */
+export const ModelConnection = z.object({
+  id: z.string().uuid(),
+  provider: ModelProviderId,
+  /** Last four characters of the key. Enough to recognise, useless to replay. */
+  keyHint: z.string(),
+  status: z.enum(['active', 'revoked']),
+  connectedAt: z.string(),
+});
+export type ModelConnection = z.infer<typeof ModelConnection>;
+
+/**
+ * Everything the Models block renders.
+ *
+ * `houseDefault` comes from the AI service's own `/health` rather than from a
+ * second copy of the model id in Node's environment, because two copies of
+ * "what Auto means" would eventually disagree and the disagreement would be
+ * invisible. Null when the service is unreachable, which the surface says
+ * plainly rather than guessing a name.
+ */
+export const ModelSettingsResponse = z.object({
+  connections: z.array(ModelConnection),
+  routes: z.array(ModelRoute),
+  houseDefault: z.object({ provider: z.string(), model: z.string() }).nullable(),
+});
+export type ModelSettingsResponse = z.infer<typeof ModelSettingsResponse>;
+
+/**
+ * Connecting a provider. The key is checked against the provider's own
+ * models endpoint before anything is stored, so a wrong key fails on the
+ * settings surface rather than four minutes into an agent run.
+ *
+ * Bounded at 512 characters because a key is a key: an unbounded field here is
+ * an unbounded field that gets encrypted and written.
+ */
+export const ConnectModelBody = z.object({
+  provider: ModelProviderId,
+  apiKey: z.string().trim().min(8).max(512),
+});
+export type ConnectModelBody = z.infer<typeof ConnectModelBody>;
+
+/**
+ * Setting routes, as a batch of up to six.
+ *
+ * `provider: null` clears the role, which is how a person chooses **Auto**: no
+ * row means the house default answers. Nullable rather than a separate delete
+ * route because clearing one role and setting another is one decision on one
+ * surface, and two round trips could half-apply it.
+ */
+export const PatchModelRoutesBody = z.object({
+  routes: z
+    .array(
+      z.object({
+        role: ModelRole,
+        provider: ModelProviderId.nullable(),
+        model: z.string().min(1).max(120).nullable(),
+      }),
+    )
+    .min(1)
+    .max(6),
+});
+export type PatchModelRoutesBody = z.infer<typeof PatchModelRoutesBody>;
+
 /** Who executes a step. Mirrors `owner_type` in the workflow schema. */
 export const StepOwner = z.enum(['AI', 'HUMAN', 'YOU']);
 export type StepOwner = z.infer<typeof StepOwner>;
@@ -905,6 +1265,25 @@ export const Message = z.object({
    * a guess written beside an audit trail is indistinguishable from a fact.
    */
   persona: AgentPersona.nullable().default(null),
+  /**
+   * Which model wrote this, for an `agent` row Node stamped from the route it
+   * resolved (ADR-0032 decision 4).
+   *
+   * **Raw vendor id, not an enum and not a foreign key.** Model ids are an open
+   * vocabulary that vendors change without asking, and `labelForModel` renders
+   * an unrecognised one as itself, because an id we do not know is still the
+   * true answer to what wrote a thing.
+   *
+   * **Null is the normal case, for the same three reasons `persona` gives and
+   * one more.** A person's or a node's message never has one; a run notice, a
+   * sweep notice, a waiting digest and a recorded answer are written by
+   * TypeScript, so stamping them would claim a model composed words it did not;
+   * and every message written before the column existed carries none. Never
+   * accepted from a client: a field a client could set is a field somebody can
+   * put a false name in, beside a real audit trail, where a guess and a fact
+   * look identical.
+   */
+  model: z.string().nullable().default(null),
   body: z.string().nullable(),
   seq: z.coerce.number().int(),
   createdAt: z.string(),
@@ -2243,6 +2622,86 @@ export const contract = c.router(
         404: ApiError,
       },
       summary: 'Current members of a room, with profile basics',
+    },
+
+    /**
+     * The Models block: which providers this workspace has connected, which
+     * model answers for each voice, and what Auto currently means.
+     *
+     * **These four are in the router while the channel-connection group is
+     * not**, and that asymmetry is recorded rather than fixed here. The
+     * connections group predates the rule the notification group settled: a
+     * surface belongs in the router when what a generated client should do with
+     * it is not an open question. It is not open here. Every caller is a room
+     * member reading one shape, writes are the owner's, and the projection's
+     * lack of a key field is the security property, which is worth having as a
+     * typed fact rather than as a convention in a handler.
+     */
+    getModelSettings: {
+      method: 'GET',
+      path: '/rooms/:roomId/models',
+      pathParams: RoomParams,
+      responses: {
+        200: ModelSettingsResponse,
+        401: ApiError,
+        /** A room the caller cannot see is not confirmed to exist. */
+        404: ApiError,
+      },
+      summary: 'Connected model providers, the per-role routes, and the house default',
+    },
+
+    connectModel: {
+      method: 'POST',
+      path: '/rooms/:roomId/models/connections',
+      pathParams: RoomParams,
+      body: ConnectModelBody,
+      responses: {
+        201: z.object({ connection: ModelConnection }),
+        /** Unknown provider, or a key the provider itself refused. */
+        400: ApiError,
+        401: ApiError,
+        /** Connecting a key is the owner's decision, like connecting an account. */
+        403: ApiError,
+        404: ApiError,
+        /** The provider could not be reached to check the key. Nothing was stored. */
+        502: ApiError,
+        /** No `MODEL_KEY_SECRET`, so there is nowhere safe to put the key. */
+        503: ApiError,
+      },
+      summary: "Connect a provider with the workspace's own API key (owner only)",
+    },
+
+    disconnectModel: {
+      method: 'DELETE',
+      path: '/rooms/:roomId/models/connections/:connectionId',
+      pathParams: RoomParams.extend({ connectionId: z.string().uuid() }),
+      responses: {
+        200: z.object({ connection: ModelConnection }),
+        401: ApiError,
+        403: ApiError,
+        404: ApiError,
+        /** Not connected here, or already revoked. The next move is the same. */
+        409: ApiError,
+      },
+      summary: 'Revoke a connected key and clear every role routed to it (owner only)',
+    },
+
+    patchModelRoutes: {
+      method: 'PATCH',
+      path: '/rooms/:roomId/models/routes',
+      pathParams: RoomParams,
+      body: PatchModelRoutesBody,
+      responses: {
+        200: ModelSettingsResponse,
+        /** The model is not one this provider offers, or not the right kind for the role. */
+        400: ApiError,
+        401: ApiError,
+        403: ApiError,
+        404: ApiError,
+        /** Routing a role to a provider with no active key. */
+        409: ApiError,
+      },
+      summary: 'Set or clear which model answers for each role (owner only)',
     },
 
     listProjects: {

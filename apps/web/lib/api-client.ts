@@ -4,6 +4,7 @@ import type {
   ArtifactFileUrl,
   Channel,
   ChannelConnection,
+  ConnectModelBody,
   EmbedActionBody,
   EmbedActionResponse,
   ListMessagesResponse,
@@ -12,6 +13,8 @@ import type {
   MarkNotificationReadResponse,
   MarketingChannel,
   Message,
+  ModelConnection,
+  ModelSettingsResponse,
   NodeCredential,
   NodeEngagement,
   NodeEngagementResponse,
@@ -22,6 +25,7 @@ import type {
   OpsDisputeDetail,
   OpsDisputeSummary,
   ProjectDetail,
+  PatchModelRoutesBody,
   ProjectSummary,
   PutRoomProfileBody,
   ResolveDisputeBody,
@@ -397,6 +401,54 @@ export function completeConnection(
 export function disconnectConnection(roomId: string, connectionId: string) {
   return bff<{ connection: ChannelConnection }>(`/rooms/${roomId}/connections/${connectionId}`, {
     method: 'DELETE',
+  });
+}
+
+/* ------------------------------------------------------ model connectors */
+
+/**
+ * Which model providers this workspace has connected, which model answers for
+ * each voice, and what Auto currently means (ADR-0032).
+ *
+ * **The response carries no key and cannot**: `ModelConnection` has no field for
+ * one, so a projection that started returning credentials would fail to
+ * typecheck here rather than quietly reaching a browser. Same property
+ * `getConnections` relies on, for a credential worth rather more.
+ *
+ * Typed and unused for now. The Models block in the room rail is the next slice;
+ * these land with the routes so the seam is one change rather than two.
+ */
+export function getModelSettings(roomId: string) {
+  return bff<ModelSettingsResponse>(`/rooms/${roomId}/models`);
+}
+
+/** Paste a key. The API checks it against the provider before storing anything. */
+export function connectModel(roomId: string, body: ConnectModelBody) {
+  return bff<{ connection: ModelConnection }>(`/rooms/${roomId}/models/connections`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/** Revoke a key, which also clears every role routed to that provider. */
+export function disconnectModel(roomId: string, connectionId: string) {
+  return bff<{ connection: ModelConnection }>(
+    `/rooms/${roomId}/models/connections/${connectionId}`,
+    { method: 'DELETE' },
+  );
+}
+
+/**
+ * Set or clear routes. A null provider and model clears the role, which is how
+ * a person chooses Auto.
+ *
+ * PATCH because the BFF proxy exports GET, POST, PATCH and DELETE and no PUT,
+ * and because the body carries the roles that changed rather than all six.
+ */
+export function patchModelRoutes(roomId: string, body: PatchModelRoutesBody) {
+  return bff<ModelSettingsResponse>(`/rooms/${roomId}/models/routes`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
   });
 }
 
